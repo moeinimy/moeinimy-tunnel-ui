@@ -52,7 +52,10 @@ _node_poll_once() {
         if [[ "$_TM_NODE_ALLOW" != *" ${args[0]} "* ]]; then
             out="command not allowed on node: ${args[0]}"; ok=false
         else
-            out="$(tunnelctl "${args[@]}" 2>&1)"; rc=$?
+            # TM_ASSUME_YES: destructive commands (remove/restore) prompt via
+            # confirm(); with no TTY that silently answers "no" while still
+            # exiting 0. The panel confirms with the operator before sending.
+            out="$(TM_ASSUME_YES=1 NO_COLOR=1 tunnelctl "${args[@]}" 2>&1)"; rc=$?
             ok=true; [[ $rc -eq 0 ]] || ok=false
         fi
 

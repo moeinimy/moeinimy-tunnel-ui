@@ -443,7 +443,7 @@
           body.fields = fields;
         }
         this.nodeCreateLoading = true;
-        const msg = await HttpUtil.post('/panel/tunnel/nodes', body);
+        const msg = await HttpUtil.post('/panel/tunnel/nodes', { data: JSON.stringify(body) });
         this.nodeCreateLoading = false;
         if (msg && msg.success && msg.obj) {
           this.nodeCreateVisible = false;
@@ -462,7 +462,7 @@
         this.nodeTunnelsText = '';
         this.nodeTunnelsVisible = true;
         this.nodeTunnelsLoading = true;
-        const msg = await HttpUtil.post('/panel/tunnel/nodes/' + encodeURIComponent(n.id) + '/exec', { args: ['list'] });
+        const msg = await HttpUtil.post('/panel/tunnel/nodes/' + encodeURIComponent(n.id) + '/exec', { data: JSON.stringify({ args: ['list'] }) });
         this.nodeTunnelsText = (msg && msg.success) ? (msg.obj || '') : (msg && msg.msg) || '{{ i18n "pages.tunnel.node.execFailed" }}';
         this.nodeTunnelsLoading = false;
       },
@@ -509,7 +509,9 @@
           if (k) fields[k] = (row.value || '').trim();
         }
         this.createLoading = true;
-        const msg = await HttpUtil.post('/panel/tunnel/create', { fields });
+        // The panel's axios form-urlencodes every body, so structured payloads go
+        // as a JSON string in "data" (same convention as inbound.js).
+        const msg = await HttpUtil.post('/panel/tunnel/create', { data: JSON.stringify({ fields }) });
         this.createLoading = false;
         if (msg && msg.success) {
           this.createVisible = false;

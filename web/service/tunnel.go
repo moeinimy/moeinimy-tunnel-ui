@@ -70,7 +70,13 @@ func (s *TunnelService) run(args ...string) ([]byte, error) {
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, tunnelctlPath(), args...)
-	cmd.Env = append(os.Environ(), "NO_COLOR=1")
+	// TM_ASSUME_YES: tunnelctl gates destructive actions behind an interactive
+	// confirm(). With no TTY the prompt reads EOF and falls back to "no", but the
+	// command still exits 0 — so `remove` would report success while silently
+	// doing nothing. The panel asks the operator for confirmation in the UI
+	// (a-popconfirm) before it ever calls us, so auto-accept here.
+	// NO_COLOR keeps ANSI escapes out of captured output.
+	cmd.Env = append(os.Environ(), "NO_COLOR=1", "TM_ASSUME_YES=1")
 
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout

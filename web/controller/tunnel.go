@@ -1,6 +1,8 @@
 package controller
 
 import (
+	"encoding/json"
+	"errors"
 	"net/http"
 	"strings"
 
@@ -8,6 +10,26 @@ import (
 
 	"github.com/gin-gonic/gin"
 )
+
+// bindData decodes a structured payload from the panel UI.
+//
+// The panel's axios is globally configured to form-urlencode EVERY request body
+// (web/assets/js/axios-init.js sets x-www-form-urlencoded and Qs.stringify's the
+// data), so a JSON body never arrives as JSON from the browser — binding JSON
+// directly fails with "invalid character 'i' in literal false". The panel's own
+// convention (see inbound.go) is to send complex payloads as a JSON string in a
+// single "data" form field, which is what we read here. Raw JSON is still
+// accepted so API/curl clients keep working.
+func bindData(c *gin.Context, out any) error {
+	if strings.HasPrefix(c.ContentType(), "application/json") {
+		return c.ShouldBindJSON(out)
+	}
+	raw := c.PostForm("data")
+	if raw == "" {
+		return errors.New("missing 'data' payload")
+	}
+	return json.Unmarshal([]byte(raw), out)
+}
 
 // nodeRepo is the GitHub repo the Iran-node one-liner is fetched from.
 const nodeRepo = "moeinimy/moeinimy-tunnel-ui"
@@ -136,7 +158,7 @@ type createRequest struct {
 
 func (a *TunnelController) create(c *gin.Context) {
 	var req createRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
+	if err := bindData(c, &req); err != nil {
 		jsonMsg(c, I18nWeb(c, "pages.tunnel.toasts.createFailed"), err)
 		return
 	}
@@ -215,7 +237,7 @@ type nodeCreateReq struct {
 // node connects (foreign side here, Iran side pushed to the node).
 func (a *TunnelController) nodeCreate(c *gin.Context) {
 	var req nodeCreateReq
-	_ = c.ShouldBindJSON(&req)
+	_ = bindData(c, &req)
 	name := strings.TrimSpace(req.Name)
 	if name == "" {
 		name = "iran-node"
@@ -253,7 +275,7 @@ type nodeExecReq struct {
 // nodeExec runs an allowlisted tunnelctl command on a node and returns its output.
 func (a *TunnelController) nodeExec(c *gin.Context) {
 	var req nodeExecReq
-	if err := c.ShouldBindJSON(&req); err != nil || len(req.Args) == 0 {
+	if err := bindData(c, &req); err != nil || len(req.Args) == 0 {
 		pureJsonMsg(c, http.StatusOK, false, I18nWeb(c, "pages.tunnel.toasts.loadFailed"))
 		return
 	}

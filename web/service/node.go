@@ -37,6 +37,21 @@ const (
 	nodePollHold     = 25 * time.Second // long-poll hold when the queue is empty
 )
 
+// protoSecretKey maps each tunnel protocol to the field holding its shared
+// secret, as named by that protocol's driver in tunnel/drivers/. Both ends of a
+// tunnel MUST carry the same value, so auto-provisioning fills this key once and
+// pushes it to both sides. Keep in sync with the drivers' "TUN keys" headers.
+var protoSecretKey = map[string]string{
+	"gost":     "GO_PASS",
+	"backpack": "BP_TOKEN",
+	"backhaul": "BH_TOKEN",
+	"rathole":  "RH_TOKEN",
+	"frp":      "FRP_TOKEN",
+	"hysteria": "HY_PASS",
+	"paqet":    "PAQET_SECRET",
+	// gre authenticates by GRE_KEY, which the operator sets explicitly.
+}
+
 type nodeCommand struct {
 	ID   string   `json:"id"`
 	Args []string `json:"args"`
@@ -173,10 +188,18 @@ func (s *NodeService) Create(name string, setup *NodeSetup) (id, token string) {
 	nodeReg.mu.Lock()
 	defer nodeReg.mu.Unlock()
 	nodeReg.load()
-	// Fill any empty *_SECRET now so BOTH ends of the tunnel share the exact same
-	// value (if left blank, tunnelctl would generate a different one per side and
-	// the tunnel would never authenticate).
+	// Fill the shared secret NOW so BOTH ends of the tunnel get the exact same
+	// value. If left blank, each side's <p>_prepare would generate its own and the
+	// tunnel would never authenticate. Note every driver names its secret
+	// differently (GO_PASS, BP_TOKEN, …) — filling only "*_SECRET" would silently
+	// leave all but paqet mismatched.
 	if setup != nil {
+		if setup.Fields == nil {
+			setup.Fields = map[string]string{}
+		}
+		if key := protoSecretKey[setup.Protocol]; key != "" && setup.Fields[key] == "" {
+			setup.Fields[key] = randToken()[:32]
+		}
 		for k, v := range setup.Fields {
 			if v == "" && strings.HasSuffix(k, "_SECRET") {
 				setup.Fields[k] = randToken()[:32]

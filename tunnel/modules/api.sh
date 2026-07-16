@@ -97,9 +97,12 @@ api_meta() {
     ver="$(cat "$TM_HOME/VERSION" 2>/dev/null || echo unknown)"
     count="$(count_tunnels 2>/dev/null || echo 0)"
     role="$(cat "$TM_CONFIG_DIR/role" 2>/dev/null || echo foreign)"
-    opt="unknown"
-    if declare -F optimize_is_applied >/dev/null 2>&1; then
-        optimize_is_applied && opt="applied" || opt="reverted"
+    # Optimization is "applied" iff the optimize marker file exists (same signal
+    # optimize_status uses). TM_OPT_MARKER is defined in modules/optimize.sh.
+    if [[ -n "${TM_OPT_MARKER:-}" && -f "${TM_OPT_MARKER:-}" ]]; then
+        opt="applied"
+    else
+        opt="reverted"
     fi
     printf '{"version":"%s","node_role":"%s","tunnel_count":%s,"optimize":"%s","agent_port":%s,"protocols":%s}\n' \
         "$(json_escape "$ver")" "$(json_escape "$role")" "${count:-0}" \

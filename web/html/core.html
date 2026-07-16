@@ -1,0 +1,1243 @@
+{{ template "page/head_start" .}}
+{{ template "page/head_end" .}}
+
+{{ template "page/body_start" .}}
+<a-layout id="app" v-cloak :class="themeSwitcher.currentTheme">
+  <a-sidebar></a-sidebar>
+  <a-layout id="content-layout">
+    <a-layout-content>
+      <a-spin :spinning="spinning" :delay="300" tip='{{ i18n "loading"}}' size="large">
+        <transition name="list" appear>
+        <a-row :gutter="[16, 16]" :style="{ margin: 0 }">
+
+          <!-- Header -->
+          <a-col :span="24">
+            <a-card hoverable>
+              <a-row type="flex" justify="space-between" align="middle" :gutter="[8,8]">
+                <a-col>
+                  <h2 :style="{ margin: 0 }">{{ i18n "pages.core.title" }}</h2>
+                  <span :style="{ opacity: 0.65 }">{{ i18n "pages.core.subtitle" }}</span>
+                </a-col>
+                <a-col v-if="provisioned">
+                  <a-space>
+                    <a-button type="primary" @click="restartAll">
+                      <a-icon type="reload"></a-icon>Restart All Cores
+                    </a-button>
+                    <a-button @click="loadStatus(true)">
+                      <a-icon type="reload"></a-icon>{{ i18n "pages.core.refresh" }}
+                    </a-button>
+                  </a-space>
+                </a-col>
+              </a-row>
+            </a-card>
+          </a-col>
+
+          <!-- Reboot-required banner: persists on the page after the setup modal
+               is closed, so the operator can't miss it. -->
+          <a-col :span="24" v-if="loaded && rebootRequired">
+            <div class="reboot-banner">
+              <a-icon type="warning" theme="filled" class="reboot-banner-icon"></a-icon>
+              <div class="reboot-banner-body">
+                <div class="reboot-banner-title">{{ i18n "pages.core.rebootTitle" }}</div>
+                <div class="reboot-banner-text">{{ i18n "pages.core.rebootWhat" }}</div>
+              </div>
+              <div class="reboot-banner-actions">
+                <a-button size="small" @click="provisionVisible = true">
+                  {{ i18n "pages.core.rebootDetails" }}
+                </a-button>
+                <a-popconfirm title="{{ i18n "pages.core.rebootConfirm" }}" placement="bottomRight"
+                  @confirm="rebootNow" ok-text="{{ i18n "pages.core.rebootNow" }}"
+                  cancel-text="{{ i18n "cancel" }}">
+                  <a-button size="small" type="danger">
+                    <a-icon type="poweroff"></a-icon>{{ i18n "pages.core.rebootNow" }}
+                  </a-button>
+                </a-popconfirm>
+              </div>
+            </div>
+          </a-col>
+
+          <!-- First run: backend not provisioned yet -->
+          <a-col :span="24" v-if="loaded && !provisioned">
+            <a-card hoverable class="setup-hero">
+              <div class="setup-hero-badge">
+                <a-icon type="thunderbolt" theme="filled"></a-icon>
+              </div>
+              <div class="setup-hero-title">{{ i18n "pages.core.setupNeededTitle" }}</div>
+              <div class="setup-hero-desc">{{ i18n "pages.core.setupNeededDesc" }}</div>
+              <div class="setup-hero-steps">
+                <div class="setup-hero-step">
+                  <a-icon type="deployment-unit"></a-icon>{{ i18n "pages.core.stepModules" }}
+                </div>
+                <div class="setup-hero-step">
+                  <a-icon type="swap"></a-icon>{{ i18n "pages.core.stepForward" }}
+                </div>
+                <div class="setup-hero-step">
+                  <a-icon type="inbox"></a-icon>{{ i18n "pages.core.stepDaemons" }}
+                </div>
+                <div class="setup-hero-step">
+                  <a-icon type="lock"></a-icon>{{ i18n "pages.core.stepIpsec" }}
+                </div>
+              </div>
+              <a-button class="setup-hero-btn" type="primary" size="large"
+                :loading="provisionRunning" @click="startProvision">
+                <a-icon type="thunderbolt"></a-icon>{{ i18n "pages.core.initSetup" }}
+              </a-button>
+            </a-card>
+          </a-col>
+
+          <!-- Upgrade: a protocol was added since this host was last set up -->
+          <a-col :span="24" v-if="provisioned && missingProtocols.length">
+            <a-alert type="warning" show-icon :style="{ marginBottom: '16px' }">
+              <span slot="message">{{ i18n "pages.core.newProtocolTitle" }}</span>
+              <template slot="description">
+                <div :style="{ marginBottom: '10px' }">
+                  {{ i18n "pages.core.newProtocolDesc" }}
+                  <b>[[ missingProtocols.map(coreTitle).join(', ') ]]</b>
+                </div>
+                <a-button type="primary" size="small" :loading="provisionRunning" @click="startProvision">
+                  <a-icon type="thunderbolt"></a-icon>{{ i18n "pages.core.reRunSetup" }}
+                </a-button>
+              </template>
+            </a-alert>
+          </a-col>
+
+          <!-- Per-core cards -->
+          <a-col :span="24" v-if="provisioned">
+            <a-row type="flex" :gutter="[16, 16]">
+              <a-col :xs="24" :sm="12" :xl="8" v-for="core in cores" :key="core.name">
+                <a-card class="core-card" hoverable>
+                  <template #title>
+                    <a-icon :type="coreIcon(core.name)"></a-icon>
+                    <span :style="{ marginLeft: '8px' }">[[ coreTitle(core.name) ]]</span>
+                  </template>
+                  <template #extra>
+                    <span class="core-state" :class="'core-state-' + core.state">
+                      <span class="core-state-dot"></span>[[ stateText(core.state) ]]
+                    </span>
+                  </template>
+
+                  <div class="core-kv-list">
+                    <div class="core-kv">
+                      <span class="core-kv-label">{{ i18n "pages.core.version" }}</span>
+                      <span class="core-kv-value">[[ core.version || '—' ]]
+                        <a-tooltip v-if="core.name === 'xray'" title='{{ i18n "pages.index.xrayCoreLocked" }}'>
+                          <a-tag color="blue" :style="{ marginInlineStart: '6px' }">
+                            <a-icon type="lock"></a-icon> {{ i18n "pages.index.coreLockedTag" }}
+                          </a-tag>
+                        </a-tooltip>
+                      </span>
+                    </div>
+                    <div class="core-kv">
+                      <span class="core-kv-label">{{ i18n "pages.core.backend" }}</span>
+                      <span class="core-kv-value">[[ coreBackend(core.name) ]]</span>
+                    </div>
+                    <div class="core-kv" v-if="core.name !== 'xray' && core.name !== 'radius' && core.name !== 'ipsec'">
+                      <span class="core-kv-label">{{ i18n "pages.core.inbounds" }}</span>
+                      <span class="core-kv-value">[[ core.inbounds ]]</span>
+                    </div>
+                  </div>
+
+                  <a-alert v-if="core.detail" type="warning" :message="core.detail" banner
+                    :style="{ marginTop: '10px' }"></a-alert>
+
+                  <div class="core-actions">
+                    <a-space>
+                      <a-button size="small" type="primary" :disabled="!canRestart(core.name)"
+                        @click="restart(core.name)">
+                        <a-icon type="reload"></a-icon>{{ i18n "pages.core.restart" }}
+                      </a-button>
+                      <a-button size="small" type="danger" :disabled="!canStop(core.name)"
+                        @click="stop(core.name)">
+                        <a-icon type="pause-circle"></a-icon>{{ i18n "pages.core.stop" }}
+                      </a-button>
+                      <a-button size="small" @click="showLogs(core.name)">
+                        <a-icon type="file-text"></a-icon>{{ i18n "pages.core.logs" }}
+                      </a-button>
+                      <a-button size="small" v-if="core.name === 'xray'"
+                        :href="basePath + 'panel/xray'">
+                        <a-icon type="edit"></a-icon>{{ i18n "pages.core.editConfig" }}
+                      </a-button>
+                    </a-space>
+                  </div>
+                </a-card>
+              </a-col>
+            </a-row>
+          </a-col>
+
+          <!-- System / provisioning card -->
+          <a-col :span="24" v-if="provisioned">
+            <a-card hoverable>
+              <template #title>
+                <a-icon type="hdd"></a-icon>
+                <span :style="{ marginLeft: '8px' }">{{ i18n "pages.core.system" }}</span>
+              </template>
+              <template #extra>
+                <a-button type="primary" :loading="provisionRunning" @click="startProvision">
+                  <a-icon type="thunderbolt"></a-icon>{{ i18n "pages.core.reRunSetup" }}
+                </a-button>
+              </template>
+
+              <p class="system-desc">{{ i18n "pages.core.provisionDesc" }}</p>
+
+              <a-row :gutter="[12, 12]">
+                <a-col :xs="24" :md="8">
+                  <div class="sys-tile" :class="system.ipForward ? 'sys-tile-ok' : 'sys-tile-bad'">
+                    <a-icon class="sys-tile-icon" theme="filled"
+                      :type="system.ipForward ? 'check-circle' : 'close-circle'"></a-icon>
+                    <div>
+                      <div class="sys-tile-name">{{ i18n "pages.core.ipForward" }}</div>
+                      <div class="sys-tile-state">
+                        [[ system.ipForward ? '{{ i18n "pages.core.enabled" }}' : '{{ i18n "pages.core.disabled" }}' ]]
+                      </div>
+                    </div>
+                  </div>
+                </a-col>
+                <a-col :xs="24" :md="8">
+                  <div class="sys-tile" :class="system.nftables ? 'sys-tile-ok' : 'sys-tile-bad'">
+                    <a-icon class="sys-tile-icon" theme="filled"
+                      :type="system.nftables ? 'check-circle' : 'close-circle'"></a-icon>
+                    <div>
+                      <div class="sys-tile-name">{{ i18n "pages.core.nftables" }}</div>
+                      <div class="sys-tile-state">
+                        [[ system.nftables ? '{{ i18n "pages.core.present" }}' : '{{ i18n "pages.core.absent" }}' ]]
+                      </div>
+                    </div>
+                  </div>
+                </a-col>
+                <a-col :xs="24" :md="8">
+                  <div class="sys-tile" :class="system.iproute ? 'sys-tile-ok' : 'sys-tile-bad'">
+                    <a-icon class="sys-tile-icon" theme="filled"
+                      :type="system.iproute ? 'check-circle' : 'close-circle'"></a-icon>
+                    <div>
+                      <div class="sys-tile-name">{{ i18n "pages.core.iproute" }}</div>
+                      <div class="sys-tile-state">
+                        [[ system.iproute ? '{{ i18n "pages.core.present" }}' : '{{ i18n "pages.core.absent" }}' ]]
+                      </div>
+                    </div>
+                  </div>
+                </a-col>
+              </a-row>
+
+              <div class="sys-section-title">{{ i18n "pages.core.kernelModules" }}</div>
+              <div class="module-grid">
+                <span v-for="m in system.modules" :key="m.name" class="module-chip"
+                  :class="m.loaded ? 'module-ok' : 'module-bad'">
+                  <a-icon :type="m.loaded ? 'check' : 'close'"></a-icon>
+                  [[ m.name ]]
+                </span>
+              </div>
+            </a-card>
+          </a-col>
+
+        </a-row>
+        </transition>
+      </a-spin>
+    </a-layout-content>
+  </a-layout>
+
+  <!-- Provision live log: a real streaming terminal console. Closing mid-run is
+       safe — provisioning runs server-side and the poll keeps ticking. -->
+  <a-modal v-model="provisionVisible" :title="null" :footer="null"
+    :class="themeSwitcher.currentTheme" :width="isMobile ? '95%' : '680px'"
+    :maskClosable="!provisionRunning" wrapClassName="setup-modal">
+    <div class="setup-modal-head">
+      <div class="setup-modal-head-icon" :class="headStateClass()">
+        <a-icon :type="headStateIcon()" :spin="provisionRunning"></a-icon>
+      </div>
+      <div class="setup-modal-head-title">[[ provisionTitle() ]]</div>
+    </div>
+
+    <div class="term term--setup">
+      <div class="term-bar">
+        <a-icon type="code" class="term-bar-icon"></a-icon>
+        <span class="term-bar-title">vpn-ui — {{ i18n "pages.core.consoleTitle" }}</span>
+        <span class="term-count" v-if="provisionResult.length">[[ okCount() ]]/[[ provisionResult.length ]]</span>
+      </div>
+      <div class="term-progress">
+        <div class="term-progress-bar"
+          :class="{ warn: !provisionRunning && rebootRequired, done: !provisionRunning && provisionDone && !rebootRequired }"
+          :style="{ width: provProgress() + '%' }"></div>
+      </div>
+      <div class="term-body" ref="term">
+        <!-- One row per step: leading ✓/!/✗ glyph, name, detail, timestamp on the
+             right. Rows that captured command output are clickable to expand it. -->
+        <div v-for="(item, i) in provisionResult" :key="i" class="term-step">
+          <div class="term-line" :class="[lineClass(item), item.log ? 'term-clickable' : '']"
+            @click="item.log && toggleStep(i)"
+            :title="item.log ? (expanded[i] ? '{{ i18n "pages.core.hideLog" }}' : '{{ i18n "pages.core.showLog" }}') : ''">
+            <span class="term-glyph">[[ glyph(item) ]]</span>
+            <span class="term-name">[[ item.name ]]</span>
+            <span class="term-msg" v-if="item.msg">[[ item.msg ]]</span>
+            <a-icon v-if="item.log" :type="expanded[i] ? 'up' : 'down'" class="term-toggle"></a-icon>
+            <span class="term-ts">[[ item.ts ]]</span>
+          </div>
+          <pre v-if="item.log && expanded[i]" class="term-steplog">[[ item.log ]]</pre>
+        </div>
+
+        <!-- Running: percent + step in flight (the progress bar is the strip above). -->
+        <div v-if="provisionRunning" class="term-status">
+          <span class="term-pct">[[ provProgress() ]]%</span>
+          <span class="term-cur" v-if="currentStep()">⟳ [[ currentStep() ]]</span>
+        </div>
+
+        <!-- Done: ✓/!/✗ tally + how long it took. -->
+        <div v-if="!provisionRunning && provisionDone" class="term-status term-status-done">
+          <span class="term-summary">[[ provSummary() ]]</span>
+          <span class="term-elapsed" v-if="elapsedText()">· [[ elapsedText() ]]</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Reboot-required explainer: what happened, why, and what to do -->
+    <div v-if="rebootRequired" class="reboot-panel">
+      <div class="reboot-panel-head">
+        <a-icon type="warning" theme="filled" class="reboot-panel-icon"></a-icon>
+        <span class="reboot-panel-title">{{ i18n "pages.core.rebootTitle" }}</span>
+      </div>
+      <div class="reboot-panel-what">{{ i18n "pages.core.rebootWhat" }}</div>
+      <div class="reboot-facts">
+        <div class="reboot-fact" v-if="rebootPkg">
+          <span class="reboot-fact-label">{{ i18n "pages.core.rebootPkgLabel" }}</span>
+          <code class="reboot-fact-pkg">[[ rebootPkg ]]</code>
+        </div>
+        <div class="reboot-fact" v-if="rebootModules.length">
+          <span class="reboot-fact-label">{{ i18n "pages.core.rebootModulesLabel" }}</span>
+          <span class="reboot-mods">
+            <code v-for="m in rebootModules" :key="m" class="reboot-mod">[[ m ]]</code>
+          </span>
+        </div>
+      </div>
+      <div class="reboot-impact">
+        <a-icon type="info-circle"></a-icon>
+        <span>{{ i18n "pages.core.rebootImpact" }}</span>
+      </div>
+      <div class="reboot-panel-actions">
+        <a-button @click="provisionVisible = false">{{ i18n "pages.core.rebootLater" }}</a-button>
+        <a-popconfirm title="{{ i18n "pages.core.rebootConfirm" }}" placement="topRight"
+          @confirm="rebootNow" ok-text="{{ i18n "pages.core.rebootNow" }}"
+          cancel-text="{{ i18n "cancel" }}">
+          <a-button type="danger"><a-icon type="poweroff"></a-icon>{{ i18n "pages.core.rebootNow" }}</a-button>
+        </a-popconfirm>
+      </div>
+    </div>
+
+    <div v-if="!provisionRunning && !rebootRequired" class="setup-modal-foot">
+      <a-button type="primary" @click="provisionVisible = false">{{ i18n "close" }}</a-button>
+    </div>
+  </a-modal>
+
+  <!-- Rebooting overlay: shown after the operator confirms a reboot -->
+  <a-modal :visible="rebooting" :title="null" :footer="null" :closable="false"
+    :maskClosable="false" :keyboard="false" :class="themeSwitcher.currentTheme"
+    :width="isMobile ? '95%' : '420px'">
+    <div class="rebooting-box">
+      <a-icon type="poweroff" class="rebooting-icon"></a-icon>
+      <div class="rebooting-title">{{ i18n "pages.core.rebooting" }}</div>
+      <div class="rebooting-desc">{{ i18n "pages.core.rebootingDesc" }}</div>
+      <a-spin :spinning="true"></a-spin>
+    </div>
+  </a-modal>
+
+  <!-- Core logs -->
+  <a-modal v-model="logsVisible" :title="logsTitle + ' — {{ i18n "pages.core.logs" }}'" :footer="null"
+    :class="themeSwitcher.currentTheme" :width="isMobile ? '95%' : '80%'">
+    <div :style="{ textAlign: 'right', marginBottom: '8px' }">
+      <a-space>
+        <a-button size="small" :disabled="!logsContent" @click="downloadLogs">
+          <a-icon type="download"></a-icon>Download
+        </a-button>
+        <a-button size="small" :loading="logsLoading" @click="loadLogs(logsCore)">
+          <a-icon type="reload"></a-icon>{{ i18n "pages.core.refresh" }}
+        </a-button>
+      </a-space>
+    </div>
+    <pre class="core-logs">[[ logsContent || '{{ i18n "pages.core.noLogs" }}' ]]</pre>
+  </a-modal>
+</a-layout>
+
+{{template "page/body_scripts" .}}
+{{template "component/aSidebar" .}}
+{{template "component/aThemeSwitch" .}}
+<script>
+  const app = new Vue({
+    delimiters: ['[[', ']]'],
+    mixins: [MediaQueryMixin],
+    el: '#app',
+    data: {
+      themeSwitcher,
+      spinning: false,
+      loaded: false,
+      provisioned: false,
+      missingProtocols: [],
+      cores: [],
+      system: { modules: [] },
+      provisionRunning: false,
+      provisionDone: false,
+      provisionVisible: false,
+      provisionResult: [],
+      provStamps: [],
+      nowStamp: '',
+      provStartMs: 0,
+      provEndMs: 0,
+      nowMs: 0,
+      expanded: {},
+      provTimer: null,
+      rebootRequired: false,
+      rebootModules: [],
+      rebootPkg: '',
+      rebooting: false,
+      reconnectTimer: null,
+      basePath: '{{ .base_path }}',
+      logsVisible: false,
+      logsLoading: false,
+      logsCore: '',
+      logsTitle: '',
+      logsContent: '',
+    },
+    methods: {
+      async loadStatus(showSpin) {
+        if (showSpin) this.spinning = true;
+        const msg = await HttpUtil.get('/panel/core/status');
+        if (msg && msg.success && msg.obj) {
+          this.cores = msg.obj.cores || [];
+          this.system = msg.obj.system || { modules: [] };
+          this.provisioned = !!msg.obj.provisioned;
+          this.missingProtocols = msg.obj.missingProtocols || [];
+          this.applyReboot(msg.obj);
+        }
+        this.loaded = true;
+        this.spinning = false;
+      },
+      async restart(core) {
+        this.spinning = true;
+        await HttpUtil.post('/panel/core/restart/' + core);
+        await this.loadStatus(false);
+      },
+      async restartAll() {
+        this.spinning = true;
+        await HttpUtil.post('/panel/core/restart-all');
+        await this.loadStatus(false);
+      },
+      async stop(core) {
+        this.spinning = true;
+        await HttpUtil.post('/panel/core/stop/' + core);
+        await this.loadStatus(false);
+      },
+      async showLogs(core) {
+        this.logsCore = core;
+        this.logsTitle = this.coreTitle(core);
+        this.logsContent = '';
+        this.logsVisible = true;
+        await this.loadLogs(core);
+      },
+      async loadLogs(core) {
+        this.logsLoading = true;
+        const msg = await HttpUtil.get('/panel/core/logs/' + core);
+        this.logsLoading = false;
+        if (msg && msg.success) {
+          this.logsContent = msg.obj || '';
+        }
+      },
+      downloadLogs() {
+        if (!this.logsContent) return;
+        const d = new Date();
+        const p = (n) => String(n).padStart(2, '0');
+        const stamp = `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`;
+        const blob = new Blob([this.logsContent], { type: 'text/plain;charset=utf-8' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = (this.logsCore || 'core') + '-logs-' + stamp + '.txt';
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+      },
+      // startProvision kicks off backend provisioning and opens a live terminal
+      // that ticks each step as it completes. The run itself happens server-side;
+      // we poll for its progress so it survives the modal being closed and works
+      // through gzip/reverse proxies (no SSE/WebSocket).
+      async startProvision() {
+        if (this.provisionRunning) return;
+        this.provisionResult = [];
+        this.provStamps = [];
+        this.expanded = {};
+        this.provisionDone = false;
+        this.rebootRequired = false;
+        this.rebootModules = [];
+        this.rebootPkg = '';
+        this.provisionRunning = true;
+        this.provisionVisible = true;
+        this.provStartMs = Date.now();
+        this.provEndMs = 0;
+        this.nowMs = this.provStartMs;
+        this.tick();
+        const msg = await HttpUtil.post('/panel/core/provision');
+        if (msg && msg.success && msg.obj) {
+          this.applySteps(msg.obj.steps || []);
+          this.applyReboot(msg.obj);
+        }
+        this.pollProvision();
+      },
+      pollProvision() {
+        clearTimeout(this.provTimer);
+        this.provTimer = setTimeout(async () => {
+          const msg = await HttpUtil.get('/panel/core/provision-status');
+          if (msg && msg.success && msg.obj) {
+            this.applySteps(msg.obj.steps || []);
+            this.provisionRunning = !!msg.obj.running;
+            this.provisionDone = !!msg.obj.done;
+            this.applyReboot(msg.obj);
+            this.tick();
+            if (!msg.obj.running) {
+              this.provEndMs = Date.now();
+              this.provisioned = !!msg.obj.provisioned;
+              await this.loadStatus(false);
+              this.$nextTick(() => this.scrollTerm());
+              return; // run finished — stop polling
+            }
+          }
+          this.pollProvision();
+        }, 600);
+      },
+      // applySteps stamps every newly-arrived step with a client-side wall-clock
+      // time (the server streams the same growing array on each poll, so we only
+      // stamp indices we haven't seen) and auto-scrolls the console to the bottom.
+      applySteps(steps) {
+        for (let i = this.provStamps.length; i < steps.length; i++) {
+          this.provStamps.push(this.tsNow());
+        }
+        this.provisionResult = steps.map((s, i) => Object.assign({}, s, { ts: this.provStamps[i] }));
+        this.$nextTick(() => this.scrollTerm());
+      },
+      applyReboot(obj) {
+        this.rebootRequired = !!obj.rebootRequired;
+        this.rebootModules = obj.rebootModules || [];
+        this.rebootPkg = obj.rebootPkg || '';
+      },
+      scrollTerm() {
+        const el = this.$refs.term;
+        if (el) el.scrollTop = el.scrollHeight;
+      },
+      tsNow() {
+        const d = new Date();
+        const p = (n) => String(n).padStart(2, '0');
+        return p(d.getHours()) + ':' + p(d.getMinutes()) + ':' + p(d.getSeconds());
+      },
+      tick() {
+        this.nowStamp = this.tsNow();
+        this.nowMs = Date.now();
+      },
+      glyph(item) {
+        if (!item.ok) return '✗';
+        if (item.warn) return '!';
+        return '✓';
+      },
+      lineClass(item) {
+        if (!item.ok) return 'term-err';
+        if (item.warn) return 'term-warn';
+        return 'term-ok';
+      },
+      // elapsedText is the wall-clock the finished run took.
+      elapsedText() {
+        if (!this.provStartMs) return '';
+        const end = this.provEndMs || this.nowMs;
+        const s = Math.round((end - this.provStartMs) / 1000);
+        return s > 0 ? 'done in ' + s + 's' : '';
+      },
+      // The provisioning step count is host-dependent and unknown in advance, so
+      // the bar runs off a smooth estimate that always keeps a little headroom and
+      // never overflows; it snaps to 100% only once the run is actually done.
+      provProgress() {
+        if (this.provisionDone && !this.provisionRunning) return 100;
+        const done = this.provisionResult.length;
+        const est = Math.max(20, done + 2);
+        return Math.min(96, Math.round((done / est) * 100));
+      },
+      // provSummary is a language-neutral ✓/!/✗ tally for the completed line,
+      // matching glyph() precedence (a not-ok step counts as an error even if it
+      // also set warn).
+      provSummary() {
+        const r = this.provisionResult;
+        const err = r.filter((s) => !s.ok).length;
+        const warn = r.filter((s) => s.ok && s.warn).length;
+        const ok = r.length - err - warn;
+        let out = '✓ ' + ok;
+        if (warn) out += '   ! ' + warn;
+        if (err) out += '   ✗ ' + err;
+        return out;
+      },
+      okCount() {
+        return this.provisionResult.filter((s) => s.ok).length;
+      },
+      // currentStep names what setup is doing right now — the most recent emitted
+      // step (steps stream as they complete, so the latest is the live activity).
+      currentStep() {
+        const n = this.provisionResult.length;
+        return n ? this.provisionResult[n - 1].name : '';
+      },
+      // toggleStep expands/collapses a single step's captured command log.
+      // No auto-scroll — expanding an earlier step shouldn't yank to the bottom.
+      toggleStep(i) {
+        this.$set(this.expanded, i, !this.expanded[i]);
+      },
+      headStateClass() {
+        if (this.provisionRunning) return 'head-running';
+        if (this.rebootRequired) return 'head-warn';
+        if (this.provisionDone) return 'head-ok';
+        return 'head-idle';
+      },
+      headStateIcon() {
+        if (this.provisionRunning) return 'loading';
+        if (this.rebootRequired) return 'warning';
+        if (this.provisionDone) return 'check';
+        return 'thunderbolt';
+      },
+      provisionTitle() {
+        if (this.provisionRunning) return '{{ i18n "pages.core.setupRunning" }}';
+        if (this.rebootRequired) return '{{ i18n "pages.core.rebootTitle" }}';
+        if (this.provisionDone) return '{{ i18n "pages.core.setupDone" }}';
+        return '{{ i18n "pages.core.runSetup" }}';
+      },
+      // rebootNow asks the host to reboot, then shows a blocking overlay and waits
+      // for the panel to come back — the machine drops for ~a minute, so we probe
+      // with a bare fetch (no HttpUtil error toasts) and reload once it answers.
+      async rebootNow() {
+        const msg = await HttpUtil.post('/panel/core/reboot');
+        if (!msg || !msg.success) return;
+        this.rebooting = true;
+        this.provisionVisible = false;
+        clearTimeout(this.provTimer);
+        if (this.pollTimer) { clearInterval(this.pollTimer); this.pollTimer = null; }
+        this.watchReconnect();
+      },
+      watchReconnect() {
+        const url = this.basePath + 'panel/core/status';
+        const probe = () => {
+          fetch(url, { method: 'GET', cache: 'no-store' })
+            .then((r) => {
+              if (r.ok || r.status === 401 || r.status === 302) { location.reload(); }
+              else { this.reconnectTimer = setTimeout(probe, 5000); }
+            })
+            .catch(() => { this.reconnectTimer = setTimeout(probe, 5000); });
+        };
+        // Wait long enough for the box to actually go down before probing, so a
+        // reply from the still-up server doesn't trigger a premature reload.
+        this.reconnectTimer = setTimeout(probe, 20000);
+      },
+      coreTitle(name) {
+        return ({ xray: 'Xray', l2tp: 'L2TP', ipsec: 'IPsec', pptp: 'PPTP', openvpn: 'OpenVPN', openconnect: 'OpenConnect (cisco)', sstp: 'SSTP', ikev2: 'IKEv2', wgc: 'WireGuard (C)', mtproto: 'MTProto Proxy', radius: 'RADIUS' })[name] || name;
+      },
+      coreBackend(name) {
+        // The actual software powering each core (shown in the Backend row).
+        return ({ xray: 'Xray-core', l2tp: 'xl2tpd', ipsec: 'strongSwan (charon)', pptp: 'pptpd', openvpn: 'OpenVPN', openconnect: 'ocserv', sstp: 'accel-ppp', ikev2: 'strongSwan (charon)', wgc: 'WireGuard (kernel)', mtproto: 'telemt', radius: 'Built-in (vpn-ui)' })[name] || '-';
+      },
+      coreIcon(name) {
+        // A single lock icon represents every core (Xray + all VPN daemons).
+        return 'lock';
+      },
+      stateText(state) {
+        return ({
+          running: '{{ i18n "pages.core.stateRunning" }}',
+          stopped: '{{ i18n "pages.core.stateStopped" }}',
+          idle: '{{ i18n "pages.core.stateIdle" }}',
+          not_installed: '{{ i18n "pages.core.stateNotInstalled" }}',
+          error: '{{ i18n "pages.core.stateError" }}',
+        })[state] || state;
+      },
+      canStop(name) { return true; },
+      canRestart(name) { return true; },
+    },
+    mounted() {
+      this.loadStatus(true);
+      this.pollTimer = setInterval(() => this.loadStatus(false), 5000);
+    },
+    beforeDestroy() {
+      if (this.pollTimer) clearInterval(this.pollTimer);
+      clearTimeout(this.provTimer);
+      clearTimeout(this.reconnectTimer);
+    },
+  });
+</script>
+<style>
+  /* Equal-height core cards with actions pinned to the bottom */
+  .core-card {
+    height: 100%;
+    display: flex;
+    flex-direction: column;
+  }
+
+  .core-card .ant-card-body {
+    flex: 1 1 auto;
+    display: flex;
+    flex-direction: column;
+  }
+
+  .core-actions {
+    margin-top: auto;
+    padding-top: 14px;
+  }
+
+  /* antd-vue 2.7's a-space is a no-wrap inline-flex, so the action buttons spill
+     past a narrow card on small viewports. Make it a full-width flex row that
+     wraps, with a row gap to match a-space's 8px horizontal spacing. */
+  .core-actions > .ant-space {
+    display: flex;
+    flex-wrap: wrap;
+    row-gap: 8px;
+  }
+
+  /* Key/value rows inside a core card */
+  .core-kv {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 6px 2px;
+    font-size: 13px;
+  }
+
+  .core-kv + .core-kv {
+    border-top: 1px dashed rgba(128, 128, 128, 0.25);
+  }
+
+  .core-kv-label {
+    opacity: 0.6;
+  }
+
+  .core-kv-value {
+    font-weight: 500;
+  }
+
+  .core-value-ok {
+    color: #52c41a;
+  }
+
+  .core-value-warn {
+    color: #faad14;
+  }
+
+  /* Status pill in the card header */
+  .core-state {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 1px 10px;
+    border-radius: 12px;
+    font-size: 12px;
+    background: rgba(128, 128, 128, 0.12);
+    white-space: nowrap;
+  }
+
+  .core-state-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: currentColor;
+  }
+
+  .core-state-running { color: #52c41a; }
+  .core-state-idle { color: #1890ff; }
+  .core-state-stopped { color: #faad14; }
+  .core-state-not_installed { color: #8c8c8c; }
+  .core-state-error { color: #f5222d; }
+
+  /* System / provisioning */
+  .system-desc {
+    opacity: 0.65;
+    margin-bottom: 14px;
+  }
+
+  .sys-tile {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 14px;
+    border-radius: 8px;
+    border: 1px solid transparent;
+  }
+
+  .sys-tile-ok {
+    border-color: rgba(82, 196, 26, 0.35);
+    background: rgba(82, 196, 26, 0.08);
+  }
+
+  .sys-tile-ok .sys-tile-icon {
+    color: #52c41a;
+  }
+
+  .sys-tile-bad {
+    border-color: rgba(245, 34, 45, 0.35);
+    background: rgba(245, 34, 45, 0.07);
+  }
+
+  .sys-tile-bad .sys-tile-icon {
+    color: #f5222d;
+  }
+
+  .sys-tile-icon {
+    font-size: 20px;
+  }
+
+  .sys-tile-name {
+    font-weight: 600;
+    font-size: 13px;
+  }
+
+  .sys-tile-state {
+    font-size: 12px;
+    opacity: 0.65;
+    text-transform: capitalize;
+  }
+
+  .sys-section-title {
+    font-weight: 600;
+    font-size: 13px;
+    margin-top: 18px;
+  }
+
+  .module-grid {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-top: 10px;
+  }
+
+  .module-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 3px 10px;
+    border-radius: 6px;
+    font-size: 12px;
+    border: 1px solid;
+  }
+
+  .module-ok {
+    color: #52c41a;
+    border-color: rgba(82, 196, 26, 0.35);
+    background: rgba(82, 196, 26, 0.08);
+  }
+
+  .module-bad {
+    color: #f5222d;
+    border-color: rgba(245, 34, 45, 0.35);
+    background: rgba(245, 34, 45, 0.07);
+  }
+
+  .core-logs {
+    max-height: 60vh;
+    overflow: auto;
+    padding: 12px;
+    border-radius: 6px;
+    background: rgba(128, 128, 128, 0.1);
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 12px;
+    line-height: 1.5;
+    white-space: pre-wrap;
+    word-break: break-word;
+    margin: 0;
+  }
+
+  /* First-run hero shown until the backend is provisioned */
+  .setup-hero {
+    text-align: center;
+    padding: 40px 20px 34px;
+  }
+
+  .setup-hero-badge {
+    width: 76px;
+    height: 76px;
+    margin: 0 auto 20px;
+    border-radius: 22px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 36px;
+    color: #fff;
+    background: linear-gradient(135deg, #1890ff, #52c41a);
+    box-shadow: 0 12px 30px rgba(24, 144, 255, 0.35);
+  }
+
+  .setup-hero-title {
+    font-size: 22px;
+    font-weight: 700;
+    margin-bottom: 8px;
+  }
+
+  .setup-hero-desc {
+    max-width: 520px;
+    margin: 0 auto 22px;
+    opacity: 0.68;
+    line-height: 1.6;
+  }
+
+  .setup-hero-steps {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: 10px;
+    margin-bottom: 26px;
+  }
+
+  .setup-hero-step {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 14px;
+    border-radius: 999px;
+    font-size: 13px;
+    border: 1px solid rgba(128, 128, 128, 0.22);
+    background: rgba(128, 128, 128, 0.06);
+  }
+
+  .setup-hero-step .anticon {
+    color: #1890ff;
+  }
+
+  .setup-hero-btn {
+    min-width: 220px;
+    height: 46px;
+    font-size: 15px;
+    border-radius: 10px;
+  }
+
+  /* Setup modal header */
+  .setup-modal-head {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    margin-bottom: 16px;
+  }
+
+  .setup-modal-head-icon {
+    width: 44px;
+    height: 44px;
+    border-radius: 12px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 22px;
+    flex: 0 0 auto;
+  }
+
+  .setup-modal-head-icon.head-running,
+  .setup-modal-head-icon.head-idle {
+    background: rgba(24, 144, 255, 0.14);
+    color: #1890ff;
+  }
+
+  .setup-modal-head-icon.head-ok {
+    background: rgba(82, 196, 26, 0.15);
+    color: #52c41a;
+  }
+
+  .setup-modal-head-icon.head-warn {
+    background: rgba(250, 173, 20, 0.16);
+    color: #faad14;
+  }
+
+  .setup-modal-head-title {
+    font-size: 17px;
+    font-weight: 600;
+  }
+
+  .setup-modal-foot {
+    text-align: right;
+    margin-top: 16px;
+  }
+
+  /* Streaming terminal console — deliberately dark in both themes */
+  .term {
+    border-radius: 10px;
+    overflow: hidden;
+    border: 1px solid rgba(0, 0, 0, 0.4);
+    background: #0d1117;
+    box-shadow: 0 8px 30px rgba(0, 0, 0, 0.25);
+  }
+
+  .term-bar {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 12px;
+    background: #161b22;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  }
+
+  .term-bar-icon {
+    color: rgba(255, 255, 255, 0.4);
+    font-size: 13px;
+  }
+
+  .term-bar-title {
+    flex: 1;
+    font-size: 12px;
+    color: rgba(255, 255, 255, 0.5);
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+
+  .term-count {
+    font-size: 12px;
+    color: rgba(255, 255, 255, 0.55);
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+
+  .term-progress {
+    height: 5px;
+    background: rgba(255, 255, 255, 0.06);
+    overflow: hidden;
+  }
+
+  .term-progress-bar {
+    height: 100%;
+    width: 0;
+    background: #1890ff;
+    transition: width 0.4s ease;
+  }
+
+  .term-progress-bar.done { background: #27c93f; }
+  .term-progress-bar.warn { background: #faad14; }
+
+  .term-body {
+    max-height: 46vh;
+    overflow: auto;
+    padding: 12px 14px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 12.5px;
+    line-height: 1.7;
+    color: #c9d1d9;
+  }
+
+  .term-line {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+
+  .term-ts { color: #6e7681; flex: 0 0 auto; }
+
+  .term-glyph {
+    flex: 0 0 auto;
+    width: 12px;
+    text-align: center;
+    font-weight: 700;
+  }
+
+  .term-name { flex: 0 0 auto; color: #e6edf3; }
+  .term-msg { color: #8b949e; }
+
+  .term-ok .term-glyph { color: #3fb950; }
+  .term-warn .term-glyph { color: #d29922; }
+  .term-warn .term-msg { color: #d29922; }
+  .term-err .term-glyph { color: #f85149; }
+  .term-err .term-msg { color: #ff7b72; }
+  .term-running .term-glyph,
+  .term-running .term-name { color: #58a6ff; }
+
+  .term-clickable {
+    cursor: pointer;
+    border-radius: 4px;
+    padding: 1px 4px;
+    margin: 0 -4px;
+    transition: background 0.15s ease;
+  }
+
+  .term-clickable:hover {
+    background: rgba(88, 166, 255, 0.1);
+  }
+
+  .term-toggle {
+    color: #58a6ff;
+    font-size: 11px;
+    margin-left: 6px;
+    opacity: 0.8;
+  }
+
+  .term-steplog {
+    margin: 4px 0 8px 20px;
+    padding: 10px 12px;
+    max-height: 300px;
+    overflow: auto;
+    border-radius: 6px;
+    background: #010409;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    color: #9da7b3;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 11.5px;
+    line-height: 1.5;
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+
+  .term-cursor {
+    display: inline-block;
+    width: 8px;
+    height: 13px;
+    background: #58a6ff;
+    margin-left: 2px;
+    animation: term-blink 1s step-end infinite;
+  }
+
+  @keyframes term-blink { 50% { opacity: 0; } }
+
+  /* ---- setup provisioning console (scoped so shared WARP/systemd consoles,
+     which reuse .term-line/.term-name, are left alone) ------------------------ */
+  .term--setup .term-name { font-weight: 600; }
+  .term--setup .term-msg { flex: 1 1 auto; min-width: 0; }
+  .term--setup .term-ts { margin-left: auto; }   /* timestamp pinned to the right */
+
+  /* status footer: percent + ETA + current step (running), or tally + elapsed (done) */
+  .term-status {
+    display: flex;
+    align-items: baseline;
+    gap: 12px;
+    margin-top: 10px;
+    padding-top: 8px;
+    border-top: 1px dashed rgba(255, 255, 255, 0.08);
+    font-variant-numeric: tabular-nums;
+  }
+  .term-pct { color: #58a6ff; font-weight: 700; }
+  .term-cur { flex: 1 1 auto; min-width: 0; color: #58a6ff; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .term-status-done .term-summary { color: #c9d1d9; font-weight: 600; letter-spacing: .5px; }
+  .term-status-done .term-elapsed { color: #8b949e; }
+
+  /* Reboot-required explainer (inside the setup modal) */
+  .reboot-panel {
+    margin-top: 16px;
+    border: 1px solid rgba(250, 173, 20, 0.4);
+    background: rgba(250, 173, 20, 0.07);
+    border-radius: 10px;
+    padding: 16px;
+  }
+
+  .reboot-panel-head {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+
+  .reboot-panel-icon { color: #faad14; font-size: 20px; }
+  .reboot-panel-title { font-weight: 600; font-size: 15px; }
+
+  .reboot-panel-what {
+    margin: 10px 0 14px;
+    opacity: 0.8;
+    line-height: 1.6;
+    font-size: 13px;
+  }
+
+  .reboot-facts {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    margin-bottom: 12px;
+  }
+
+  .reboot-fact {
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
+    font-size: 13px;
+    flex-wrap: wrap;
+  }
+
+  .reboot-fact-label {
+    opacity: 0.6;
+    flex: 0 0 auto;
+    min-width: 120px;
+  }
+
+  .reboot-fact-pkg,
+  .reboot-mod {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 12px;
+    padding: 1px 7px;
+    border-radius: 5px;
+    background: rgba(128, 128, 128, 0.18);
+  }
+
+  .reboot-mods {
+    display: inline-flex;
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+
+  .reboot-impact {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    font-size: 12.5px;
+    opacity: 0.75;
+    line-height: 1.5;
+    padding: 10px 12px;
+    border-radius: 8px;
+    background: rgba(128, 128, 128, 0.08);
+    margin-bottom: 14px;
+  }
+
+  .reboot-panel-actions {
+    display: flex;
+    gap: 10px;
+    justify-content: flex-end;
+  }
+
+  /* Persistent page-level reboot banner */
+  .reboot-banner {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    padding: 14px 18px;
+    border-radius: 12px;
+    border: 1px solid rgba(250, 173, 20, 0.45);
+    background: rgba(250, 173, 20, 0.09);
+  }
+
+  .reboot-banner-icon { color: #faad14; font-size: 24px; flex: 0 0 auto; }
+  .reboot-banner-body { flex: 1 1 auto; min-width: 0; }
+  .reboot-banner-title { font-weight: 600; font-size: 14px; }
+
+  .reboot-banner-text {
+    opacity: 0.72;
+    font-size: 12.5px;
+    line-height: 1.5;
+    margin-top: 2px;
+  }
+
+  .reboot-banner-actions {
+    display: flex;
+    gap: 8px;
+    flex: 0 0 auto;
+  }
+
+  @media (max-width: 640px) {
+    .reboot-banner { flex-wrap: wrap; }
+    .reboot-banner-actions { width: 100%; justify-content: flex-end; }
+  }
+
+  /* Rebooting overlay */
+  .rebooting-box {
+    text-align: center;
+    padding: 22px 10px 10px;
+  }
+
+  .rebooting-icon {
+    font-size: 40px;
+    color: #faad14;
+    margin-bottom: 14px;
+  }
+
+  .rebooting-title {
+    font-size: 18px;
+    font-weight: 600;
+    margin-bottom: 8px;
+  }
+
+  .rebooting-desc {
+    opacity: 0.7;
+    line-height: 1.6;
+    margin-bottom: 18px;
+  }
+</style>
+{{ template "page/body_end" .}}

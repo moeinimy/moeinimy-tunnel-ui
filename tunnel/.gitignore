@@ -1,0 +1,6 @@
+# Runtime artifacts should never be committed.
+*.log
+*.tar.gz
+*.swp
+*~
+.DS_Store

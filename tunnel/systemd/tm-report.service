@@ -1,0 +1,7 @@
+[Unit]
+Description=Tunnel Manager - scheduled daily report
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/tunnelctl report daily --send

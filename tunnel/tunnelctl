@@ -1,0 +1,138 @@
+#!/usr/bin/env bash
+# tunnelctl — Tunnel Manager command-line entry point.
+#
+# Usage:
+#   tunnelctl                     open the interactive menu
+#   tunnelctl <command> [args]    run a single command (scriptable)
+#
+# See `tunnelctl help` for the full command list.
+
+set -euo pipefail
+
+# --- Resolve install directory (follow symlink from /usr/local/bin) ---------
+_src="${BASH_SOURCE[0]}"
+while [[ -h "$_src" ]]; do
+    _dir="$(cd -P "$(dirname "$_src")" >/dev/null 2>&1 && pwd)"
+    _src="$(readlink "$_src")"
+    [[ "$_src" != /* ]] && _src="$_dir/$_src"
+done
+TM_HOME="$(cd -P "$(dirname "$_src")" >/dev/null 2>&1 && pwd)"
+export TM_HOME
+
+# --- Source libraries (functions only; safe under set -e) -------------------
+# shellcheck source=/dev/null
+for _f in \
+    lib/common.sh lib/validate.sh lib/ui.sh lib/config.sh lib/ipam.sh \
+    lib/state.sh lib/systemd.sh lib/deps.sh \
+    drivers/driver.sh drivers/gre.sh drivers/paqet.sh drivers/backhaul.sh drivers/backpack.sh drivers/rathole.sh drivers/gost.sh drivers/frp.sh drivers/hysteria.sh \
+    modules/telegram.sh modules/tunnel.sh modules/optimize.sh \
+    modules/monitor.sh modules/report.sh modules/backup.sh modules/selfupdate.sh \
+    modules/peer.sh modules/api.sh lib/menu.sh ; do
+    . "$TM_HOME/$_f"
+done
+
+load_settings
+
+usage() {
+    cat <<EOF
+${C_BOLD}Tunnel Manager${C_RESET} — unified GRE + Paqet tunnel manager
+
+${C_BOLD}Usage:${C_RESET} tunnelctl [command] [args]
+
+${C_BOLD}Commands:${C_RESET}
+  (no args)              open the interactive menu
+  add                    add a new tunnel (wizard)
+  create KEY=VALUE...    add a tunnel non-interactively (used by the web panel)
+  json <sub> [args]      machine-readable output (list|tunnel|protocols|fields|meta)
+  remove [name]          remove a tunnel
+  edit [name]            edit a tunnel (interactive)
+  set <name> <KEY> <VAL> change one field non-interactively (scriptable/remote)
+  names                  list tunnel names (one per line)
+  start|stop|restart [name]
+  enable|disable [name]  toggle auto-start on boot
+  status [name]          show one tunnel (omit name for menu)
+  list                   overview of all tunnels
+  bandwidth              per-tunnel traffic table
+  peer [add|list|remove|run <name> <cmd>]   control other servers over the tunnel
+  logs [name]            recent logs for a tunnel
+  optimize [apply|revert|status]
+  telegram [config|disable|test]
+  backup [create|list]
+  restore [file]         restore configuration from a backup
+  report [daily|weekly|monthly] [--send]
+  update                 update from GitHub (keeps config)
+  uninstall              remove everything (reverts optimization)
+  version                print version
+  help                   this message
+
+${C_DIM}Internal (used by systemd): __up <name>, __down <name>, monitor-run, bot-run${C_RESET}
+EOF
+}
+
+version() { cat "$TM_HOME/VERSION" 2>/dev/null || echo "unknown"; }
+
+main() {
+    local cmd="${1:-menu}"; shift || true
+    case "$cmd" in
+        menu|"")        menu_main ;;
+        add)            tunnel_add ;;
+        create)         require_root; tunnel_add_kv "$@" ;;
+        json)           api_dispatch "$@" ;;
+        remove|rm|del)  tunnel_remove "${1:-}" ;;
+        edit)           tunnel_edit "${1:-}" ;;
+        set)            tunnel_set "${1:-}" "${2:-}" "${3:-}" ;;
+        names)          tunnel_names ;;
+        fields)         tunnel_fields "${1:-}" ;;
+        start)          tunnel_start "${1:-}" ;;
+        stop)           tunnel_stop "${1:-}" ;;
+        restart)        tunnel_restart "${1:-}" ;;
+        enable)         tunnel_enable "${1:-}" ;;
+        disable)        tunnel_disable "${1:-}" ;;
+        status)         tunnel_status "${1:-}" ;;
+        list|ls)        tunnel_overview ;;
+        bandwidth)      tunnel_bandwidth ;;
+        usage|traffic)  report_usage | sed -e 's/<[^>]*>//g'; echo ;;
+        logs)           tunnel_logs "${1:-}" ;;
+        peer)
+            case "${1:-list}" in
+                list|ls) peer_overview ;;
+                run)    shift; peer_run "$@" ;;
+                *)      peer_overview ;;
+            esac ;;
+        optimize)
+            case "${1:-status}" in
+                apply)  optimize_apply ;;
+                revert) optimize_revert ;;
+                *)      optimize_status ;;
+            esac ;;
+        telegram|tg)
+            case "${1:-config}" in
+                config)  tg_configure ;;
+                disable) tg_disable ;;
+                test)    tg_load; tg_send "🔔 Test from $(hostname)" && log_ok "Sent." || log_error "Failed." ;;
+                *)       tg_configure ;;
+            esac ;;
+        backup)
+            case "${1:-create}" in
+                list)   backup_list ;;
+                *)      backup_create ;;
+            esac ;;
+        restore)        backup_restore "${1:-}" ;;
+        report)
+            local period="daily"; [[ "${1:-}" =~ ^(daily|weekly|monthly)$ ]] && { period="$1"; shift; }
+            if [[ "${1:-}" == --send ]]; then report_send "$period"; else report_show "$period"; fi ;;
+        update)         selfupdate_run ;;
+        uninstall)      require_root; bash "$TM_HOME/uninstall.sh" ;;
+        version|-v|--version) version ;;
+        help|-h|--help) usage ;;
+        # --- internal hooks -------------------------------------------------
+        __up)           require_root; tunnel_up_hook "${1:?tunnel name}" ;;
+        __down)         require_root; tunnel_down_hook "${1:?tunnel name}" ;;
+        monitor-run)    require_root; monitor_run ;;
+        bot-run)        require_root; tg_bot_run ;;
+        agent-serve)    agent_serve ;;
+        *)              log_error "Unknown command: $cmd"; usage; exit 1 ;;
+    esac
+}
+
+main "$@"

@@ -1,0 +1,10 @@
+[Unit]
+Description=Tunnel Manager - peer control agent connection
+
+[Service]
+# Per-connection handler; stdin/stdout are the accepted socket. systemd sets
+# REMOTE_ADDR, which the handler validates against the tunnel peer's inner IP.
+ExecStart=/usr/local/bin/tunnelctl agent-serve
+StandardInput=socket
+StandardOutput=socket
+StandardError=journal

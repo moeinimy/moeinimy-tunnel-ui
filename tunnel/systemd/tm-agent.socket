@@ -1,0 +1,12 @@
+[Unit]
+Description=Tunnel Manager - peer control agent socket
+
+[Socket]
+# Listens on all interfaces; access is restricted to tunnel interfaces by
+# firewall rules, and every request is re-checked against the tunnel peer's
+# inner IP inside the handler. Accept=yes spawns one handler per connection.
+ListenStream=8271
+Accept=yes
+
+[Install]
+WantedBy=sockets.target

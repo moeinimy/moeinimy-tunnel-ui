@@ -1,0 +1,5 @@
+# ShellCheck configuration for Tunnel Manager.
+# Files are sourced together, so cross-file references are expected.
+external-sources=true
+# SC1090/SC1091: dynamic `source` of runtime-resolved paths is intentional.
+disable=SC1090,SC1091

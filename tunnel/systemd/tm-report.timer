@@ -1,0 +1,10 @@
+[Unit]
+Description=Tunnel Manager - daily report timer
+
+[Timer]
+# Fire every day at 08:00 local time; catch up if the machine was off.
+OnCalendar=*-*-* 08:00:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target

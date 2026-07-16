@@ -1,0 +1,13 @@
+[Unit]
+Description=Tunnel Manager - Telegram command bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/tunnelctl bot-run
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

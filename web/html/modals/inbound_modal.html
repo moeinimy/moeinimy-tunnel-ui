@@ -1,0 +1,788 @@
+{{define "modals/inboundModal"}}
+<a-modal id="inbound-modal" v-model="inModal.visible" :title="inModal.title" :dialog-style="{ top: '20px' }"
+    @ok="inModal.ok" :confirm-loading="inModal.confirmLoading" :closable="true" :mask-closable="false"
+    :ok-button-props="{ props: { disabled: !modalFormValid } }"
+    :class="themeSwitcher.currentTheme" :ok-text="inModal.okText" cancel-text='{{ i18n "close" }}'>
+    {{template "form/inbound"}}
+</a-modal>
+<script>
+    // Make inModal globally available to ensure it works with any base path
+    const inModal = (window.inModal = {
+        title: "",
+        visible: false,
+        confirmLoading: false,
+        okText: '{{ i18n "sure" }}',
+        isEdit: false,
+        confirm: null,
+        inbound: new Inbound(),
+        dbInbound: new DBInbound(),
+        ok() {
+            ObjectUtil.execute(inModal.confirm, inModal.inbound, inModal.dbInbound);
+        },
+        show({
+            title = "",
+            okText = '{{ i18n "sure" }}',
+            inbound = null,
+            dbInbound = null,
+            confirm = (inbound, dbInbound) => { },
+            isEdit = false,
+        }) {
+            this.title = title;
+            this.okText = okText;
+            if (inbound) {
+                this.inbound = Inbound.fromJson(inbound.toJson());
+            } else {
+                this.inbound = new Inbound();
+            }
+            // Always ensure testseed is initialized for VLESS protocol (even if vision flow is not set yet)
+            // This ensures Vue reactivity works properly
+            if (this.inbound.protocol === Protocols.VLESS && this.inbound.settings) {
+                if (
+                    !this.inbound.settings.testseed ||
+                    !Array.isArray(this.inbound.settings.testseed) ||
+                    this.inbound.settings.testseed.length < 4
+                ) {
+                    // Create a new array to ensure Vue reactivity
+                    this.inbound.settings.testseed = [900, 500, 900, 256].slice();
+                }
+            }
+            // IKEv2's server certificate SAN must match the address clients dial.
+            // On open (add or edit) default it to the host the admin is using to
+            // reach the panel when it's still blank — never clobber a value the
+            // operator saved earlier.
+            if (
+                this.inbound.protocol === Protocols.IKEV2 &&
+                this.inbound.settings &&
+                !this.inbound.settings.serverAddr
+            ) {
+                this.inbound.settings.serverAddr = window.location.hostname;
+            }
+            if (dbInbound) {
+                this.dbInbound = new DBInbound(dbInbound);
+            } else {
+                this.dbInbound = new DBInbound();
+            }
+            // The Inbound model carries no DB id (toInbound() rebuilds it from
+            // settings), but the OpenVPN "Client Config" download section and
+            // downloadOvpn() need it. Mirror the saved row id onto the form when
+            // editing so the in-modal .ovpn export is reachable and targets the
+            // right inbound. Purely a frontend property — Inbound.toJson() omits
+            // id, so this never leaks into the saved settings.
+            if (this.dbInbound && this.dbInbound.id) {
+                this.inbound.id = this.dbInbound.id;
+            }
+            this.confirm = confirm;
+            this.visible = true;
+            this.isEdit = isEdit;
+        },
+        close() {
+            inModal.visible = false;
+            inModal.loading(false);
+        },
+        loading(loading = true) {
+            inModal.confirmLoading = loading;
+        },
+        // Vision Seed methods - always available regardless of Vue context
+        updateTestseed(index, value) {
+            // Use inModal.inbound explicitly to ensure correct context
+            if (!inModal.inbound || !inModal.inbound.settings) return;
+            // Ensure testseed is initialized
+            if (
+                !inModal.inbound.settings.testseed ||
+                !Array.isArray(inModal.inbound.settings.testseed)
+            ) {
+                inModal.inbound.settings.testseed = [900, 500, 900, 256];
+            }
+            // Ensure array has enough elements
+            while (inModal.inbound.settings.testseed.length <= index) {
+                inModal.inbound.settings.testseed.push(0);
+            }
+            // Update value
+            inModal.inbound.settings.testseed[index] = value;
+        },
+        setRandomTestseed() {
+            // Use inModal.inbound explicitly to ensure correct context
+            if (!inModal.inbound || !inModal.inbound.settings) return;
+            // Ensure testseed is initialized
+            if (
+                !inModal.inbound.settings.testseed ||
+                !Array.isArray(inModal.inbound.settings.testseed) ||
+                inModal.inbound.settings.testseed.length < 4
+            ) {
+                inModal.inbound.settings.testseed = [900, 500, 900, 256].slice();
+            }
+            // Create new array with random values
+            inModal.inbound.settings.testseed = [
+                Math.floor(Math.random() * 1000),
+                Math.floor(Math.random() * 1000),
+                Math.floor(Math.random() * 1000),
+                Math.floor(Math.random() * 1000),
+            ];
+        },
+        resetTestseed() {
+            // Use inModal.inbound explicitly to ensure correct context
+            if (!inModal.inbound || !inModal.inbound.settings) return;
+            // Reset testseed to default values
+            inModal.inbound.settings.testseed = [900, 500, 900, 256].slice();
+        },
+    });
+
+    // Store Vue instance globally to ensure methods are always accessible
+    let inboundModalVueInstance = null;
+
+    inboundModalVueInstance = new Vue({
+        delimiters: ["[[", "]]"],
+        el: "#inbound-modal",
+        data: {
+            inModal: inModal,
+            delayedStart: false,
+            ikev2CertWarning: "",
+            get inbound() {
+                return inModal.inbound;
+            },
+            get dbInbound() {
+                return inModal.dbInbound;
+            },
+            get isEdit() {
+                return inModal.isEdit;
+            },
+            get client() {
+                return inModal.inbound &&
+                    inModal.inbound.clients &&
+                    inModal.inbound.clients.length > 0
+                    ? inModal.inbound.clients[0]
+                    : null;
+            },
+            get datepicker() {
+                return app.datepicker;
+            },
+            get delayedExpireDays() {
+                return this.client && this.client.expiryTime < 0
+                    ? this.client.expiryTime / -86400000
+                    : 0;
+            },
+            set delayedExpireDays(days) {
+                this.client.expiryTime = -86400000 * days;
+            },
+            get externalProxy() {
+                return this.inbound.stream.externalProxy.length > 0;
+            },
+            set externalProxy(value) {
+                if (value) {
+                    inModal.inbound.stream.externalProxy = [
+                        {
+                            forceTls: "same",
+                            dest: window.location.hostname,
+                            port: inModal.inbound.port,
+                            remark: "",
+                        },
+                    ];
+                } else {
+                    inModal.inbound.stream.externalProxy = [];
+                }
+            },
+            // OpenVPN keeps its external proxy list in the protocol settings
+            // (it has no xray stream), without the forceTls option.
+            get ovpnExternalProxy() {
+                return (
+                    Array.isArray(inModal.inbound.settings.externalProxy) &&
+                    inModal.inbound.settings.externalProxy.length > 0
+                );
+            },
+            set ovpnExternalProxy(value) {
+                if (value) {
+                    inModal.inbound.settings.externalProxy = [
+                        {
+                            dest: window.location.hostname,
+                            port: inModal.inbound.port,
+                            remark: "",
+                        },
+                    ];
+                } else {
+                    inModal.inbound.settings.externalProxy = [];
+                }
+            },
+            // WireGuard (C) keeps external-proxy Endpoints in its protocol settings too
+            // (alternate host:port rendered into the client config + QR), like OpenVPN.
+            get wgcExternalProxy() {
+                return (
+                    Array.isArray(inModal.inbound.settings.externalProxy) &&
+                    inModal.inbound.settings.externalProxy.length > 0
+                );
+            },
+            set wgcExternalProxy(value) {
+                if (value) {
+                    inModal.inbound.settings.externalProxy = [
+                        {
+                            dest: window.location.hostname,
+                            port: inModal.inbound.port,
+                            remark: "",
+                        },
+                    ];
+                } else {
+                    inModal.inbound.settings.externalProxy = [];
+                }
+            },
+        },
+        computed: {
+            ovpnAeadCiphers() {
+                return Inbound.OpenvpnSettings.CIPHERS_AEAD;
+            },
+            ovpnCbcCiphers() {
+                return Inbound.OpenvpnSettings.CIPHERS_CBC;
+            },
+            // ---- live port / cert validation (reactive; no wait for "Add") ----
+            portValidateStatus() {
+                const ib = inModal.inbound;
+                if (!ib) return "";
+                if (ib.protocol === "openvpn" && !(ib.settings && ib.settings.udpEnable)) return "";
+                const p = ib.port;
+                return (Number.isInteger(p) && p >= 1 && p <= 65535) ? "" : "error";
+            },
+            portHelp() {
+                return this.portValidateStatus === "error" ? "Port must be a whole number between 1 and 65535" : "";
+            },
+            tcpPortValidateStatus() {
+                const ib = inModal.inbound;
+                if (!ib || ib.protocol !== "openvpn" || !(ib.settings && ib.settings.tcpEnable)) return "";
+                const p = ib.settings.tcpPort;
+                return (Number.isInteger(p) && p >= 1 && p <= 65535) ? "" : "error";
+            },
+            tcpPortHelp() {
+                return this.tcpPortValidateStatus === "error" ? "Port must be a whole number between 1 and 65535" : "";
+            },
+            // Gate the modal's OK button live: no valid port / no OpenVPN cert -> can't submit.
+            modalFormValid() {
+                const ib = inModal.inbound;
+                if (!ib) return true;
+                const okPort = p => Number.isInteger(p) && p >= 1 && p <= 65535;
+                if (ib.protocol === "openvpn") {
+                    const s = ib.settings || {};
+                    if (!s.udpEnable && !s.tcpEnable) return false;
+                    if (s.udpEnable && !okPort(ib.port)) return false;
+                    if (s.tcpEnable && !okPort(s.tcpPort)) return false;
+                    if (!s.caCert || !s.serverCert) return false;
+                    return true;
+                }
+                if (ib.protocol === "openconnect" || ib.protocol === "sstp" || ib.protocol === "ikev2") {
+                    const s = ib.settings || {};
+                    if (!okPort(ib.port)) return false;
+                    // IKEv2 in PSK mode authenticates with a shared secret, not a
+                    // TLS server cert — skip the cert requirement in that mode.
+                    if (ib.protocol === "ikev2" && s.authMode === "psk") return typeof s.psk === "string" && s.psk.trim().length > 0;
+                    // ocserv/accel-ppp won't start without a TLS server cert+key —
+                    // require one just like OpenVPN. Either file paths (path mode) or
+                    // pasted PEM (content mode; the "Generate Self-Signed Cert" button
+                    // fills these).
+                    const trim = v => (typeof v === "string" ? v.trim() : "");
+                    const hasCert = s.tlsUseFile
+                        ? (trim(s.certificateFile) !== "" && trim(s.keyFile) !== "")
+                        : (trim(s.certificate) !== "" && trim(s.key) !== "");
+                    if (!hasCert) return false;
+                    return true;
+                }
+                return okPort(ib.port);
+            },
+            // Coarse signal that changes when the ikev2 server cert or auth mode
+            // changes (or the modal reopens) — drives the RSA/device-compat check.
+            ikev2CertSig() {
+                const ib = inModal.inbound;
+                if (!ib || ib.protocol !== "ikev2" || !ib.settings) return "";
+                const s = ib.settings;
+                return [s.authMode, !!s.tlsUseFile,
+                    (s.certificateFile || "").trim().length > 0,
+                    (s.certificate || "").trim().length > 0].join("|");
+            },
+        },
+        watch: {
+            "inModal.inbound.stream.security"(newVal, oldVal) {
+                // Clear flow when security changes from reality/tls to none
+                if (
+                    inModal.inbound.protocol == Protocols.VLESS &&
+                    !inModal.inbound.canEnableTlsFlow()
+                ) {
+                    inModal.inbound.settings.vlesses.forEach((client) => {
+                        client.flow = "";
+                    });
+                }
+            },
+            // Ensure testseed is always initialized when vision flow is enabled
+            "inModal.inbound.settings.vlesses": {
+                handler() {
+                    if (
+                        inModal.inbound.protocol === Protocols.VLESS &&
+                        inModal.inbound.settings &&
+                        inModal.inbound.settings.vlesses
+                    ) {
+                        const hasVisionFlow = inModal.inbound.settings.vlesses.some(
+                            (c) =>
+                                c.flow === "xtls-rprx-vision" ||
+                                c.flow === "xtls-rprx-vision-udp443",
+                        );
+                        if (
+                            hasVisionFlow &&
+                            (!inModal.inbound.settings.testseed ||
+                                !Array.isArray(inModal.inbound.settings.testseed) ||
+                                inModal.inbound.settings.testseed.length < 4)
+                        ) {
+                            inModal.inbound.settings.testseed = [900, 500, 900, 256];
+                        }
+                    }
+                },
+                deep: true,
+            },
+            // Re-check the ikev2 server cert's key type when it or the auth mode
+            // changes (or the modal reopens); a non-RSA cert warns about iOS.
+            ikev2CertSig() {
+                this.ikev2CheckCert();
+            },
+            // Auto-fill a secure pre-shared key the first time PSK mode is chosen for
+            // an ikev2 inbound (never overwrites a key the operator already set).
+            "inModal.inbound.settings.authMode"(v) {
+                if (v === "psk" && inModal.inbound.protocol === Protocols.IKEV2 &&
+                    !inModal.inbound.settings.psk) {
+                    this.generateIkev2Psk();
+                }
+            },
+        },
+        methods: {
+            // Port inputs: hard digit-only + live cap at the max TCP/UDP port.
+            // blockNonDigit stops any non-digit keystroke from ever entering the
+            // box; sanitizePort strips/caps on change & paste (returns undefined
+            // for empty so the field can be cleared while editing).
+            blockNonDigit(e) {
+                if (e.key && e.key.length === 1 && !/[0-9]/.test(e.key)) {
+                    e.preventDefault();
+                }
+            },
+            sanitizePort(v) {
+                let d = String(v == null ? "" : v).replace(/\D/g, "").slice(0, 5);
+                if (d === "") return undefined;
+                let n = parseInt(d, 10);
+                return n > 65535 ? 65535 : n;
+            },
+            onProtocolChange(protocol) {
+                // Prefill the standard control port for the PPP-based VPN protocols
+                // (L2TP 1701, PPTP 1723) and OpenVPN (UDP 1195 / TCP 1194 when ports
+                // are separated; 1195 is also the shared default) so the operator
+                // doesn't have to know them. Fires only on create — the protocol
+                // select is disabled when editing.
+                if (protocol === 'l2tp') {
+                    inModal.inbound.port = 1701;
+                } else if (protocol === 'pptp') {
+                    inModal.inbound.port = 1723;
+                } else if (protocol === 'openvpn') {
+                    inModal.inbound.port = 1195;
+                } else if (protocol === 'sstp') {
+                    inModal.inbound.port = 443;
+                } else if (protocol === 'ikev2') {
+                    inModal.inbound.port = 500;
+                    // Prefill the certificate SAN / server address with the host
+                    // the admin is currently reaching the panel on, unless the
+                    // operator already typed one. (Switching to ikev2 rebuilds
+                    // settings, so serverAddr is blank here on a fresh pick.)
+                    if (inModal.inbound.settings && !inModal.inbound.settings.serverAddr) {
+                        inModal.inbound.settings.serverAddr = window.location.hostname;
+                    }
+                } else if (protocol === 'wg-c') {
+                    inModal.inbound.port = 51820;
+                } else if (protocol === 'mtproto') {
+                    // 443 is what MTProto clients expect and what FakeTLS needs to be
+                    // plausible (an "HTTPS" session on a non-443 port is a giveaway).
+                    inModal.inbound.port = 443;
+                }
+            },
+            streamNetworkChange() {
+                if (!inModal.inbound.canEnableTls()) {
+                    this.inModal.inbound.stream.security = "none";
+                }
+                if (!inModal.inbound.canEnableReality()) {
+                    this.inModal.inbound.reality = false;
+                }
+                if (
+                    this.inModal.inbound.protocol == Protocols.VLESS &&
+                    !inModal.inbound.canEnableTlsFlow()
+                ) {
+                    this.inModal.inbound.settings.vlesses.forEach((client) => {
+                        client.flow = "";
+                    });
+                }
+                if (inModal.inbound.stream.network != "kcp") {
+                    inModal.inbound.stream.finalmask.udp = [];
+                }
+            },
+            SSMethodChange() {
+                this.inModal.inbound.settings.password =
+                    RandomUtil.randomShadowsocksPassword(
+                        this.inModal.inbound.settings.method,
+                    );
+
+                if (this.inModal.inbound.isSSMultiUser) {
+                    if (this.inModal.inbound.settings.shadowsockses.length == 0) {
+                        this.inModal.inbound.settings.shadowsockses = [
+                            new Inbound.ShadowsocksSettings.Shadowsocks(),
+                        ];
+                    }
+                    if (!this.inModal.inbound.isSS2022) {
+                        this.inModal.inbound.settings.shadowsockses.forEach((client) => {
+                            client.method = this.inModal.inbound.settings.method;
+                        });
+                    } else {
+                        this.inModal.inbound.settings.shadowsockses.forEach((client) => {
+                            client.method = "";
+                        });
+                    }
+                    this.inModal.inbound.settings.shadowsockses.forEach((client) => {
+                        client.password = RandomUtil.randomShadowsocksPassword(
+                            this.inModal.inbound.settings.method,
+                        );
+                    });
+                } else {
+                    if (this.inModal.inbound.settings.shadowsockses.length > 0) {
+                        this.inModal.inbound.settings.shadowsockses = [];
+                    }
+                }
+            },
+            setDefaultCertData(index) {
+                inModal.inbound.stream.tls.certs[index].certFile = app.defaultCert;
+                inModal.inbound.stream.tls.certs[index].keyFile = app.defaultKey;
+            },
+            async getNewX25519Cert() {
+                inModal.loading(true);
+                const msg = await HttpUtil.get("/panel/api/server/getNewX25519Cert");
+                inModal.loading(false);
+                if (!msg.success) {
+                    return;
+                }
+                inModal.inbound.stream.reality.privateKey = msg.obj.privateKey;
+                inModal.inbound.stream.reality.settings.publicKey = msg.obj.publicKey;
+            },
+            clearX25519Cert() {
+                this.inbound.stream.reality.privateKey = "";
+                this.inbound.stream.reality.settings.publicKey = "";
+            },
+            async getNewmldsa65() {
+                inModal.loading(true);
+                const msg = await HttpUtil.get("/panel/api/server/getNewmldsa65");
+                inModal.loading(false);
+                if (!msg.success) {
+                    return;
+                }
+                inModal.inbound.stream.reality.mldsa65Seed = msg.obj.seed;
+                inModal.inbound.stream.reality.settings.mldsa65Verify = msg.obj.verify;
+            },
+            clearMldsa65() {
+                this.inbound.stream.reality.mldsa65Seed = "";
+                this.inbound.stream.reality.settings.mldsa65Verify = "";
+            },
+            randomizeRealityTarget() {
+                if (typeof getRandomRealityTarget !== "undefined") {
+                    const randomTarget = getRandomRealityTarget();
+                    this.inbound.stream.reality.target = randomTarget.target;
+                    this.inbound.stream.reality.serverNames = randomTarget.sni;
+                }
+            },
+            async getNewEchCert() {
+                inModal.loading(true);
+                const msg = await HttpUtil.post("/panel/api/server/getNewEchCert", {
+                    sni: inModal.inbound.stream.tls.sni,
+                });
+                inModal.loading(false);
+                if (!msg.success) {
+                    return;
+                }
+                inModal.inbound.stream.tls.echServerKeys = msg.obj.echServerKeys;
+                inModal.inbound.stream.tls.settings.echConfigList =
+                    msg.obj.echConfigList;
+            },
+            clearEchCert() {
+                this.inbound.stream.tls.echServerKeys = "";
+                this.inbound.stream.tls.settings.echConfigList = "";
+            },
+            async getNewVlessEnc() {
+                const selected = inModal.inbound.settings.selectedAuth;
+                if (!selected) {
+                    this.clearVlessEnc();
+                    return;
+                }
+
+                inModal.loading(true);
+                const msg = await HttpUtil.get("/panel/api/server/getNewVlessEnc");
+                inModal.loading(false);
+
+                if (!msg.success) {
+                    return;
+                }
+
+                const auths = msg.obj.auths || [];
+                const block = auths.find((a) => a.label === selected);
+
+                if (!block) {
+                    console.error("No auth block for", selected);
+                    return;
+                }
+
+                inModal.inbound.settings.decryption = block.decryption;
+                inModal.inbound.settings.encryption = block.encryption;
+            },
+            clearVlessEnc() {
+                this.inbound.settings.decryption = "none";
+                this.inbound.settings.encryption = "none";
+                this.inbound.settings.selectedAuth = undefined;
+            },
+            // Vision Seed methods - must be in Vue methods for proper binding
+            updateTestseed(index, value) {
+                // Ensure testseed is initialized
+                if (
+                    !this.inbound.settings.testseed ||
+                    !Array.isArray(this.inbound.settings.testseed)
+                ) {
+                    this.$set(this.inbound.settings, "testseed", [900, 500, 900, 256]);
+                }
+                // Ensure array has enough elements
+                while (this.inbound.settings.testseed.length <= index) {
+                    this.inbound.settings.testseed.push(0);
+                }
+                // Update value using Vue.set for reactivity
+                this.$set(this.inbound.settings.testseed, index, value);
+            },
+            setRandomTestseed() {
+                // Create new array with random values and use Vue.set for reactivity
+                const newSeed = [
+                    Math.floor(Math.random() * 1000),
+                    Math.floor(Math.random() * 1000),
+                    Math.floor(Math.random() * 1000),
+                    Math.floor(Math.random() * 1000),
+                ];
+                this.$set(this.inbound.settings, "testseed", newSeed);
+            },
+            resetTestseed() {
+                // Reset testseed to default values using Vue.set for reactivity
+                this.$set(this.inbound.settings, "testseed", [900, 500, 900, 256]);
+            },
+            ovpnToggleTransport(proto, checked) {
+                const settings = inModal.inbound.settings;
+                const otherEnabled =
+                    proto === "tcp" ? settings.udpEnable : settings.tcpEnable;
+                if (!checked && !otherEnabled) {
+                    this.$message.warning(
+                        "At least one of TCP/UDP must be enabled",
+                    );
+                    return;
+                }
+                if (proto === "tcp") {
+                    settings.tcpEnable = checked;
+                } else {
+                    settings.udpEnable = checked;
+                }
+            },
+            ovpnSetCipherMode(mode) {
+                const settings = inModal.inbound.settings;
+                settings.cipherMode = mode;
+                const preset = Inbound.OpenvpnSettings.CIPHER_MODES[mode];
+                if (preset) {
+                    settings.ciphers = preset.slice();
+                }
+            },
+            ovpnToggleCipher(cipher, checked) {
+                const settings = inModal.inbound.settings;
+                if (
+                    !checked &&
+                    settings.ciphers.length === 1 &&
+                    settings.ciphers[0] === cipher
+                ) {
+                    this.$message.warning(
+                        "At least one cipher must be selected",
+                    );
+                    return;
+                }
+                const selected = new Set(settings.ciphers);
+                if (checked) {
+                    selected.add(cipher);
+                } else {
+                    selected.delete(cipher);
+                }
+                // Keep the list in ALL_CIPHERS order — it is the data-ciphers
+                // preference order and what detectCipherMode compares against.
+                settings.ciphers = Inbound.OpenvpnSettings.ALL_CIPHERS.filter(
+                    (c) => selected.has(c),
+                );
+                settings.cipherMode = Inbound.OpenvpnSettings.detectCipherMode(
+                    settings.ciphers,
+                );
+            },
+            async generateOpenVpnCerts() {
+                inModal.loading(true);
+                // With a saved inbound, persist to it; otherwise generate for the
+                // not-yet-saved inbound and store in the form (saved on "Add").
+                const idSeg = inModal.inbound.id ? inModal.inbound.id + '/' : '';
+                const msg = await HttpUtil.post('/panel/api/inbounds/' + idSeg + 'generate-openvpn-certs');
+                inModal.loading(false);
+                if (msg.success) {
+                    const obj = msg.obj;
+                    inModal.inbound.settings.caCert = obj.caCert;
+                    inModal.inbound.settings.caKey = obj.caKey;
+                    inModal.inbound.settings.serverCert = obj.serverCert;
+                    inModal.inbound.settings.serverKey = obj.serverKey;
+                    inModal.inbound.settings.tlsCrypt = obj.tlsCrypt;
+                }
+            },
+            async generateOcservCert() {
+                inModal.loading(true);
+                const idSeg = inModal.inbound.id ? inModal.inbound.id + '/' : '';
+                const msg = await HttpUtil.post('/panel/api/inbounds/' + idSeg + 'generate-ocserv-cert');
+                inModal.loading(false);
+                if (msg.success) {
+                    const obj = msg.obj;
+                    inModal.inbound.settings.tlsUseFile = false;
+                    inModal.inbound.settings.certificate = obj.certificate;
+                    inModal.inbound.settings.key = obj.key;
+                }
+            },
+            ocservSetDefaultCert() {
+                // Reuse the panel's own TLS certificate paths (webCertFile/webKeyFile).
+                inModal.inbound.settings.certificateFile = app.defaultCert;
+                inModal.inbound.settings.keyFile = app.defaultKey;
+            },
+            generateSstpCert() {
+                // The native Windows SSTP client handles self-signed certs poorly,
+                // so warn before generating one (unlike OpenConnect/ocserv).
+                this.$confirm({
+                    title: "Self-signed certificate — Windows SSTP caveat",
+                    content: "The built-in Windows SSTP client rejects self-signed certificates unless you import the CA into the machine's Trusted Root Certification Authorities store AND set NoCertRevocationCheck=1 in the registry. There is no 'ignore certificate' option in the native Windows client. For real users, prefer a CA-signed certificate bound to a hostname. Generate a self-signed certificate anyway?",
+                    okText: "Generate anyway",
+                    cancelText: '{{ i18n "cancel" }}',
+                    class: themeSwitcher.currentTheme,
+                    onOk: async () => {
+                        inModal.loading(true);
+                        const idSeg = inModal.inbound.id ? inModal.inbound.id + '/' : '';
+                        const msg = await HttpUtil.post('/panel/api/inbounds/' + idSeg + 'generate-sstp-cert');
+                        inModal.loading(false);
+                        if (msg.success) {
+                            const obj = msg.obj;
+                            inModal.inbound.settings.tlsUseFile = false;
+                            inModal.inbound.settings.certificate = obj.certificate;
+                            inModal.inbound.settings.key = obj.key;
+                        }
+                    },
+                });
+            },
+            sstpSetDefaultCert() {
+                // Reuse the panel's own TLS certificate paths (webCertFile/webKeyFile).
+                inModal.inbound.settings.certificateFile = app.defaultCert;
+                inModal.inbound.settings.keyFile = app.defaultKey;
+            },
+            // POST the current ikev2 server cert to the panel, which parses its
+            // public-key type and returns a device-compatibility warning (a non-RSA
+            // cert is silently rejected by iOS). Stored reactively and shown inline.
+            generateIkev2Psk() {
+                inModal.inbound.settings.psk = RandomUtil.randomSeq(32);
+            },
+            async ikev2CheckCert() {
+                const ib = inModal.inbound;
+                if (!ib || ib.protocol !== Protocols.IKEV2 || !ib.settings ||
+                    ib.settings.authMode === "psk") {
+                    this.ikev2CertWarning = "";
+                    return;
+                }
+                try {
+                    const s = ib.settings;
+                    const payload = {
+                        protocol: "ikev2",
+                        settings: JSON.stringify({
+                            authMode: s.authMode,
+                            tlsUseFile: s.tlsUseFile,
+                            certificateFile: s.certificateFile,
+                            keyFile: s.keyFile,
+                            certificate: s.certificate,
+                            key: s.key,
+                            caCert: s.caCert,
+                        }),
+                    };
+                    const msg = await HttpUtil.post(
+                        "/panel/api/inbounds/check-ikev2-cert", payload);
+                    this.ikev2CertWarning =
+                        msg && msg.success && msg.obj ? (msg.obj.warning || "") : "";
+                } catch (e) {
+                    this.ikev2CertWarning = "";
+                }
+            },
+            generateIkev2Cert() {
+                // The native IKEv2 clients (Windows/iOS/Android) reject self-signed
+                // server certs unless the CA is imported into the device trust store,
+                // so warn before generating one.
+                this.$confirm({
+                    title: "Self-signed certificate — IKEv2 client caveat",
+                    content: "The native Windows/iOS/Android IKEv2 clients reject self-signed certificates unless you import the generated CA into the device's trusted roots. Prefer a CA-signed cert bound to a hostname for real users. Generate a self-signed CA + server cert anyway?",
+                    okText: "Generate anyway",
+                    cancelText: '{{ i18n "cancel" }}',
+                    class: themeSwitcher.currentTheme,
+                    onOk: async () => {
+                        inModal.loading(true);
+                        const idSeg = inModal.inbound.id ? inModal.inbound.id + '/' : '';
+                        const msg = await HttpUtil.post('/panel/api/inbounds/' + idSeg + 'generate-ikev2-cert');
+                        inModal.loading(false);
+                        if (msg.success) {
+                            const obj = msg.obj;
+                            inModal.inbound.settings.tlsUseFile = false;
+                            inModal.inbound.settings.certificate = obj.certificate;
+                            inModal.inbound.settings.key = obj.key;
+                            inModal.inbound.settings.caCert = obj.caCert;
+                            this.ikev2CheckCert();
+                        }
+                    },
+                });
+            },
+            ikev2SetDefaultCert() {
+                // Reuse the panel's own TLS certificate paths (webCertFile/webKeyFile).
+                inModal.inbound.settings.certificateFile = app.defaultCert;
+                inModal.inbound.settings.keyFile = app.defaultKey;
+                this.ikev2CheckCert();
+            },
+            async downloadOvpn(proto) {
+                const inbound = inModal.inbound;
+                const dbInbound = inModal.dbInbound;
+                if (!inbound.id) return;
+                // The export endpoint reads the SAVED inbound from the DB, so any
+                // unsaved edits in this dialog (ciphers, external proxy, ports, DNS…)
+                // would be missing from the downloaded profile. Persist the current
+                // form first, then download, so the .ovpn always matches the screen.
+                inModal.loading(true);
+                try {
+                    const data = {
+                        up: dbInbound.up,
+                        down: dbInbound.down,
+                        total: dbInbound.total,
+                        remark: dbInbound.remark,
+                        enable: dbInbound.enable,
+                        expiryTime: dbInbound.expiryTime,
+                        trafficReset: dbInbound.trafficReset,
+                        lastTrafficResetTime: dbInbound.lastTrafficResetTime,
+                        listen: inbound.listen,
+                        port: inbound.port,
+                        protocol: inbound.protocol,
+                        settings: inbound.settings.toString(),
+                        sniffing: inbound.sniffing.toString(),
+                    };
+                    const formData = new FormData();
+                    Object.keys(data).forEach((key) => formData.append(key, data[key]));
+                    const msg = await HttpUtil.post(
+                        `/panel/api/inbounds/update/${inbound.id}`,
+                        formData,
+                    );
+                    if (!msg || !msg.success) return;
+                    // Refresh the table so its export buttons and settings reflect
+                    // the just-saved state too (fire and forget).
+                    if (typeof app !== 'undefined' && app.getDBInbounds) {
+                        app.getDBInbounds();
+                    }
+                    const url = '/panel/api/inbounds/' + inbound.id + '/ovpn/' + proto;
+                    window.open(basePath.replace(/\/$/, '') + url, '_blank');
+                } finally {
+                    inModal.loading(false);
+                }
+            }
+        },
+    });
+</script>
+{{end}}

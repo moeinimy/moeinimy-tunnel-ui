@@ -1,0 +1,392 @@
+{{ template "page/head_start" .}}
+{{ template "page/head_end" .}}
+
+{{ template "page/body_start" .}}
+<a-layout id="app" v-cloak :class="themeSwitcher.currentTheme">
+  <a-sidebar></a-sidebar>
+  <a-layout id="content-layout">
+    <a-layout-content>
+      <a-spin :spinning="spinning" :delay="300" tip='{{ i18n "loading"}}' size="large">
+        <transition name="list" appear>
+        <a-row :gutter="[16, 16]" :style="{ margin: 0 }">
+
+          <!-- Header -->
+          <a-col :span="24">
+            <a-card hoverable>
+              <a-row type="flex" justify="space-between" align="middle" :gutter="[8,8]">
+                <a-col>
+                  <h2 :style="{ margin: 0 }">{{ i18n "pages.tunnel.title" }}</h2>
+                  <span :style="{ opacity: 0.65 }">{{ i18n "pages.tunnel.subtitle" }}</span>
+                </a-col>
+                <a-col v-if="installed">
+                  <a-space>
+                    <a-tag v-if="meta.node_role" :color="meta.node_role === 'iran' ? 'orange' : 'blue'">
+                      [[ roleText(meta.node_role) ]]
+                    </a-tag>
+                    <a-button type="primary" @click="openCreate">
+                      <a-icon type="plus"></a-icon>{{ i18n "pages.tunnel.add" }}
+                    </a-button>
+                    <a-dropdown>
+                      <a-menu slot="overlay" @click="onOptimizeMenu">
+                        <a-menu-item key="apply"><a-icon type="thunderbolt"></a-icon>{{ i18n "pages.tunnel.optimizeApply" }}</a-menu-item>
+                        <a-menu-item key="revert"><a-icon type="rollback"></a-icon>{{ i18n "pages.tunnel.optimizeRevert" }}</a-menu-item>
+                      </a-menu>
+                      <a-button>
+                        <a-icon type="setting"></a-icon>{{ i18n "pages.tunnel.optimize" }}<a-icon type="down"></a-icon>
+                      </a-button>
+                    </a-dropdown>
+                    <a-button @click="loadAll(true)">
+                      <a-icon type="reload"></a-icon>{{ i18n "pages.tunnel.refresh" }}
+                    </a-button>
+                  </a-space>
+                </a-col>
+              </a-row>
+            </a-card>
+          </a-col>
+
+          <!-- Backend not installed -->
+          <a-col :span="24" v-if="loaded && !installed">
+            <a-card hoverable class="tunnel-hero">
+              <div class="tunnel-hero-badge"><a-icon type="api" theme="filled"></a-icon></div>
+              <div class="tunnel-hero-title">{{ i18n "pages.tunnel.notInstalledTitle" }}</div>
+              <div class="tunnel-hero-desc">{{ i18n "pages.tunnel.notInstalledDesc" }}</div>
+              <pre class="tunnel-hero-cmd">sudo tunnelctl</pre>
+            </a-card>
+          </a-col>
+
+          <!-- Summary tiles -->
+          <a-col :span="24" v-if="installed">
+            <a-row type="flex" :gutter="[16,16]">
+              <a-col :xs="12" :sm="6"><a-card class="tunnel-tile"><div class="tile-k">{{ i18n "pages.tunnel.total" }}</div><div class="tile-v">[[ tunnels.length ]]</div></a-card></a-col>
+              <a-col :xs="12" :sm="6"><a-card class="tunnel-tile"><div class="tile-k">{{ i18n "pages.tunnel.up" }}</div><div class="tile-v tile-up">[[ upCount ]]</div></a-card></a-col>
+              <a-col :xs="12" :sm="6"><a-card class="tunnel-tile"><div class="tile-k">{{ i18n "pages.tunnel.down" }}</div><div class="tile-v tile-down">[[ tunnels.length - upCount ]]</div></a-card></a-col>
+              <a-col :xs="12" :sm="6"><a-card class="tunnel-tile"><div class="tile-k">{{ i18n "pages.tunnel.optimizeState" }}</div><div class="tile-v">[[ meta.optimize || '—' ]]</div></a-card></a-col>
+            </a-row>
+          </a-col>
+
+          <!-- Empty -->
+          <a-col :span="24" v-if="installed && loaded && tunnels.length === 0">
+            <a-card hoverable>
+              <a-empty :description="false">
+                <span slot="description">{{ i18n "pages.tunnel.empty" }}</span>
+                <a-button type="primary" @click="openCreate"><a-icon type="plus"></a-icon>{{ i18n "pages.tunnel.add" }}</a-button>
+              </a-empty>
+            </a-card>
+          </a-col>
+
+          <!-- Tunnel cards -->
+          <a-col :span="24" v-if="installed && tunnels.length">
+            <a-row type="flex" :gutter="[16, 16]">
+              <a-col :xs="24" :sm="12" :xl="8" v-for="t in tunnels" :key="t.name">
+                <a-card class="tunnel-card" hoverable>
+                  <template #title>
+                    <a-icon type="deployment-unit"></a-icon>
+                    <span :style="{ marginLeft: '8px', fontWeight: 600 }">[[ t.name ]]</span>
+                  </template>
+                  <template #extra>
+                    <span class="tstate" :class="t.active ? 'tstate-up' : 'tstate-down'">
+                      <span class="tstate-dot"></span>[[ t.active ? '{{ i18n "pages.tunnel.up" }}' : '{{ i18n "pages.tunnel.down" }}' ]]
+                    </span>
+                  </template>
+
+                  <div class="tunnel-kv-list">
+                    <div class="tunnel-kv"><span>{{ i18n "pages.tunnel.protocol" }}</span><b>[[ (t.config.PROTOCOL || '').toUpperCase() ]]</b></div>
+                    <div class="tunnel-kv"><span>{{ i18n "pages.tunnel.role" }}</span><b>[[ roleText(t.config.ROLE) ]]</b></div>
+                    <div class="tunnel-kv"><span>{{ i18n "pages.tunnel.peer" }}</span><b>[[ t.config.REMOTE_IP || '—' ]]</b></div>
+                    <div class="tunnel-kv"><span>{{ i18n "pages.tunnel.autostart" }}</span>
+                      <a-switch size="small" :checked="t.enabled" @change="(v) => toggleAutostart(t, v)"></a-switch>
+                    </div>
+                    <div class="tunnel-kv"><span>{{ i18n "pages.tunnel.traffic" }}</span>
+                      <b>↓ [[ fmtBytes(t.state.RX_BYTES) ]] · ↑ [[ fmtBytes(t.state.TX_BYTES) ]]</b>
+                    </div>
+                    <div class="tunnel-kv" v-if="t.state.RX_RATE || t.state.TX_RATE"><span>{{ i18n "pages.tunnel.rate" }}</span>
+                      <b>↓ [[ fmtBytes(t.state.RX_RATE) ]]/s · ↑ [[ fmtBytes(t.state.TX_RATE) ]]/s</b>
+                    </div>
+                    <div class="tunnel-kv" v-if="t.state.LATENCY_MS"><span>{{ i18n "pages.tunnel.latency" }}</span>
+                      <b>[[ t.state.LATENCY_MS ]] ms · [[ t.state.LOSS_PCT || 0 ]]% loss</b>
+                    </div>
+                  </div>
+
+                  <div class="tunnel-actions">
+                    <a-button-group>
+                      <a-button size="small" v-if="!t.active" type="primary" @click="control('start', t.name)"><a-icon type="caret-right"></a-icon>{{ i18n "pages.tunnel.start" }}</a-button>
+                      <a-button size="small" v-else @click="control('stop', t.name)"><a-icon type="pause"></a-icon>{{ i18n "pages.tunnel.stop" }}</a-button>
+                      <a-button size="small" @click="control('restart', t.name)"><a-icon type="reload"></a-icon>{{ i18n "pages.tunnel.restart" }}</a-button>
+                    </a-button-group>
+                    <a-button size="small" @click="openLogs(t.name)"><a-icon type="file-text"></a-icon>{{ i18n "pages.tunnel.logs" }}</a-button>
+                    <a-button size="small" @click="openEdit(t.name)"><a-icon type="edit"></a-icon>{{ i18n "pages.tunnel.edit" }}</a-button>
+                    <a-popconfirm title="{{ i18n "pages.tunnel.removeConfirm" }}" placement="topRight"
+                      @confirm="control('remove', t.name)" ok-text="{{ i18n "pages.tunnel.remove" }}" cancel-text="{{ i18n "cancel" }}">
+                      <a-button size="small" type="danger"><a-icon type="delete"></a-icon></a-button>
+                    </a-popconfirm>
+                  </div>
+                </a-card>
+              </a-col>
+            </a-row>
+          </a-col>
+
+        </a-row>
+        </transition>
+      </a-spin>
+
+      <!-- Create modal -->
+      <a-modal v-model="createVisible" title='{{ i18n "pages.tunnel.add" }}' :confirm-loading="createLoading"
+        @ok="submitCreate" ok-text="{{ i18n "pages.tunnel.create" }}" cancel-text="{{ i18n "cancel" }}" :width="620">
+        <a-form-model layout="vertical">
+          <a-row :gutter="12">
+            <a-col :span="12"><a-form-model-item label='{{ i18n "pages.tunnel.name" }}'>
+              <a-input v-model="form.NAME" placeholder="tun1"></a-input></a-form-model-item></a-col>
+            <a-col :span="12"><a-form-model-item label='{{ i18n "pages.tunnel.protocol" }}'>
+              <a-select v-model="form.PROTOCOL" @change="onProtocolChange">
+                <a-select-option v-for="p in protocols" :key="p" :value="p">[[ p.toUpperCase() ]]</a-select-option>
+              </a-select></a-form-model-item></a-col>
+          </a-row>
+          <a-row :gutter="12">
+            <a-col :span="12"><a-form-model-item label='{{ i18n "pages.tunnel.role" }}'>
+              <a-select v-model="form.ROLE">
+                <a-select-option value="foreign">{{ i18n "pages.tunnel.roleForeign" }}</a-select-option>
+                <a-select-option value="iran">{{ i18n "pages.tunnel.roleIran" }}</a-select-option>
+              </a-select></a-form-model-item></a-col>
+            <a-col :span="12"><a-form-model-item label='{{ i18n "pages.tunnel.peerIp" }}'>
+              <a-input v-model="form.REMOTE_IP" placeholder="203.0.113.10"></a-input></a-form-model-item></a-col>
+          </a-row>
+          <a-form-model-item label='{{ i18n "pages.tunnel.mtu" }}'>
+            <a-input-number v-model="form.MTU" :min="576" :max="9000" :style="{ width: '160px' }"></a-input-number>
+          </a-form-model-item>
+
+          <a-divider :style="{ margin: '8px 0' }">{{ i18n "pages.tunnel.advanced" }}</a-divider>
+          <p :style="{ opacity: 0.6, fontSize: '12px', marginTop: '-4px' }">{{ i18n "pages.tunnel.advancedHint" }}</p>
+          <div v-for="(row, i) in extraFields" :key="i" :style="{ display:'flex', gap:'8px', marginBottom:'8px' }">
+            <a-input v-model="row.key" placeholder="KEY" :style="{ flex: '0 0 200px' }"></a-input>
+            <a-input v-model="row.value" placeholder="value" :style="{ flex: 1 }"></a-input>
+            <a-button icon="minus" @click="extraFields.splice(i,1)"></a-button>
+          </div>
+          <a-button type="dashed" size="small" @click="extraFields.push({key:'',value:''})"><a-icon type="plus"></a-icon>{{ i18n "pages.tunnel.addField" }}</a-button>
+        </a-form-model>
+      </a-modal>
+
+      <!-- Edit modal -->
+      <a-modal v-model="editVisible" :title="'{{ i18n "pages.tunnel.edit" }}: ' + editName" :confirm-loading="editLoading"
+        @ok="saveEdit" ok-text="{{ i18n "pages.tunnel.save" }}" cancel-text="{{ i18n "cancel" }}" :width="560">
+        <a-spin :spinning="editLoading">
+          <a-form-model layout="vertical">
+            <a-form-model-item v-for="f in editFields" :key="f.key" :label="f.key">
+              <a-input v-model="f.value"></a-input>
+            </a-form-model-item>
+            <a-empty v-if="!editFields.length" description='{{ i18n "pages.tunnel.noEditable" }}'></a-empty>
+          </a-form-model>
+        </a-spin>
+      </a-modal>
+
+      <!-- Logs modal -->
+      <a-modal v-model="logsVisible" :title="'{{ i18n "pages.tunnel.logs" }}: ' + logsName" :footer="null" :width="760">
+        <a-spin :spinning="logsLoading">
+          <pre class="tunnel-logs">[[ logsContent || '{{ i18n "pages.tunnel.noLogs" }}' ]]</pre>
+        </a-spin>
+        <div :style="{ textAlign: 'right', marginTop: '8px' }">
+          <a-button size="small" @click="loadLogs(logsName)"><a-icon type="reload"></a-icon>{{ i18n "pages.tunnel.refresh" }}</a-button>
+        </div>
+      </a-modal>
+
+    </a-layout-content>
+  </a-layout>
+</a-layout>
+
+{{template "page/body_scripts" .}}
+{{template "component/aSidebar" .}}
+{{template "component/aThemeSwitch" .}}
+
+<style>
+  .tunnel-tile { text-align: center; }
+  .tunnel-tile .tile-k { opacity: .6; font-size: 12px; }
+  .tunnel-tile .tile-v { font-size: 24px; font-weight: 700; }
+  .tile-up { color: #52c41a; } .tile-down { color: #ff4d4f; }
+  .tunnel-kv-list { display: flex; flex-direction: column; gap: 6px; margin-bottom: 12px; }
+  .tunnel-kv { display: flex; justify-content: space-between; align-items: center; font-size: 13px; }
+  .tunnel-kv > span { opacity: .6; }
+  .tunnel-actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+  .tstate { font-size: 12px; display: inline-flex; align-items: center; gap: 6px; }
+  .tstate-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
+  .tstate-up { color: #52c41a; } .tstate-up .tstate-dot { background: #52c41a; }
+  .tstate-down { color: #ff4d4f; } .tstate-down .tstate-dot { background: #ff4d4f; }
+  .tunnel-hero { text-align: center; padding: 32px; }
+  .tunnel-hero-badge { font-size: 40px; color: #1890ff; }
+  .tunnel-hero-title { font-size: 20px; font-weight: 700; margin-top: 12px; }
+  .tunnel-hero-desc { opacity: .65; margin: 8px 0 16px; }
+  .tunnel-hero-cmd { display: inline-block; padding: 8px 16px; border-radius: 6px; background: rgba(0,0,0,.06); }
+  .tunnel-logs { max-height: 480px; overflow: auto; font-size: 12px; white-space: pre-wrap; word-break: break-all; }
+</style>
+
+<script>
+  // Recommended protocol-specific fields prefilled into the create form's
+  // Advanced list. Blank *_SECRET values are auto-generated by tunnelctl, so we
+  // leave secrets empty here. These are hints — the operator can edit/remove.
+  const PROTO_TEMPLATES = {
+    gre:      [{ key: 'GRE_KEY', value: '' }, { key: 'ENABLE_NAT', value: 'yes' }],
+    paqet:    [{ key: 'PAQET_PORT', value: '9000' }, { key: 'PAQET_MODE', value: 'kcp' }, { key: 'PAQET_SECRET', value: '' }],
+    backhaul: [{ key: 'BH_PORT', value: '9000' }, { key: 'BH_SECRET', value: '' }],
+    backpack: [{ key: 'BP_PORT', value: '443' }, { key: 'BP_PATH', value: '/ws' }, { key: 'BP_SECRET', value: '' }],
+    rathole:  [{ key: 'RH_PORT', value: '9000' }, { key: 'RH_SECRET', value: '' }],
+    gost:     [{ key: 'GO_PORT', value: '443' }, { key: 'GO_MODE', value: 'mtls' }, { key: 'GO_SECRET', value: '' }],
+    frp:      [{ key: 'FRP_PORT', value: '7000' }, { key: 'FRP_SECRET', value: '' }],
+    hysteria: [{ key: 'HY_PORT', value: '8443' }, { key: 'HY_SECRET', value: '' }],
+  };
+
+  const app = new Vue({
+    delimiters: ['[[', ']]'],
+    mixins: [MediaQueryMixin],
+    el: '#app',
+    data: {
+      themeSwitcher,
+      spinning: false,
+      loaded: false,
+      installed: false,
+      meta: {},
+      tunnels: [],
+      protocols: [],
+      timer: null,
+      basePath: '{{ .base_path }}',
+      // create
+      createVisible: false,
+      createLoading: false,
+      form: {},
+      extraFields: [],
+      // edit
+      editVisible: false,
+      editLoading: false,
+      editName: '',
+      editFields: [],
+      editOriginal: {},
+      // logs
+      logsVisible: false,
+      logsLoading: false,
+      logsName: '',
+      logsContent: '',
+    },
+    computed: {
+      upCount() { return this.tunnels.filter(t => t.active).length; },
+    },
+    methods: {
+      fmtBytes(n) {
+        const b = Number(n || 0);
+        return (typeof SizeFormatter !== 'undefined') ? SizeFormatter.sizeFormat(b) : (b + ' B');
+      },
+      roleText(r) {
+        if (r === 'iran') return '{{ i18n "pages.tunnel.roleIran" }}';
+        if (r === 'foreign') return '{{ i18n "pages.tunnel.roleForeign" }}';
+        return r || '—';
+      },
+      async loadAll(showSpin) {
+        if (showSpin) this.spinning = true;
+        const m = await HttpUtil.get('/panel/tunnel/meta');
+        if (m && m.success && m.obj) {
+          this.installed = !!m.obj.installed;
+          this.meta = m.obj.meta || {};
+        }
+        if (this.installed) {
+          const [pl, tl] = await Promise.all([
+            HttpUtil.get('/panel/tunnel/protocols'),
+            HttpUtil.get('/panel/tunnel/list'),
+          ]);
+          if (pl && pl.success) this.protocols = pl.obj || [];
+          if (tl && tl.success) this.tunnels = tl.obj || [];
+        }
+        this.loaded = true;
+        this.spinning = false;
+      },
+      async control(action, name) {
+        this.spinning = true;
+        await HttpUtil.post('/panel/tunnel/' + action + '/' + encodeURIComponent(name));
+        await this.loadAll(false);
+      },
+      async toggleAutostart(t, v) {
+        this.spinning = true;
+        await HttpUtil.post('/panel/tunnel/' + (v ? 'enable' : 'disable') + '/' + encodeURIComponent(t.name));
+        await this.loadAll(false);
+      },
+      async onOptimizeMenu({ key }) {
+        this.spinning = true;
+        await HttpUtil.post('/panel/tunnel/optimize/' + key);
+        await this.loadAll(false);
+      },
+      // ---- create ----
+      openCreate() {
+        this.form = { NAME: '', PROTOCOL: this.protocols[0] || '', ROLE: 'foreign', REMOTE_IP: '', MTU: 1400 };
+        this.extraFields = [];
+        this.onProtocolChange(this.form.PROTOCOL);
+        this.createVisible = true;
+      },
+      onProtocolChange(p) {
+        const tpl = PROTO_TEMPLATES[p] || [];
+        this.extraFields = tpl.map(x => ({ key: x.key, value: x.value }));
+      },
+      async submitCreate() {
+        const fields = {
+          NAME: (this.form.NAME || '').trim(),
+          PROTOCOL: this.form.PROTOCOL,
+          ROLE: this.form.ROLE,
+          REMOTE_IP: (this.form.REMOTE_IP || '').trim(),
+          MTU: String(this.form.MTU || 1400),
+        };
+        for (const row of this.extraFields) {
+          const k = (row.key || '').trim();
+          if (k) fields[k] = (row.value || '').trim();
+        }
+        this.createLoading = true;
+        const msg = await HttpUtil.post('/panel/tunnel/create', { fields });
+        this.createLoading = false;
+        if (msg && msg.success) {
+          this.createVisible = false;
+          await this.loadAll(true);
+        }
+      },
+      // ---- edit ----
+      async openEdit(name) {
+        this.editName = name;
+        this.editFields = [];
+        this.editVisible = true;
+        this.editLoading = true;
+        const msg = await HttpUtil.get('/panel/tunnel/fields/' + encodeURIComponent(name));
+        if (msg && msg.success) {
+          this.editFields = (msg.obj || []).map(f => ({ key: f.key, value: f.value }));
+          this.editOriginal = {};
+          this.editFields.forEach(f => this.editOriginal[f.key] = f.value);
+        }
+        this.editLoading = false;
+      },
+      async saveEdit() {
+        this.editLoading = true;
+        let changed = 0;
+        for (const f of this.editFields) {
+          if (this.editOriginal[f.key] !== f.value) {
+            changed++;
+            await HttpUtil.post('/panel/tunnel/set/' + encodeURIComponent(this.editName), { key: f.key, value: f.value });
+          }
+        }
+        this.editLoading = false;
+        this.editVisible = false;
+        if (changed) await this.loadAll(true);
+      },
+      // ---- logs ----
+      async openLogs(name) {
+        this.logsName = name;
+        this.logsContent = '';
+        this.logsVisible = true;
+        await this.loadLogs(name);
+      },
+      async loadLogs(name) {
+        this.logsLoading = true;
+        const msg = await HttpUtil.get('/panel/tunnel/logs/' + encodeURIComponent(name));
+        if (msg && msg.success) this.logsContent = msg.obj || '';
+        this.logsLoading = false;
+      },
+    },
+    async mounted() {
+      await this.loadAll(true);
+      // Light auto-refresh so live stats/state stay current without hammering.
+      this.timer = setInterval(() => { if (this.installed && !this.createVisible && !this.editVisible) this.loadAll(false); }, 7000);
+    },
+    beforeDestroy() { if (this.timer) clearInterval(this.timer); },
+  });
+</script>
+{{ template "page/body_end" .}}

@@ -1,0 +1,52 @@
+name: build-release
+
+# Builds the self-contained vpn-ui binary on a Linux runner (which has the Go +
+# Docker toolchain this project's build.sh needs) and publishes it as a release
+# asset, so `scripts/install.sh` / `deploy.sh` can fetch it as a one-liner.
+#
+# Triggers:
+#   * pushing a tag like v1.6.0-tunnel  -> builds AND publishes a release
+#   * manual "Run workflow" (workflow_dispatch) -> builds only (compile check)
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Fetch pinned upstream sources (Xray-core + telemt)
+        run: |
+          rm -rf third_party/Xray-core third_party/telemt
+          git clone --depth 1 https://github.com/Sir-MmD/Xray-core third_party/Xray-core
+          git clone --depth 1 https://github.com/Sir-MmD/telemt   third_party/telemt
+
+      - name: Build (Xray core + daemon bundle + panel binary)
+        run: SKIP_SUBMODULES=1 ./build.sh
+
+      - name: Go tests (web incl. i18n TOML parity)
+        run: go test ./web/... ./config/... ./database/...
+
+      - name: Show artifact
+        run: ls -lh build/out/
+
+      - name: Publish release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: build/out/vpn-ui-amd64
+          generate_release_notes: true

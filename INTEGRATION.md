@@ -67,20 +67,24 @@ go test ./web/...             # includes the i18n TOML parity tests
       **and** the tunnel backend (foreign role)
 - [x] Combined backup/restore (`tunnelctl backup-full` / `restore-full`): bundles
       panel DB + tunnel config, and auto-detects a stock `.db` vs. our archive
-- [~] Iran **one-liner node** (`scripts/install.sh --iran`): installs + registers
-      the node today. The **reverse-connect control plane** (below) is the part
-      still to build so the node is fully driven from the panel with no SSH.
-- [ ] **Reverse-WSS node control plane** — the final phase. Design:
-  - Panel binary gains a node mode (`vpn-ui tunnel-node --panel URL --token T`),
-    reusing the same release binary on the Iran box.
-  - The node **dials out** to the panel over **WSS** (the panel's existing HTTPS
-    port) — DPI-resistant (looks like normal HTTPS), NAT-friendly, only the
-    foreign port is open. Authenticated by the one-time `NODE_TOKEN`.
-  - Panel keeps a node registry + a `/panel/tunnel/nodes` UI; tunnel operations
-    can target `local` or a specific node, executed as allowlisted `tunnelctl`
-    calls over the WSS channel and returned as JSON.
-  - Requires a Go build environment + two test servers to implement/validate
-    the handshake safely, so it is intentionally left for that environment.
+- [x] Iran **one-liner node** + control plane. The node dials OUT to the panel
+      over HTTPS and long-polls for commands, so it works behind NAT, blends into
+      normal HTTPS traffic (DPI-resistant), and needs only bash+curl+jq — **no
+      compiled agent** on the Iran box. Add a node in *Tunnels → Nodes*; the panel
+      shows the ready-to-run one-liner (`scripts/install.sh --iran --panel … --token …`).
+
+### Node control channel
+
+```
+Panel UI ──POST /panel/tunnel/nodes/:id/exec──▶ NodeService (queue)
+Iran agent (bash+curl) ──long-poll POST /node/poll (token)──▶ gets commands
+                        ──runs allowlisted `tunnelctl`──▶ POST /node/result
+```
+
+- Token-authed `/node/poll` + `/node/result` live outside the login group;
+  panel-side `/panel/tunnel/nodes` CRUD + exec are login-protected.
+- Node registry is a JSON file (`/etc/tunnel-manager/nodes.json`) — the x-ui DB
+  stays untouched here too. Commands are an allowlist (read + safe control).
 
 ## Attribution / license
 

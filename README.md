@@ -23,6 +23,27 @@ instead of SSH**:
 - **Combined backup/restore** (`tunnelctl backup-full` / `restore-full`) that
   bundles the panel DB **and** the tunnel config.
 
+### Install
+
+**Foreign server** (control panel + tunnel backend), one command:
+
+```bash
+bash <(curl -fsSL https://raw.githubusercontent.com/moeinimy/moeinimy-tunnel-ui/main/scripts/install.sh)
+```
+
+Then open the panel, go to **Tunnels → Nodes → Add Node**, optionally configure the
+tunnel you want, and the panel hands you a one-liner for the Iran server.
+
+**Iran server** — just run the one-liner the panel shows (nothing to set up first):
+
+```bash
+bash <(curl -fsSL https://raw.githubusercontent.com/moeinimy/moeinimy-tunnel-ui/main/scripts/install.sh) \
+     --iran --panel https://PANEL_HOST:PORT/PATH --token NODE_TOKEN
+```
+
+The node dials out to the panel over HTTPS (works behind NAT, DPI-resistant) and the
+tunnel comes up automatically — no further SSH on the Iran box.
+
 ### 3x-ui backup compatibility
 Tunnel operations **never touch the panel database** — tunnel config lives in
 `/etc/tunnel-manager`. So a **stock 3x-ui / vpn-ui `.db` backup restores here

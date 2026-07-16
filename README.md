@@ -1,10 +1,45 @@
+# moeinimy-tunnel-ui
+
+**A V2Ray/Xray panel with built-in server-to-server tunnel management.**
+
+This repository merges two projects so tunnels can be managed **from the web UI
+instead of SSH**:
+
+- **Base panel:** [vpn-ui](https://github.com/Sir-MmD/vpn-ui) — an enhanced Go
+  fork of [3X-UI](https://github.com/MHSanaei/3x-ui) 2.9.3 (all credit to the
+  upstream authors). Provides the whole panel, Xray/VPN cores, DB, auth, i18n.
+- **Tunnel backend:** [tunnel-manager](https://github.com/moeinimy/tunnel-manager)
+  (`tunnelctl`), vendored under [`tunnel/`](tunnel/) — GRE, Paqet, BackPack,
+  GOST, Backhaul, Rathole, FRP, Hysteria tunnels.
+
+### What's added
+- A **Tunnels** section in the panel (sidebar → *Tunnels*): list, live traffic
+  stats, start/stop/restart, auto-start, create wizard, per-field edit, logs,
+  and one-click network optimization — everything the CLI does, from the browser.
+- A **one-command installer** (`scripts/install.sh`) that sets up the panel and
+  the tunnel backend together.
+- An **Iran-node one-liner** (same installer, `--iran`) so a second server joins
+  and is driven from the foreign panel.
+- **Combined backup/restore** (`tunnelctl backup-full` / `restore-full`) that
+  bundles the panel DB **and** the tunnel config.
+
+### 3x-ui backup compatibility
+Tunnel operations **never touch the panel database** — tunnel config lives in
+`/etc/tunnel-manager`. So a **stock 3x-ui / vpn-ui `.db` backup restores here
+unchanged**, and `restore-full` auto-detects a raw DB vs. a combined archive.
+
+See **[INTEGRATION.md](INTEGRATION.md)** for architecture, the API surface, build
+instructions, and the roadmap.
+
+---
+
 [English](/README.md) | [فارسی](/README_FA.md) | [العربية](/README_AR.md) | [中文](/README_ZH.md) | [Español](/README_ES.md) | [Русский](/README_RU.md) | [Türkçe](/README_TR.md)
 
 <p align="center">
   <img src="https://raw.githubusercontent.com/Sir-MmD/vpn-ui/refs/heads/main/media/logo.png" alt="VPN-UI Logo" width="260">
 </p>
 
-This project is an enhanced version of the **[3X-UI](https://github.com/MHSanaei/3x-ui)** panel (version 2.9.3). The goal of this project is to add various protocols and set it up as an all-in-one panel with support for **Xray-core** features.
+The panel below is an enhanced version of the **[3X-UI](https://github.com/MHSanaei/3x-ui)** panel (version 2.9.3). The goal of this project is to add various protocols and set it up as an all-in-one panel with support for **Xray-core** features.
 
 ## New Protocols
 

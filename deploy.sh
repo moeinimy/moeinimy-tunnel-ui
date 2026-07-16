@@ -2,7 +2,7 @@
 # MmD
 set -euo pipefail
 
-REPO="Sir-MmD/vpn-ui"
+REPO="${VPNUI_REPO:-moeinimy/moeinimy-tunnel-ui}"
 ASSET="vpn-ui-amd64"
 DEST_DIR="/opt/vpn-ui"
 DEST="$DEST_DIR/$ASSET"

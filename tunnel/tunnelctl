@@ -27,7 +27,7 @@ for _f in \
     drivers/driver.sh drivers/gre.sh drivers/paqet.sh drivers/backhaul.sh drivers/backpack.sh drivers/rathole.sh drivers/gost.sh drivers/frp.sh drivers/hysteria.sh \
     modules/telegram.sh modules/tunnel.sh modules/optimize.sh \
     modules/monitor.sh modules/report.sh modules/backup.sh modules/selfupdate.sh \
-    modules/peer.sh modules/api.sh lib/menu.sh ; do
+    modules/peer.sh modules/api.sh modules/backupfull.sh lib/menu.sh ; do
     . "$TM_HOME/$_f"
 done
 
@@ -118,6 +118,8 @@ main() {
                 *)      backup_create ;;
             esac ;;
         restore)        backup_restore "${1:-}" ;;
+        backup-full)    require_root; backup_full "${1:-}" ;;
+        restore-full)   require_root; restore_full "${1:-}" ;;
         report)
             local period="daily"; [[ "${1:-}" =~ ^(daily|weekly|monthly)$ ]] && { period="$1"; shift; }
             if [[ "${1:-}" == --send ]]; then report_send "$period"; else report_show "$period"; fi ;;

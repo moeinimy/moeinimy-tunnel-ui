@@ -60,14 +60,27 @@ go test ./web/...             # includes the i18n TOML parity tests
 > match the existing `Core` controller/service/page patterns exactly. Final
 > compile + runtime verification must run on a build host (`./build.sh`).
 
-## Roadmap (in progress)
+## Roadmap
 
 - [x] Tunnel management section in the UI (local host)
-- [ ] Unified installer: one command installs the panel **and** tunnel prereqs
-- [ ] Iran **one-liner node**: reverse-connect agent over WSS (DPI-resistant),
-      controlled remotely from the foreign panel
-- [ ] Combined backup/restore: accepts both a stock `x-ui.db` **and** an extended
-      archive (db + tunnel config)
+- [x] Unified installer (`scripts/install.sh`): one command installs the panel
+      **and** the tunnel backend (foreign role)
+- [x] Combined backup/restore (`tunnelctl backup-full` / `restore-full`): bundles
+      panel DB + tunnel config, and auto-detects a stock `.db` vs. our archive
+- [~] Iran **one-liner node** (`scripts/install.sh --iran`): installs + registers
+      the node today. The **reverse-connect control plane** (below) is the part
+      still to build so the node is fully driven from the panel with no SSH.
+- [ ] **Reverse-WSS node control plane** — the final phase. Design:
+  - Panel binary gains a node mode (`vpn-ui tunnel-node --panel URL --token T`),
+    reusing the same release binary on the Iran box.
+  - The node **dials out** to the panel over **WSS** (the panel's existing HTTPS
+    port) — DPI-resistant (looks like normal HTTPS), NAT-friendly, only the
+    foreign port is open. Authenticated by the one-time `NODE_TOKEN`.
+  - Panel keeps a node registry + a `/panel/tunnel/nodes` UI; tunnel operations
+    can target `local` or a specific node, executed as allowlisted `tunnelctl`
+    calls over the WSS channel and returned as JSON.
+  - Requires a Go build environment + two test servers to implement/validate
+    the handshake safely, so it is intentionally left for that environment.
 
 ## Attribution / license
 

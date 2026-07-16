@@ -204,18 +204,31 @@ func (a *TunnelController) nodesList(c *gin.Context) {
 
 type nodeCreateReq struct {
 	Name string `json:"name" form:"name"`
+	// Optional tunnel to auto-provision on first connect.
+	Protocol string            `json:"protocol"`
+	Fields   map[string]string `json:"fields"`
 }
 
 // nodeCreate registers a node and returns the ready-to-run one-liner for the
-// Iran server, with the panel URL + one-time token baked in.
+// Iran server, with the panel URL + one-time token baked in. If a protocol is
+// supplied, the tunnel is configured now and brought up automatically when the
+// node connects (foreign side here, Iran side pushed to the node).
 func (a *TunnelController) nodeCreate(c *gin.Context) {
 	var req nodeCreateReq
-	_ = c.ShouldBind(&req)
+	_ = c.ShouldBindJSON(&req)
 	name := strings.TrimSpace(req.Name)
 	if name == "" {
 		name = "iran-node"
 	}
-	id, token := a.nodeService.Create(name)
+	var setup *service.NodeSetup
+	if strings.TrimSpace(req.Protocol) != "" {
+		fields := req.Fields
+		if fields == nil {
+			fields = map[string]string{}
+		}
+		setup = &service.NodeSetup{Name: name, Protocol: req.Protocol, Fields: fields}
+	}
+	id, token := a.nodeService.Create(name, setup)
 
 	scheme := "http"
 	if c.Request.TLS != nil || strings.EqualFold(c.GetHeader("X-Forwarded-Proto"), "https") {

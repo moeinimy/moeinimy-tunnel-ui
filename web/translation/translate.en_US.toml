@@ -1082,3 +1082,5 @@
 "removeConfirm" = "Remove this node? Its one-liner/token stops working."
 "empty" = "No nodes yet. Add one to control an Iran server from here."
 "execFailed" = "Node did not respond (is it online?)"
+"setupTunnel" = "Set up a tunnel now (auto-created when the node connects)"
+"setupHint" = "Configure it here; the panel brings up both sides automatically on connect."

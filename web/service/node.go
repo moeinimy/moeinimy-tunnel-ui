@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"strings"
 	"sync"
 	"time"
 )
@@ -47,13 +48,25 @@ type nodeResult struct {
 	at      time.Time
 }
 
-// nodeEntry is one registered node. The first three fields are persisted; the
-// rest is live runtime state.
+// NodeSetup is an optional tunnel the operator configured in the panel when
+// adding the node. It is applied automatically the first time the node connects
+// (see Provision) — the foreign side is created locally with the node's just-
+// learned public IP, and the matching Iran side is pushed to the node.
+type NodeSetup struct {
+	Name     string            `json:"name"`
+	Protocol string            `json:"protocol"`
+	Fields   map[string]string `json:"fields"`
+}
+
+// nodeEntry is one registered node. The exported fields are persisted; the
+// unexported ones are live runtime state.
 type nodeEntry struct {
-	ID      string `json:"id"`
-	Name    string `json:"name"`
-	Token   string `json:"token"`
-	Created string `json:"created"`
+	ID          string     `json:"id"`
+	Name        string     `json:"name"`
+	Token       string     `json:"token"`
+	Created     string     `json:"created"`
+	Setup       *NodeSetup `json:"setup,omitempty"`
+	Provisioned bool       `json:"provisioned"`
 
 	lastSeen time.Time
 	remoteIP string
@@ -154,20 +167,67 @@ func (s *NodeService) List() []NodeInfo {
 	return out
 }
 
-// Create registers a new node and returns its id + one-time token.
-func (s *NodeService) Create(name string) (id, token string) {
+// Create registers a new node and returns its id + one-time token. An optional
+// setup (protocol + fields) is applied automatically on first connect.
+func (s *NodeService) Create(name string, setup *NodeSetup) (id, token string) {
 	nodeReg.mu.Lock()
 	defer nodeReg.mu.Unlock()
 	nodeReg.load()
+	// Fill any empty *_SECRET now so BOTH ends of the tunnel share the exact same
+	// value (if left blank, tunnelctl would generate a different one per side and
+	// the tunnel would never authenticate).
+	if setup != nil {
+		for k, v := range setup.Fields {
+			if v == "" && strings.HasSuffix(k, "_SECRET") {
+				setup.Fields[k] = randToken()[:32]
+			}
+		}
+	}
 	id = randID()
 	token = randToken()
 	nodeReg.nodes[id] = &nodeEntry{
 		ID: id, Name: name, Token: token,
 		Created: time.Now().UTC().Format(time.RFC3339),
+		Setup:   setup,
 		results: map[string]*nodeResult{},
 	}
 	nodeReg.save()
 	return id, token
+}
+
+// Provision is called on each node poll. The first time a node with a configured
+// setup connects, it: (1) queues the Iran-side `tunnelctl create` for the node
+// (REMOTE_IP = the foreign panel host the node reached), and (2) returns the
+// foreign-side fields (REMOTE_IP = the node's just-learned public IP) for the
+// caller to create locally. Returns ok=false when there's nothing to provision.
+func (s *NodeService) Provision(token, iranIP, foreignHost string) (foreignFields map[string]string, ok bool) {
+	nodeReg.mu.Lock()
+	defer nodeReg.mu.Unlock()
+	nodeReg.load()
+	n := s.byToken(token)
+	if n == nil || n.Setup == nil || n.Provisioned || iranIP == "" {
+		return nil, false
+	}
+	setup := n.Setup
+
+	// Iran side (pushed to the node).
+	args := []string{"create", "NAME=" + setup.Name, "PROTOCOL=" + setup.Protocol, "ROLE=iran", "REMOTE_IP=" + foreignHost}
+	for k, v := range setup.Fields {
+		args = append(args, k+"="+v)
+	}
+	n.queue = append(n.queue, &nodeCommand{ID: randID(), Args: args})
+	n.Provisioned = true
+	nodeReg.save()
+
+	// Foreign side (created locally by the caller).
+	ff := map[string]string{
+		"NAME": setup.Name, "PROTOCOL": setup.Protocol,
+		"ROLE": "foreign", "REMOTE_IP": iranIP,
+	}
+	for k, v := range setup.Fields {
+		ff[k] = v
+	}
+	return ff, true
 }
 
 // Remove deletes a node.

@@ -1,8 +1,10 @@
 package controller
 
 import (
+	"net"
 	"net/http"
 
+	"github.com/mhsanaei/3x-ui/v2/logger"
 	"github.com/mhsanaei/3x-ui/v2/web/service"
 
 	"github.com/gin-gonic/gin"
@@ -13,7 +15,8 @@ import (
 // with its own token. A bad token gets a 404 so the endpoints stay invisible to
 // unauthenticated scanners.
 type NodeController struct {
-	nodeService service.NodeService
+	nodeService   service.NodeService
+	tunnelService service.TunnelService
 }
 
 // NewNodeController registers the node channel endpoints under the base path.
@@ -29,11 +32,26 @@ type nodePollBody struct {
 	Token string `json:"token" form:"token"`
 }
 
-// poll is long-polled by the node agent; returns any queued commands.
+// poll is long-polled by the node agent; returns any queued commands. On a
+// node's first connect it also runs the auto-provision step: create the
+// foreign-side tunnel here (now that the node's public IP is known) and queue
+// the matching Iran-side tunnel for the node.
 func (a *NodeController) poll(c *gin.Context) {
 	var b nodePollBody
 	_ = c.ShouldBind(&b)
-	cmds, ok := a.nodeService.Poll(b.Token, getRemoteIp(c))
+	ip := getRemoteIp(c)
+
+	foreignHost := c.Request.Host
+	if h, _, err := net.SplitHostPort(foreignHost); err == nil {
+		foreignHost = h
+	}
+	if ff, ok := a.nodeService.Provision(b.Token, ip, foreignHost); ok {
+		if err := a.tunnelService.Create(ff); err != nil {
+			logger.Warning("node auto-provision: foreign-side create failed: ", err)
+		}
+	}
+
+	cmds, ok := a.nodeService.Poll(b.Token, ip)
 	if !ok {
 		c.AbortWithStatus(http.StatusNotFound)
 		return

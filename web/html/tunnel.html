@@ -133,7 +133,7 @@
                 <span :style="{ marginLeft: '8px' }">{{ i18n "pages.tunnel.node.title" }}</span>
               </template>
               <template #extra>
-                <a-button type="primary" size="small" @click="createNode">
+                <a-button type="primary" size="small" @click="openNodeCreate">
                   <a-icon type="plus"></a-icon>{{ i18n "pages.tunnel.node.add" }}
                 </a-button>
               </template>
@@ -167,6 +167,36 @@
         </a-row>
         </transition>
       </a-spin>
+
+      <!-- Node create modal (with optional auto-provisioned tunnel) -->
+      <a-modal v-model="nodeCreateVisible" title='{{ i18n "pages.tunnel.node.add" }}' :confirm-loading="nodeCreateLoading"
+        @ok="submitNode" ok-text="{{ i18n "pages.tunnel.node.add" }}" cancel-text="{{ i18n "cancel" }}" :width="620">
+        <a-form-model layout="vertical">
+          <a-form-model-item label='{{ i18n "pages.tunnel.node.name" }}'>
+            <a-input v-model="nodeForm.name" placeholder="iran-1"></a-input>
+          </a-form-model-item>
+          <a-form-model-item>
+            <a-checkbox v-model="nodeSetupEnabled">{{ i18n "pages.tunnel.node.setupTunnel" }}</a-checkbox>
+            <div :style="{ opacity: .6, fontSize: '12px' }">{{ i18n "pages.tunnel.node.setupHint" }}</div>
+          </a-form-model-item>
+
+          <template v-if="nodeSetupEnabled">
+            <a-form-model-item label='{{ i18n "pages.tunnel.protocol" }}'>
+              <a-select v-model="nodeForm.protocol" @change="onNodeProtocolChange">
+                <a-select-option v-for="p in protocols" :key="p" :value="p">[[ p.toUpperCase() ]]</a-select-option>
+              </a-select>
+            </a-form-model-item>
+            <a-divider :style="{ margin: '8px 0' }">{{ i18n "pages.tunnel.advanced" }}</a-divider>
+            <p :style="{ opacity: .6, fontSize: '12px', marginTop: '-4px' }">{{ i18n "pages.tunnel.advancedHint" }}</p>
+            <div v-for="(row, i) in nodeExtraFields" :key="i" :style="{ display:'flex', gap:'8px', marginBottom:'8px' }">
+              <a-input v-model="row.key" placeholder="KEY" :style="{ flex: '0 0 200px' }"></a-input>
+              <a-input v-model="row.value" placeholder="value" :style="{ flex: 1 }"></a-input>
+              <a-button icon="minus" @click="nodeExtraFields.splice(i,1)"></a-button>
+            </div>
+            <a-button type="dashed" size="small" @click="nodeExtraFields.push({key:'',value:''})"><a-icon type="plus"></a-icon>{{ i18n "pages.tunnel.addField" }}</a-button>
+          </template>
+        </a-form-model>
+      </a-modal>
 
       <!-- Node one-liner modal -->
       <a-modal v-model="nodeOnelinerVisible" title='{{ i18n "pages.tunnel.node.created" }}' :footer="null" :width="720">
@@ -326,6 +356,11 @@
       nodeTunnelsLoading: false,
       nodeTunnelsText: '',
       nodeTunnelsTitle: '',
+      nodeCreateVisible: false,
+      nodeCreateLoading: false,
+      nodeForm: { name: '', protocol: '' },
+      nodeSetupEnabled: false,
+      nodeExtraFields: [],
     },
     computed: {
       upCount() { return this.tunnels.filter(t => t.active).length; },
@@ -361,9 +396,33 @@
         this.spinning = false;
       },
       // ---- nodes ----
-      async createNode() {
-        const msg = await HttpUtil.post('/panel/tunnel/nodes', { name: '' });
+      openNodeCreate() {
+        this.nodeForm = { name: '', protocol: this.protocols[0] || '' };
+        this.nodeSetupEnabled = false;
+        this.nodeExtraFields = [];
+        this.onNodeProtocolChange(this.nodeForm.protocol);
+        this.nodeCreateVisible = true;
+      },
+      onNodeProtocolChange(p) {
+        const tpl = PROTO_TEMPLATES[p] || [];
+        this.nodeExtraFields = tpl.map(x => ({ key: x.key, value: x.value }));
+      },
+      async submitNode() {
+        const body = { name: (this.nodeForm.name || '').trim() };
+        if (this.nodeSetupEnabled && this.nodeForm.protocol) {
+          body.protocol = this.nodeForm.protocol;
+          const fields = {};
+          for (const row of this.nodeExtraFields) {
+            const k = (row.key || '').trim();
+            if (k) fields[k] = (row.value || '').trim();
+          }
+          body.fields = fields;
+        }
+        this.nodeCreateLoading = true;
+        const msg = await HttpUtil.post('/panel/tunnel/nodes', body);
+        this.nodeCreateLoading = false;
         if (msg && msg.success && msg.obj) {
+          this.nodeCreateVisible = false;
           this.nodeOneliner = msg.obj.oneliner || '';
           this.nodeOnelinerVisible = true;
           await this.loadAll(false);

@@ -1,16 +1,33 @@
 package controller
 
 import (
+	"net/http"
+	"strings"
+
 	"github.com/mhsanaei/3x-ui/v2/web/service"
 
 	"github.com/gin-gonic/gin"
 )
+
+// nodeRepo is the GitHub repo the Iran-node one-liner is fetched from.
+const nodeRepo = "moeinimy/moeinimy-tunnel-ui"
+
+// nodeExecAllowlist is the set of tunnelctl subcommands the panel may run on a
+// remote node. Mirrors the node agent's own allowlist — read + safe control
+// only; nothing that could be abused for arbitrary execution.
+var nodeExecAllowlist = map[string]bool{
+	"json": true, "list": true, "names": true, "fields": true,
+	"start": true, "stop": true, "restart": true, "enable": true,
+	"disable": true, "status": true, "logs": true, "create": true,
+	"set": true, "remove": true, "optimize": true,
+}
 
 // TunnelController exposes tunnel management (the vendored tunnel-manager) to
 // the panel UI under /panel/tunnel. It only forwards to TunnelService, which
 // shells out to `tunnelctl`; no tunnel state lives in the x-ui database.
 type TunnelController struct {
 	tunnelService service.TunnelService
+	nodeService   service.NodeService
 }
 
 // NewTunnelController creates a new TunnelController and initializes its routes.
@@ -41,6 +58,13 @@ func (a *TunnelController) initRouter(g *gin.RouterGroup) {
 	g.POST("/disable/:name", a.disable)
 	g.POST("/set/:name", a.set)
 	g.POST("/optimize/:action", a.optimize)
+
+	// Iran-node management (login-protected). The node's own poll/result
+	// endpoints are token-authed and registered separately in web.go.
+	g.GET("/nodes", a.nodesList)
+	g.POST("/nodes", a.nodeCreate)
+	g.POST("/nodes/:id/remove", a.nodeRemove)
+	g.POST("/nodes/:id/exec", a.nodeExec)
 }
 
 // meta returns backend availability plus panel-level metadata (version, role,
@@ -170,4 +194,64 @@ func (a *TunnelController) set(c *gin.Context) {
 func (a *TunnelController) optimize(c *gin.Context) {
 	err := a.tunnelService.Optimize(c.Param("action"))
 	jsonMsg(c, I18nWeb(c, "pages.tunnel.toasts.saved"), err)
+}
+
+// ---- Iran-node management --------------------------------------------------
+
+func (a *TunnelController) nodesList(c *gin.Context) {
+	jsonObj(c, a.nodeService.List(), nil)
+}
+
+type nodeCreateReq struct {
+	Name string `json:"name" form:"name"`
+}
+
+// nodeCreate registers a node and returns the ready-to-run one-liner for the
+// Iran server, with the panel URL + one-time token baked in.
+func (a *TunnelController) nodeCreate(c *gin.Context) {
+	var req nodeCreateReq
+	_ = c.ShouldBind(&req)
+	name := strings.TrimSpace(req.Name)
+	if name == "" {
+		name = "iran-node"
+	}
+	id, token := a.nodeService.Create(name)
+
+	scheme := "http"
+	if c.Request.TLS != nil || strings.EqualFold(c.GetHeader("X-Forwarded-Proto"), "https") {
+		scheme = "https"
+	}
+	panelURL := scheme + "://" + c.Request.Host + c.GetString("base_path")
+	oneliner := "bash <(curl -fsSL https://raw.githubusercontent.com/" + nodeRepo +
+		"/main/scripts/install.sh) --iran --panel " + panelURL + " --token " + token
+
+	jsonObj(c, gin.H{"id": id, "name": name, "token": token, "oneliner": oneliner}, nil)
+}
+
+func (a *TunnelController) nodeRemove(c *gin.Context) {
+	err := a.nodeService.Remove(c.Param("id"))
+	jsonMsg(c, I18nWeb(c, "pages.tunnel.toasts.removed"), err)
+}
+
+type nodeExecReq struct {
+	Args []string `json:"args"`
+}
+
+// nodeExec runs an allowlisted tunnelctl command on a node and returns its output.
+func (a *TunnelController) nodeExec(c *gin.Context) {
+	var req nodeExecReq
+	if err := c.ShouldBindJSON(&req); err != nil || len(req.Args) == 0 {
+		pureJsonMsg(c, http.StatusOK, false, I18nWeb(c, "pages.tunnel.toasts.loadFailed"))
+		return
+	}
+	if !nodeExecAllowlist[req.Args[0]] {
+		pureJsonMsg(c, http.StatusOK, false, "command not allowed")
+		return
+	}
+	out, err := a.nodeService.Exec(c.Param("id"), req.Args)
+	if err != nil {
+		jsonMsg(c, out, err)
+		return
+	}
+	jsonObj(c, out, nil)
 }

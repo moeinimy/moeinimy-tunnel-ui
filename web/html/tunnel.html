@@ -125,9 +125,65 @@
             </a-row>
           </a-col>
 
+          <!-- Nodes (Iran servers) -->
+          <a-col :span="24" v-if="installed">
+            <a-card hoverable>
+              <template #title>
+                <a-icon type="cluster"></a-icon>
+                <span :style="{ marginLeft: '8px' }">{{ i18n "pages.tunnel.node.title" }}</span>
+              </template>
+              <template #extra>
+                <a-button type="primary" size="small" @click="createNode">
+                  <a-icon type="plus"></a-icon>{{ i18n "pages.tunnel.node.add" }}
+                </a-button>
+              </template>
+              <div :style="{ opacity: .65, marginTop: '-6px', marginBottom: '12px' }">{{ i18n "pages.tunnel.node.subtitle" }}</div>
+
+              <a-empty v-if="!nodes.length" description='{{ i18n "pages.tunnel.node.empty" }}'></a-empty>
+              <a-list v-else :data-source="nodes" item-layout="horizontal">
+                <a-list-item slot="renderItem" slot-scope="n">
+                  <a-list-item-meta>
+                    <span slot="title">
+                      [[ n.name ]]
+                      <a-tag :color="n.online ? 'green' : 'red'" :style="{ marginLeft: '8px' }">
+                        [[ n.online ? '{{ i18n "pages.tunnel.node.online" }}' : '{{ i18n "pages.tunnel.node.offline" }}' ]]
+                      </a-tag>
+                    </span>
+                    <span slot="description">
+                      {{ i18n "pages.tunnel.node.remoteIp" }}: [[ n.remoteIP || '—' ]] ·
+                      {{ i18n "pages.tunnel.node.lastSeen" }}: [[ n.lastSeen || '{{ i18n "pages.tunnel.node.never" }}' ]]
+                    </span>
+                  </a-list-item-meta>
+                  <a-button size="small" slot="actions" @click="nodeTunnels(n)"><a-icon type="unordered-list"></a-icon>{{ i18n "pages.tunnel.node.viewTunnels" }}</a-button>
+                  <a-popconfirm slot="actions" title="{{ i18n "pages.tunnel.node.removeConfirm" }}" placement="topRight"
+                    @confirm="removeNode(n)" ok-text="{{ i18n "pages.tunnel.node.remove" }}" cancel-text="{{ i18n "cancel" }}">
+                    <a-button size="small" type="danger"><a-icon type="delete"></a-icon></a-button>
+                  </a-popconfirm>
+                </a-list-item>
+              </a-list>
+            </a-card>
+          </a-col>
+
         </a-row>
         </transition>
       </a-spin>
+
+      <!-- Node one-liner modal -->
+      <a-modal v-model="nodeOnelinerVisible" title='{{ i18n "pages.tunnel.node.created" }}' :footer="null" :width="720">
+        <p>{{ i18n "pages.tunnel.node.oneliner" }}:</p>
+        <a-textarea :value="nodeOneliner" :rows="3" readonly :style="{ fontFamily: 'monospace', fontSize: '12px' }"></a-textarea>
+        <div :style="{ marginTop: '10px', display: 'flex', gap: '8px', alignItems: 'center' }">
+          <a-button type="primary" size="small" @click="copyText(nodeOneliner)"><a-icon type="copy"></a-icon>{{ i18n "copy" }}</a-button>
+          <span :style="{ opacity: .6, fontSize: '12px' }">{{ i18n "pages.tunnel.node.onelinerHint" }}</span>
+        </div>
+      </a-modal>
+
+      <!-- Node tunnels modal -->
+      <a-modal v-model="nodeTunnelsVisible" :title="nodeTunnelsTitle" :footer="null" :width="760">
+        <a-spin :spinning="nodeTunnelsLoading">
+          <pre class="tunnel-logs">[[ nodeTunnelsText ]]</pre>
+        </a-spin>
+      </a-modal>
 
       <!-- Create modal -->
       <a-modal v-model="createVisible" title='{{ i18n "pages.tunnel.add" }}' :confirm-loading="createLoading"
@@ -262,6 +318,14 @@
       logsLoading: false,
       logsName: '',
       logsContent: '',
+      // nodes
+      nodes: [],
+      nodeOnelinerVisible: false,
+      nodeOneliner: '',
+      nodeTunnelsVisible: false,
+      nodeTunnelsLoading: false,
+      nodeTunnelsText: '',
+      nodeTunnelsTitle: '',
     },
     computed: {
       upCount() { return this.tunnels.filter(t => t.active).length; },
@@ -290,9 +354,38 @@
           ]);
           if (pl && pl.success) this.protocols = pl.obj || [];
           if (tl && tl.success) this.tunnels = tl.obj || [];
+          const nl = await HttpUtil.get('/panel/tunnel/nodes');
+          if (nl && nl.success) this.nodes = nl.obj || [];
         }
         this.loaded = true;
         this.spinning = false;
+      },
+      // ---- nodes ----
+      async createNode() {
+        const msg = await HttpUtil.post('/panel/tunnel/nodes', { name: '' });
+        if (msg && msg.success && msg.obj) {
+          this.nodeOneliner = msg.obj.oneliner || '';
+          this.nodeOnelinerVisible = true;
+          await this.loadAll(false);
+        }
+      },
+      async removeNode(n) {
+        this.spinning = true;
+        await HttpUtil.post('/panel/tunnel/nodes/' + encodeURIComponent(n.id) + '/remove');
+        await this.loadAll(false);
+      },
+      async nodeTunnels(n) {
+        this.nodeTunnelsTitle = n.name;
+        this.nodeTunnelsText = '';
+        this.nodeTunnelsVisible = true;
+        this.nodeTunnelsLoading = true;
+        const msg = await HttpUtil.post('/panel/tunnel/nodes/' + encodeURIComponent(n.id) + '/exec', { args: ['list'] });
+        this.nodeTunnelsText = (msg && msg.success) ? (msg.obj || '') : (msg && msg.msg) || '{{ i18n "pages.tunnel.node.execFailed" }}';
+        this.nodeTunnelsLoading = false;
+      },
+      copyText(t) {
+        if (navigator.clipboard) navigator.clipboard.writeText(t);
+        else { const el = document.createElement('textarea'); el.value = t; document.body.appendChild(el); el.select(); document.execCommand('copy'); document.body.removeChild(el); }
       },
       async control(action, name) {
         this.spinning = true;

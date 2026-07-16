@@ -282,6 +282,9 @@ func (s *Server) initRouter() (*gin.Engine, error) {
 	s.index = controller.NewIndexController(g)
 	s.panel = controller.NewXUIController(g)
 	s.api = controller.NewAPIController(g, s.customGeoService)
+	// Iran-node control channel (token-authed, no session) — the node agent
+	// dials in here. Kept outside the /panel login group on purpose.
+	controller.NewNodeController(g)
 
 	// Initialize WebSocket hub
 	s.wsHub = websocket.NewHub()

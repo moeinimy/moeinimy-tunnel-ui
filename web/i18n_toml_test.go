@@ -107,6 +107,12 @@ var knownMissing = keySet(
 	"pages.tunnel.toasts.restarted", "pages.tunnel.toasts.enabled",
 	"pages.tunnel.toasts.disabled", "pages.tunnel.toasts.saved",
 	"pages.tunnel.toasts.saveFailed",
+	"pages.tunnel.node.title", "pages.tunnel.node.subtitle", "pages.tunnel.node.add",
+	"pages.tunnel.node.name", "pages.tunnel.node.created", "pages.tunnel.node.oneliner",
+	"pages.tunnel.node.onelinerHint", "pages.tunnel.node.online", "pages.tunnel.node.offline",
+	"pages.tunnel.node.remoteIp", "pages.tunnel.node.lastSeen", "pages.tunnel.node.never",
+	"pages.tunnel.node.viewTunnels", "pages.tunnel.node.remove", "pages.tunnel.node.removeConfirm",
+	"pages.tunnel.node.empty", "pages.tunnel.node.execFailed",
 )
 
 // flattenKeys collapses nested TOML tables into dotted keys (e.g. "pages.core.title").

@@ -1,0 +1,17 @@
+[Unit]
+Description=Tunnel Manager Iran-node control agent (dials out to the foreign panel)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/tunnelctl node-agent
+Restart=always
+RestartSec=5
+# The agent only shells out to tunnelctl; keep it unprivileged-ish but able to
+# manage tunnels (tunnelctl itself calls systemctl/ip, which need root).
+User=root
+NoNewPrivileges=no
+
+[Install]
+WantedBy=multi-user.target

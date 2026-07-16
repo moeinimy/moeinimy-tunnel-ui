@@ -27,7 +27,7 @@ for _f in \
     drivers/driver.sh drivers/gre.sh drivers/paqet.sh drivers/backhaul.sh drivers/backpack.sh drivers/rathole.sh drivers/gost.sh drivers/frp.sh drivers/hysteria.sh \
     modules/telegram.sh modules/tunnel.sh modules/optimize.sh \
     modules/monitor.sh modules/report.sh modules/backup.sh modules/selfupdate.sh \
-    modules/peer.sh modules/api.sh modules/backupfull.sh lib/menu.sh ; do
+    modules/peer.sh modules/api.sh modules/backupfull.sh modules/nodeagent.sh lib/menu.sh ; do
     . "$TM_HOME/$_f"
 done
 
@@ -133,6 +133,7 @@ main() {
         monitor-run)    require_root; monitor_run ;;
         bot-run)        require_root; tg_bot_run ;;
         agent-serve)    agent_serve ;;
+        node-agent)     node_agent_run ;;
         *)              log_error "Unknown command: $cmd"; usage; exit 1 ;;
     esac
 }

@@ -106,14 +106,37 @@ if [[ "$ROLE" == "iran" ]]; then
     } > "$TM_CONFIG_DIR/node.conf"
     chmod 600 "$TM_CONFIG_DIR/node.conf"
 
+    # jq is required by the node agent to parse the panel's command payloads.
+    if ! command -v jq >/dev/null 2>&1; then
+        echo "==> Installing jq"
+        (apt-get update -y && apt-get install -y jq) >/dev/null 2>&1 \
+            || yum install -y jq >/dev/null 2>&1 \
+            || dnf install -y jq >/dev/null 2>&1 \
+            || echo "warning: could not auto-install jq — install it manually." >&2
+    fi
+
+    # Install + start the control agent so the node connects to the panel and is
+    # driven remotely (no further SSH needed on this box).
+    if [[ -f "$SRC_DIR/tunnel/systemd/tm-node-agent.service" ]]; then
+        install -m 0644 "$SRC_DIR/tunnel/systemd/tm-node-agent.service" \
+            /etc/systemd/system/tm-node-agent.service
+        systemctl daemon-reload
+        if [[ -n "$PANEL_URL" && -n "$NODE_TOKEN" ]]; then
+            systemctl enable --now tm-node-agent.service \
+                && echo "==> Node agent started — connecting to the panel." \
+                || echo "warning: could not start tm-node-agent (check: journalctl -u tm-node-agent -e)" >&2
+        fi
+    fi
+
     echo
     echo "==> Iran node installed."
     if [[ -n "$PANEL_URL" && -n "$NODE_TOKEN" ]]; then
         echo "    Panel:  $PANEL_URL"
-        echo "    This node is registered; manage it from the panel's Tunnels > Nodes."
+        echo "    This node dials out to the panel — manage it from Tunnels > Nodes."
+        echo "    Agent status:  systemctl status tm-node-agent"
     else
-        echo "    NOTE: no --panel/--token given. Re-run with them, or add this node"
-        echo "          from the foreign panel using its per-node one-liner."
+        echo "    NOTE: no --panel/--token given. Add this node from the foreign"
+        echo "          panel (Tunnels > Nodes > Add) and run the one-liner it shows."
     fi
     exit 0
 fi

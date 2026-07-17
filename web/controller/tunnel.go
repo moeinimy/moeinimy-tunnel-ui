@@ -201,8 +201,14 @@ func (a *TunnelController) remove(c *gin.Context) {
 	msg := I18nWeb(c, "pages.tunnel.toasts.removed")
 	// Mirror to the nodes even if the local half was already gone, so a
 	// half-removed pair can still be cleaned up from the panel.
-	if nodes := a.nodeService.RemoveTunnelEverywhere(name); len(nodes) > 0 {
+	nodes := a.nodeService.RemoveTunnelEverywhere(name)
+	if len(nodes) > 0 {
 		msg += " — " + I18nWeb(c, "pages.tunnel.toasts.removedOnNodes") + ": " + strings.Join(nodes, ", ")
+		// The local half being absent is not a failure when a node still had one
+		// and we cleaned it: reporting the local "No such tunnel" as an error made
+		// the panel show red for a removal that had actually worked, so the tunnel
+		// looked undeletable while it was already gone.
+		err = nil
 	}
 	jsonMsg(c, msg, err)
 }
@@ -301,7 +307,14 @@ func (a *TunnelController) createPair(c *gin.Context) {
 		return
 	}
 
-	ff, inf, online, err := a.nodeService.BuildPair(req.NodeID, req.Name, req.Protocol, req.Fields, panelHost(c))
+	// The schema declares which side each field belongs on; without it a
+	// side-specific option would be applied to both hosts.
+	schemaRaw, schemaErr := a.tunnelService.Schema()
+	if schemaErr != nil {
+		jsonMsg(c, I18nWeb(c, "pages.tunnel.toasts.createFailed"), schemaErr)
+		return
+	}
+	ff, inf, online, err := a.nodeService.BuildPair(req.NodeID, req.Name, req.Protocol, req.Fields, panelHost(c), schemaRaw)
 	if err != nil {
 		jsonMsg(c, I18nWeb(c, "pages.tunnel.toasts.createFailed"), err)
 		return

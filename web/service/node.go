@@ -269,7 +269,33 @@ func (s *NodeService) Provision(token, iranIP, foreignHost string) (foreignField
 // in the panel and both servers get a matching, working half. Creating a single
 // side from the panel — which is what the old "role" picker did — always produced
 // a tunnel with nothing on the other end.
-func (s *NodeService) BuildPair(id, name, protocol string, fields map[string]string, foreignHost string) (foreign, iran map[string]string, online bool, err error) {
+// schemaSides maps each field of a protocol to the side it belongs on
+// ("both" | "iran" | "foreign"), as declared by `tunnelctl json schema`. The
+// schema is the single source of truth for this: the CLI wizard only ever asks a
+// side-specific question on the side it applies to, and the pair builder has to
+// honour the same split.
+func schemaSides(schemaRaw json.RawMessage, protocol string) map[string]string {
+	var s map[string]struct {
+		Fields []struct {
+			Key  string `json:"key"`
+			Side string `json:"side"`
+		} `json:"fields"`
+	}
+	if len(schemaRaw) == 0 || json.Unmarshal(schemaRaw, &s) != nil {
+		return nil
+	}
+	out := map[string]string{}
+	for _, f := range s[protocol].Fields {
+		out[f.Key] = f.Side
+	}
+	return out
+}
+
+// BuildPair derives the two halves of a tunnel from one form.
+//
+// schemaRaw carries the per-field side declarations; pass nil only if the schema
+// is unavailable (fields then go to both sides, the old behaviour).
+func (s *NodeService) BuildPair(id, name, protocol string, fields map[string]string, foreignHost string, schemaRaw json.RawMessage) (foreign, iran map[string]string, online bool, err error) {
 	nodeReg.mu.Lock()
 	defer nodeReg.mu.Unlock()
 	nodeReg.load()
@@ -292,9 +318,21 @@ func (s *NodeService) BuildPair(id, name, protocol string, fields map[string]str
 		fields[key] = randToken()[:32]
 	}
 
+	sides := schemaSides(schemaRaw, protocol)
+
 	side := func(role, remote string) map[string]string {
 		m := map[string]string{}
 		for k, v := range fields {
+			// Only copy a field to the side it applies to. Side-specific options are
+			// not merely useless on the wrong host — they are actively destructive:
+			// FORWARD_MODE=all is an Iran-side relay, but landing it on the foreign
+			// server made it DNAT every port it owns (bar SSH) to the node, taking
+			// the panel itself offline. ENABLE_NAT is likewise foreign-only, which
+			// is why "NAT works in the CLI but not the panel": the CLI wizard only
+			// ever asks each question on the side that uses it.
+			if sd := sides[k]; sd != "" && sd != "both" && sd != role {
+				continue
+			}
 			m[k] = v
 		}
 		// Set the identity fields AFTER copying the form: a stray ROLE/REMOTE_IP in

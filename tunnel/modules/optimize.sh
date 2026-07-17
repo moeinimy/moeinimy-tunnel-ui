@@ -120,18 +120,34 @@ optimize_nic_backup() {
 # optimize_nic_apply QDISC — keep the device queue short and let the AQM qdisc do
 # the work. A long txqueuelen (or maxed NIC rings) just parks packets in a dumb
 # FIFO ahead of the qdisc, which is exactly what drives latency up under load.
-# Optional shaping: set TM_SHAPE_MBIT in settings.conf to slightly BELOW your real
-# uplink (e.g. 95%) and, with cake, the bottleneck queue moves onto this box where
-# cake can actually control it — the definitive bufferbloat cure when the provider
-# buffers upstream.
+#
+# Optional shaping (cake only). An *unlimited* cake can only manage a queue that
+# forms on THIS box; if the real bottleneck is upstream (a provider rate limiter,
+# or a congested international path) the queue builds there and cake never sees it
+# — latency spikes while our backlog reads 0. Shaping slightly BELOW the real
+# capacity pulls that queue back onto this box, where cake can control it.
+#
+#   TM_TUNNEL_SHAPE_MBIT — shape the TUNNEL interfaces only. This is the one to use
+#     for an Iran relay: the cross-border tunnel path is the slow leg, while the
+#     WAN also carries fast domestic client traffic that must NOT be throttled.
+#     Set it on BOTH servers (each shapes its own egress → controls one direction:
+#     Iran = users' upload, foreign = users' download).
+#   TM_SHAPE_MBIT — shape the WAN itself. Only when the whole uplink is the
+#     bottleneck; on a relay this also throttles domestic traffic.
 optimize_nic_apply() {
-    local qdisc="${1:-fq_codel}" dev
+    local qdisc="${1:-fq_codel}" dev shape wan
+    wan="$(detect_wan_iface)"
     while read -r dev; do
         [[ -n "$dev" ]] || continue
         ip link set dev "$dev" txqueuelen 1000 2>/dev/null || true
-        if [[ "$qdisc" == cake && -n "${TM_SHAPE_MBIT:-}" ]]; then
-            tc qdisc replace dev "$dev" root cake bandwidth "${TM_SHAPE_MBIT}mbit" 2>/dev/null \
-                && log_info "  $dev: cake shaped to ${TM_SHAPE_MBIT}mbit" && continue
+        # Pick the shaping rate that applies to this device, if any.
+        shape=""
+        if [[ "$dev" == "$wan" ]]; then shape="${TM_SHAPE_MBIT:-}"
+        else                            shape="${TM_TUNNEL_SHAPE_MBIT:-}"; fi
+        if [[ "$qdisc" == cake && -n "$shape" ]]; then
+            if tc qdisc replace dev "$dev" root cake bandwidth "${shape}mbit" 2>/dev/null; then
+                log_info "  $dev: cake shaped to ${shape}mbit"; continue
+            fi
         fi
         tc qdisc replace dev "$dev" root "$qdisc" 2>/dev/null \
             && log_debug "  $dev: qdisc $qdisc" || true
@@ -289,7 +305,8 @@ optimize_status() {
     ui_kv "rmem_max"   "$(sysctl -n net.core.rmem_max 2>/dev/null)"
     ui_kv "backlog"    "$(sysctl -n net.core.netdev_max_backlog 2>/dev/null)"
     ui_kv "conntrack"  "$(sysctl -n net.netfilter.nf_conntrack_max 2>/dev/null || echo n/a)"
-    [[ -n "${TM_SHAPE_MBIT:-}" ]] && ui_kv "Shaping" "${TM_SHAPE_MBIT} mbit (cake)"
+    [[ -n "${TM_SHAPE_MBIT:-}" ]]        && ui_kv "Shaping (WAN)"    "${TM_SHAPE_MBIT} mbit (cake)"
+    [[ -n "${TM_TUNNEL_SHAPE_MBIT:-}" ]] && ui_kv "Shaping (tunnel)" "${TM_TUNNEL_SHAPE_MBIT} mbit (cake)"
     # The live per-interface qdisc is what actually controls latency under load.
     local dev q
     while read -r dev; do

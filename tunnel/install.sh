@@ -144,6 +144,10 @@ agent_firewall ensure 2>/dev/null || true
 # takes effect immediately. try-restart only acts if the unit is running.
 systemctl try-restart tm-monitor.service >/dev/null 2>&1 || true
 systemctl try-restart tm-bot.service     >/dev/null 2>&1 || true
+# The Iran node's control agent too: without this, `tunnelctl update` on a node
+# swaps the code underneath a long-running agent that keeps executing the OLD
+# copy (and its cached token) until someone restarts it by hand.
+systemctl try-restart tm-node-agent.service >/dev/null 2>&1 || true
 # Start the bot only if Telegram is already configured.
 if [[ -f "$TM_TELEGRAM_FILE" ]] && grep -q '^TG_ENABLED=yes' "$TM_TELEGRAM_FILE" 2>/dev/null; then
     systemctl enable --now tm-bot.service >/dev/null 2>&1 || true

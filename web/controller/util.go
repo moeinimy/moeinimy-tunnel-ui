@@ -10,6 +10,8 @@ import (
 	"github.com/mhsanaei/3x-ui/v2/web/entity"
 
 	"github.com/gin-gonic/gin"
+	"github.com/mhsanaei/3x-ui/v2/database/model"
+	"github.com/mhsanaei/3x-ui/v2/web/session"
 )
 
 // getRemoteIp extracts the real IP address from the request headers or remote address.
@@ -102,7 +104,52 @@ func html(c *gin.Context, name string, title string, data gin.H) {
 	data["host"] = browserHost(c)
 	data["request_uri"] = c.Request.RequestURI
 	data["base_path"] = c.GetString("base_path")
+	// Every page funnels through here and includes the sidebar with the dot, so
+	// putting the caller's permissions in once makes them available panel-wide with
+	// no round trip and no nav flicker on first paint.
+	//
+	// This drives what the UI SHOWS, never what it ALLOWS: the routes stay reachable
+	// by direct request, so the middleware is the enforcement. Hiding a tab is a
+	// courtesy, not a control.
+	data["perms"] = templatePerms(c)
+	data["me"] = currentUserId(c)
+	// The caller's own 2FA state, for the security panel's switch. The SECRET is
+	// never shipped: the settings blob used to carry it, which handed every
+	// logged-in admin the shared factor.
+	data["two_factor"] = currentTwoFactorEnabled(c)
 	c.HTML(http.StatusOK, name, getContext(data))
+}
+
+// currentUserId is the logged-in admin's id, 0 when logged out. The Admins page
+// uses it to stop an admin deleting or demoting themselves.
+func currentUserId(c *gin.Context) int {
+	if user := session.GetLoginUser(c); user != nil {
+		return user.Id
+	}
+	return 0
+}
+
+// currentTwoFactorEnabled reports whether the caller has their own TOTP on.
+func currentTwoFactorEnabled(c *gin.Context) bool {
+	if user := session.GetLoginUser(c); user != nil {
+		return user.TwoFactorEnable
+	}
+	return false
+}
+
+// templatePerms is the logged-in admin's capability set, shaped for templates.
+// A map keyed by slug so a template reads {{ if .perms.accessInbounds }}.
+func templatePerms(c *gin.Context) map[string]bool {
+	perms := make(map[string]bool, len(model.AllPermissions)+1)
+	user := session.GetLoginUser(c)
+	if user == nil {
+		return perms
+	}
+	for _, d := range model.AllPermissions {
+		perms[d.Slug] = user.Can(d.Bit)
+	}
+	perms["superAdmin"] = user.IsSuperAdmin
+	return perms
 }
 
 // getContext adds version and other context data to the provided gin.H.

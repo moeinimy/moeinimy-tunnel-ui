@@ -65,6 +65,14 @@ limit_mb = 15              # account limit for the termination test (low so the 
                            # magnitude, is what's under test — a broken limit fails to disable
                            # regardless of size). Was 100MB → flaky N/A when the tunnel was slow.
 over_mb = 50               # download to exceed the limit (> limit_mb)
+# Traffic Multiplier phase (runs per protocol). The multiplier is deliberately
+# large: counted bytes differ from downloaded bytes by 0.5x-3x depending on the
+# protocol's encapsulation, so a 2x policy would sit inside that noise and prove
+# nothing. At 10x, weighted traffic is unmistakable. Keep multiplier_after_mb well
+# below multiplier_mb so most of the transfer is past the threshold.
+multiplier_mb = 10         # download for the multiplier test
+multiplier_after_mb = 2    # threshold past which traffic is weighted
+multiplier = 10            # weight applied past the threshold
 settle_timeout = 40        # seconds to poll the counter / auto-disable flag
 urls = [
   "https://proof.ovh.net/files/1Gb.dat",

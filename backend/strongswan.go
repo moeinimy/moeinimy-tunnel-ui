@@ -110,18 +110,9 @@ func ExtractStrongswanBundle() error {
 				return err
 			}
 		case tar.TypeReg:
-			if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+			if err := extractRegularFile(target, tr, os.FileMode(hdr.Mode)&0o777); err != nil {
 				return err
 			}
-			f, err := os.OpenFile(target, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, os.FileMode(hdr.Mode)&0o777)
-			if err != nil {
-				return err
-			}
-			if _, err := io.Copy(f, tr); err != nil {
-				_ = f.Close()
-				return err
-			}
-			_ = f.Close()
 		}
 	}
 	return nil

@@ -21,7 +21,6 @@ func TestDistroSupportedBy(t *testing.T) {
 		{"fedora", "44", true},
 		{"almalinux", "9.4", true},  // point release -> major 9
 		{"almalinux", "10.0", true}, // point release -> major 10
-		{"rocky", "8.10", true},
 		{"rocky", "9.5", true},
 		{"arch", "", true},         // rolling: no VERSION_ID
 		{"arch", "20260101", true}, // rolling: any VERSION_ID
@@ -32,6 +31,10 @@ func TestDistroSupportedBy(t *testing.T) {
 		{"fedora", "40", false},
 		{"rocky", "7.9", false},
 		{"almalinux", "7", false},
+
+		// EL8 dropped in v1.4: bundled strongSwan (IKEv2) setup fails there.
+		{"almalinux", "8.10", false},
+		{"rocky", "8.10", false},
 
 		// distros not on the list at all
 		{"linuxmint", "21", false}, // ubuntu-derived, still not tested
@@ -51,7 +54,7 @@ func TestDistroSupportedBy(t *testing.T) {
 func TestSupportedDistroSummary(t *testing.T) {
 	s := SupportedDistroSummary()
 	for _, want := range []string{"Ubuntu 22/24/26", "Debian 12/13", "Fedora 43/44",
-		"AlmaLinux 8/9/10", "Rocky 8/9/10", "Arch"} {
+		"AlmaLinux 9/10", "Rocky 9/10", "Arch"} {
 		if !strings.Contains(s, want) {
 			t.Errorf("summary %q missing %q", s, want)
 		}

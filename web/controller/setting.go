@@ -4,6 +4,7 @@ import (
 	"errors"
 	"time"
 
+	"github.com/mhsanaei/3x-ui/v2/database/model"
 	"github.com/mhsanaei/3x-ui/v2/util/crypto"
 	"github.com/mhsanaei/3x-ui/v2/web/entity"
 	"github.com/mhsanaei/3x-ui/v2/web/service"
@@ -38,16 +39,20 @@ func NewSettingController(g *gin.RouterGroup) *SettingController {
 // initRouter sets up the routes for settings management.
 func (a *SettingController) initRouter(g *gin.RouterGroup) {
 	g = g.Group("/setting")
+	g.Use(requirePerm(model.PermPanelSettings))
 
 	g.POST("/all", a.getAllSetting)
 	g.POST("/defaultSettings", a.getDefaultSettings)
 	g.POST("/update", a.updateSetting)
 	g.POST("/updateUser", a.updateUser)
+	g.POST("/twoFactor", a.updateTwoFactor)
 	g.POST("/restartPanel", a.restartPanel)
 	g.GET("/getDefaultJsonConfig", a.getDefaultXrayConfig)
 	g.GET("/service", a.serviceStatus)
 	g.GET("/service/log", a.serviceLog)
-	g.POST("/service", a.saveService)
+	// Writes a systemd unit as root: escalation-class, so no permission bit stands
+	// in for it.
+	g.POST("/service", requireSuperAdmin(), a.saveService)
 }
 
 // serviceStatus returns the current systemd unit state for the panel.
@@ -144,4 +149,51 @@ func (a *SettingController) getDefaultXrayConfig(c *gin.Context) {
 		return
 	}
 	jsonObj(c, defaultJsonConfig, nil)
+}
+
+// twoFactorForm enrols or clears the CALLER's own TOTP. There is deliberately no
+// user id: an admin may only ever change their own second factor, so it comes from
+// the session and can never be aimed at someone else.
+type twoFactorForm struct {
+	Enable bool   `json:"enable" form:"enable"`
+	Token  string `json:"token" form:"token"`
+	Code   string `json:"code" form:"code"`
+}
+
+// updateTwoFactor turns the caller's own TOTP on or off.
+func (a *SettingController) updateTwoFactor(c *gin.Context) {
+	user := session.GetLoginUser(c)
+	if user == nil {
+		jsonMsg(c, I18nWeb(c, "pages.settings.security.twoFactor"), errors.New("not logged in"))
+		return
+	}
+	form := &twoFactorForm{}
+	if err := c.ShouldBind(form); err != nil {
+		jsonMsg(c, I18nWeb(c, "pages.settings.security.twoFactor"), err)
+		return
+	}
+	if form.Enable {
+		// Verify against the SUBMITTED secret before storing it. Enrolment used to be
+		// checked in the browser only, so a mistyped code, a clock-skewed phone, or a
+		// tampered request could enable 2FA with a secret the admin cannot produce
+		// codes for, locking them out of their own account permanently.
+		if !service.VerifyTOTPCode(form.Token, form.Code) {
+			jsonMsg(c, I18nWeb(c, "pages.settings.security.twoFactor"),
+				errors.New("that code does not match the secret; check your authenticator and try again"))
+			return
+		}
+	} else if user.TwoFactorEnable {
+		// Turning it off needs the authenticator, not just a live session. The secret
+		// is never sent to the browser, so only the server can check this.
+		if !service.VerifyTOTPCode(user.TwoFactorToken, form.Code) {
+			jsonMsg(c, I18nWeb(c, "pages.settings.security.twoFactor"),
+				errors.New("that code does not match; use your authenticator, or change your password to clear two-factor"))
+			return
+		}
+	}
+	if err := a.userService.SetTwoFactor(user.Id, form.Enable, form.Token); err != nil {
+		jsonMsg(c, I18nWeb(c, "pages.settings.security.twoFactor"), err)
+		return
+	}
+	jsonMsg(c, I18nWeb(c, "pages.settings.security.twoFactor"), nil)
 }

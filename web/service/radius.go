@@ -439,12 +439,7 @@ func (s *RadiusService) handleAcct(w radius.ResponseWriter, r *radius.Request) {
 			// disconnect (or a rapid reconnect) silently drops that traffic, which
 			// under-counts usage and under-enforces limits.
 			up, down := s.nftService.ReadAndResetClientCounters(sess.protocol, sess.ip)
-			if (up > 0 || down > 0) && sess.email != "" {
-				if db := database.GetDB(); db != nil {
-					db.Exec("UPDATE client_traffics SET up = up + ?, down = down + ? WHERE email = ?",
-						up, down, sess.email)
-				}
-			}
+			foldClientTraffic(sess.email, up, down)
 			// Remove nft accounting counters
 			if err := s.nftService.RemoveClientAccounting(sess.protocol, sess.ip); err != nil {
 				logger.Warning("RADIUS: failed to remove nft accounting:", err)
@@ -553,11 +548,8 @@ func (s *RadiusService) ReconcileLocalSessions(protocol string, desired map[stri
 	// Fold + remove counters for vanished IPs OFF the lock (slow nft/db work), same
 	// as the Acct-Stop path.
 	for _, g := range gone {
-		if up, down := s.nftService.ReadAndResetClientCounters(protocol, g.ip); (up > 0 || down > 0) && g.email != "" {
-			if db := database.GetDB(); db != nil {
-				db.Exec("UPDATE client_traffics SET up = up + ?, down = down + ? WHERE email = ?", up, down, g.email)
-			}
-		}
+		up, down := s.nftService.ReadAndResetClientCounters(protocol, g.ip)
+		foldClientTraffic(g.email, up, down)
 		_ = s.nftService.RemoveClientAccounting(protocol, g.ip)
 	}
 	for _, ip := range added {
@@ -1209,12 +1201,8 @@ func (s *RadiusService) allocateBlockIP(inboundId, clientIndex int, blockIPs []s
 			// usage — the pptp multi-user "counted 0" bug. Folding first can't over-count:
 			// ReadAndResetClientCounters zeroes the counter, so the readmit starts from 0.
 			if victim != nil && victim.email != "" {
-				if up, down := s.nftService.ReadAndResetClientCounters(protocol, victimIP); up > 0 || down > 0 {
-					if db := database.GetDB(); db != nil {
-						db.Exec("UPDATE client_traffics SET up = up + ?, down = down + ? WHERE email = ?",
-							up, down, victim.email)
-					}
-				}
+				up, down := s.nftService.ReadAndResetClientCounters(protocol, victimIP)
+				foldClientTraffic(victim.email, up, down)
 			}
 			s.nftService.RemoveClientAccounting(protocol, victimIP)
 			// Force the old device's link down. L2TP/PPTP delete the ppp interface;

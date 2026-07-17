@@ -33,7 +33,11 @@ type Message struct {
 
 // Client represents a WebSocket client connection
 type Client struct {
-	ID        string
+	ID string
+	// UserId is the admin this socket belongs to, so a payload scoped to one admin
+	// can be delivered only to them. Without it every broadcast reaches every
+	// browser, which leaked all admins' inbounds panel-wide.
+	UserId    int
 	Send      chan []byte
 	Hub       *Hub
 	Topics    map[MessageType]bool // Subscribed topics
@@ -399,4 +403,57 @@ func (h *Hub) broadcastInvalidate(originalType MessageType) {
 // getCurrentTimestamp returns current Unix timestamp in milliseconds
 func getCurrentTimestamp() int64 {
 	return time.Now().UnixMilli()
+}
+
+// BroadcastToUser sends a message only to the sockets belonging to one admin.
+// Use it for any payload scoped to a single admin's data; Broadcast reaches every
+// connected browser regardless of who owns what.
+func (h *Hub) BroadcastToUser(userId int, messageType MessageType, payload any) {
+	if h == nil || payload == nil || userId <= 0 {
+		return
+	}
+	msg := Message{
+		Type:    messageType,
+		Payload: payload,
+		Time:    getCurrentTimestamp(),
+	}
+	data, err := json.Marshal(msg)
+	if err != nil {
+		logger.Error("Failed to marshal WebSocket message:", err)
+		return
+	}
+
+	h.mu.RLock()
+	targets := make([]*Client, 0, 4)
+	for client := range h.clients {
+		if client.UserId == userId {
+			targets = append(targets, client)
+		}
+	}
+	h.mu.RUnlock()
+
+	h.broadcastParallel(targets, data)
+}
+
+// ConnectedUserIds returns the distinct admins with at least one live socket, so a
+// producer can build one scoped payload per audience instead of one for everyone.
+func (h *Hub) ConnectedUserIds() []int {
+	if h == nil {
+		return nil
+	}
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	seen := make(map[int]struct{}, len(h.clients))
+	ids := make([]int, 0, len(h.clients))
+	for client := range h.clients {
+		if client.UserId <= 0 {
+			continue
+		}
+		if _, dup := seen[client.UserId]; dup {
+			continue
+		}
+		seen[client.UserId] = struct{}{}
+		ids = append(ids, client.UserId)
+	}
+	return ids
 }

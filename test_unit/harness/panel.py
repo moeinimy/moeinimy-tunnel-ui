@@ -163,8 +163,19 @@ class Panel:
         return self._get("/panel/api/inbounds/list").get("obj", []) or []
 
     def update_inbound(self, inbound_id: int, remark: str, port: int,
-                       protocol: str, settings: dict, listen: str = "") -> dict:
-        return self._post(f"/panel/api/inbounds/update/{inbound_id}", {
+                       protocol: str, settings: dict, listen: str = "",
+                       extra: dict | None = None) -> dict:
+        """Update an inbound.
+
+        The panel binds this POST into a FRESH struct and copies an allowlist onto
+        the stored row unconditionally, so ANY column this body omits is written
+        back as its zero value. The traffic-multiplier columns are therefore read
+        from the current row and echoed back, or every update here would silently
+        wipe them (the same reason the web UI's five payload builders all carry
+        them). `extra` overrides that pass-through.
+        """
+        cur = self.get_inbound(inbound_id) or {}
+        body = {
             "id": str(inbound_id),
             "remark": remark,
             "enable": "true",
@@ -174,7 +185,35 @@ class Panel:
             "settings": json.dumps(settings),
             "streamSettings": "{}",
             "sniffing": "{}",
-        }).get("obj", {})
+            "trafficMultiplierEnable": "true" if cur.get("trafficMultiplierEnable") else "false",
+            "trafficMultiplierAfter": str(int(cur.get("trafficMultiplierAfter") or 0)),
+            "trafficMultiplier": str(cur.get("trafficMultiplier") or 1),
+        }
+        body.update(extra or {})
+        return self._post(f"/panel/api/inbounds/update/{inbound_id}", body).get("obj", {})
+
+    def set_traffic_multiplier(self, inbound_id: int, enable: bool,
+                               after_bytes: int = 0, multiplier: float = 1) -> dict:
+        """Turn an inbound's Traffic Multiplier on/off in place, preserving every
+        other setting. Past `after_bytes` of usage, each byte counts `multiplier`
+        times against the client's quota; below it, 1:1.
+
+        Re-saving an inbound restarts its daemon, so callers must (re)connect after
+        this, not before."""
+        ib = self.get_inbound(inbound_id)
+        return self.update_inbound(
+            inbound_id,
+            ib.get("remark", ""),
+            ib.get("port", 0),
+            ib.get("protocol", ""),
+            json.loads(ib.get("settings") or "{}"),
+            ib.get("listen", "") or "",
+            extra={
+                "trafficMultiplierEnable": "true" if enable else "false",
+                "trafficMultiplierAfter": str(int(after_bytes)),
+                "trafficMultiplier": str(multiplier),
+            },
+        )
 
     def set_user_limit_strategy(self, inbound_id: int, strategy: str):
         """Flip an existing inbound's User Limit Strategy ('reject'/'accept') in

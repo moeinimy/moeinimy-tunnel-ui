@@ -1,12 +1,14 @@
 package controller
 
 import (
+	"errors"
 	"fmt"
 	"net/http"
 	"text/template"
 	"time"
 
 	"github.com/mhsanaei/3x-ui/v2/logger"
+	"github.com/mhsanaei/3x-ui/v2/web/entity"
 	"github.com/mhsanaei/3x-ui/v2/web/service"
 	"github.com/mhsanaei/3x-ui/v2/web/session"
 
@@ -78,11 +80,29 @@ func (a *IndexController) login(c *gin.Context) {
 	safePass := template.HTMLEscapeString(form.Password)
 
 	if user == nil {
+		// The password was right and this account simply has a second factor: ask for
+		// the code rather than reporting a failure. This is NOT a wrong login, so it
+		// must not be logged as one or reported to Telegram as one.
+		//
+		// Safe to disclose here precisely because it is post-password: only someone
+		// who already authenticated learns that the account has 2FA. Answering the
+		// same question BEFORE the password (which is what the old pre-auth
+		// getTwoFactorEnable did once 2FA became per-admin) would hand an
+		// unauthenticated caller an oracle for which usernames exist.
+		if errors.Is(checkErr, service.ErrInvalidTwoFactorCode) && form.TwoFactorCode == "" {
+			c.JSON(http.StatusOK, entity.Msg{
+				Success: false,
+				Msg:     I18nWeb(c, "pages.login.toasts.twoFactorRequired"),
+				Obj:     gin.H{"twoFactorRequired": true},
+			})
+			return
+		}
+
 		logger.Warningf("wrong username: \"%s\", password: \"%s\", IP: \"%s\"", safeUser, safePass, getRemoteIp(c))
 
 		notifyPass := safePass
 
-		if checkErr != nil && checkErr.Error() == "invalid 2fa code" {
+		if errors.Is(checkErr, service.ErrInvalidTwoFactorCode) {
 			translatedError := a.tgbot.I18nBot("tgbot.messages.2faFailed")
 			notifyPass = fmt.Sprintf("*** (%s)", translatedError)
 		}
@@ -118,10 +138,18 @@ func (a *IndexController) logout(c *gin.Context) {
 	c.Redirect(http.StatusTemporaryRedirect, c.GetString("base_path"))
 }
 
-// getTwoFactorEnable retrieves the current status of two-factor authentication.
+// getTwoFactorEnable tells the login page whether to render the code field up front.
+//
+// It always says NO, and the field is revealed only after a correct password on an
+// account that has 2FA (see login, which answers twoFactorRequired).
+//
+// This endpoint is PRE-AUTH and 2FA is now per-admin, so an honest answer would need
+// the username, which would turn it into an oracle for unauthenticated callers:
+// whether an account exists, and whether it has a second factor. Always saying YES
+// closes that too, but shows a Code box to every admin who does not use 2FA, which
+// reads as "you need something you do not have".
+//
+// Kept rather than removed so an older cached login page still renders.
 func (a *IndexController) getTwoFactorEnable(c *gin.Context) {
-	status, err := a.settingService.GetTwoFactorEnable()
-	if err == nil {
-		jsonObj(c, status, nil)
-	}
+	jsonObj(c, false, nil)
 }

@@ -366,3 +366,118 @@ def termination(client: Client, panel, ib, cfg: dict, connect_fn, log) -> SubTes
     except Exception as e:  # noqa: BLE001
         st.status, st.detail = Status.ERROR, str(e)[:150]
     return st
+
+
+def multiplier(client: Client, panel, ib, cfg: dict, connect_fn, log,
+               server_exec=None) -> SubTest:
+    """Prove the per-inbound Traffic Multiplier weights usage past its threshold.
+
+    Runs for EVERY protocol, because the multiplier lives at the accounting layer
+    (below each protocol's collector) rather than in any one protocol's code, so
+    "it works for l2tp" says nothing about wg-c or ssh.
+
+    Why a deliberately LARGE multiplier: counted bytes never equal downloaded bytes
+    (encapsulation, PPP/MPPE overhead and compression push the ratio anywhere from
+    ~0.5x to ~3x, which is why `usage` above tolerates exactly that). A 2x
+    multiplier would sit inside that noise and prove nothing. With 10x, weighted
+    traffic lands far outside any plausible overhead, so the assertion can actually
+    distinguish "the multiplier fired" from "this protocol has fat headers".
+
+    The threshold is kept small relative to the download so most of the transfer is
+    weighted: with threshold T and download D (both post-overhead), billed is
+    T + (D - T) * N, so the ratio to D approaches N as T/D shrinks.
+
+    Restores the multiplier to off before returning: it inflates the account's
+    counter, and a later phase reading that counter would see nonsense.
+    """
+    st = SubTest("traffic-multiplier")
+    tp = cfg.get("traffic_test", {}) or {}
+    n = int(tp.get("multiplier_mb", 10)) * MB
+    after = int(tp.get("multiplier_after_mb", 2)) * MB
+    mult = float(tp.get("multiplier", 10))
+    settle = int(tp.get("settle_timeout", 40))
+    urls = tp.get("urls") or DEFAULT_URLS
+    email = ib.accounts["A"].email
+    log(f"-> traffic-multiplier ({mult}x past {after // MB}MB, download {n // MB}MB on A)...")
+    try:
+        # Order matters. Setting the multiplier re-saves the inbound, which restarts
+        # the VPN daemon and would drop a live tunnel, so it happens BEFORE connecting
+        # (same reason the reset does).
+        panel.set_traffic_multiplier(ib.inbound_id, True, after, mult)
+        panel.reset_client_traffic(ib.inbound_id, email)
+        time.sleep(6)
+
+        # Confirm the panel actually stored it. Without this a silently-dropped field
+        # (the update path writes an omitted column back as its zero value) would look
+        # like "the multiplier didn't fire" and be debugged as an accounting bug.
+        row = panel.get_inbound(ib.inbound_id)
+        if not row.get("trafficMultiplierEnable"):
+            st.status = Status.FAIL
+            st.detail = "panel did not persist trafficMultiplierEnable"
+            st.log = f"inbound row: {row}"
+            return st
+
+        ok, ip, clog = _connect_retry(connect_fn, client)
+        if not ok:
+            st.status, st.detail, st.log = Status.SKIP, "account A failed to connect", clog
+            return st
+        base, _ = _counted(panel, email)
+        size, dlog = _download(client, n, urls)
+        if size < n * 0.8:
+            st.status = Status.NA
+            st.detail = f"could not fetch {n // MB}MB through tunnel (got {size} B) - external dep"
+            st.log = dlog
+            return st
+
+        delta, last_grow, traj = 0, time.monotonic(), []
+        deadline = time.monotonic() + settle + 60
+        while time.monotonic() < deadline:
+            cur, _ = _counted(panel, email)
+            d = cur - base
+            traj.append(d)
+            if d > delta:
+                delta, last_grow = d, time.monotonic()
+            # Expected billed is ~mult x the transfer; stop once clearly weighted.
+            if delta >= size * mult * 0.6:
+                break
+            if delta > 0 and time.monotonic() - last_grow >= 22:  # ~2 idle cycles
+                break
+            time.sleep(8)
+
+        _, frow = _counted(panel, email)
+        ratio = (delta / size) if size else 0
+        # The discriminator. Un-weighted traffic counts at ~0.5x-3x of the bytes
+        # pulled; weighted traffic at ~mult x. Anything at or above 2x the transfer
+        # cannot be explained by overhead alone, and 4x that is a sane ceiling.
+        lo, hi = size * 2.0, size * mult * 4
+        st.log = (f"downloaded {size} B; counted delta {delta} B (baseline {base}); "
+                  f"ratio {ratio:.2f}x; policy {mult}x past {after} B\n"
+                  f"panel up={frow.get('up')} down={frow.get('down')} (tunnel ip {ip})\n"
+                  f"expected delta in [{int(lo)}, {int(hi)}]\n"
+                  f"counter trajectory: {traj}\n{dlog}")
+        if delta <= 0:
+            st.status = Status.FAIL
+            st.detail = "no traffic counted at all"
+        elif delta < lo:
+            # The give-away failure: counted ~= downloaded means the bytes were
+            # billed 1:1, i.e. the multiplier never reached this protocol's path.
+            st.status = Status.FAIL
+            st.detail = (f"counted {delta} B for {size} B ({ratio:.2f}x): traffic was NOT "
+                         f"weighted (expected ~{mult}x past {after // MB}MB)")
+        elif delta > hi:
+            st.status = Status.FAIL
+            st.detail = f"counted {delta} B for {size} B ({ratio:.2f}x): over-counted, multiplier applied more than once?"
+        else:
+            st.status = Status.PASS
+            st.detail = f"counted {delta // MB}MB for {size // MB}MB ({ratio:.2f}x, policy {mult}x)"
+    except Exception as e:  # noqa: BLE001
+        st.status, st.detail = Status.ERROR, str(e)[:150]
+    finally:
+        # Always hand the account back un-weighted, even on failure: a later phase
+        # reading this counter would otherwise see inflated numbers and misdiagnose.
+        try:
+            panel.set_traffic_multiplier(ib.inbound_id, False, 0, 1)
+            panel.reset_client_traffic(ib.inbound_id, email)
+        except Exception as e:  # noqa: BLE001
+            log(f"   (traffic-multiplier cleanup failed: {e})")
+    return st

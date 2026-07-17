@@ -1,6 +1,8 @@
 package controller
 
 import (
+	"github.com/mhsanaei/3x-ui/v2/database/model"
+
 	"github.com/gin-gonic/gin"
 )
 
@@ -12,6 +14,7 @@ type XUIController struct {
 	xraySettingController *XraySettingController
 	coreController        *CoreController
 	tunnelController      *TunnelController
+	adminController       *AdminController
 }
 
 // NewXUIController creates a new XUIController and initializes its routes.
@@ -26,17 +29,24 @@ func (a *XUIController) initRouter(g *gin.RouterGroup) {
 	g = g.Group("/panel")
 	g.Use(a.checkLogin)
 
+	// The overview is the one page every admin may see; it is where a permission
+	// denial redirects to, so gating it would loop.
 	g.GET("/", a.index)
-	g.GET("/inbounds", a.inbounds)
-	g.GET("/settings", a.settings)
-	g.GET("/xray", a.xraySettings)
-	g.GET("/core", a.coreSettings)
-	g.GET("/tunnel", a.tunnel)
+	g.GET("/inbounds", requirePerm(model.PermAccessInbounds), a.inbounds)
+	g.GET("/settings", requirePerm(model.PermPanelSettings), a.settings)
+	g.GET("/xray", requirePerm(model.PermXraySettings), a.xraySettings)
+	g.GET("/core", requirePerm(model.PermCoreSettings), a.coreSettings)
+	g.GET("/admins", requireSuperAdmin(), a.admins)
+	// Tunnels reconfigure the host's networking and can execute commands on a
+	// remote node, so they stay super-admin only rather than riding on one of the
+	// per-inbound permissions.
+	g.GET("/tunnel", requireSuperAdmin(), a.tunnel)
 
 	a.settingController = NewSettingController(g)
 	a.xraySettingController = NewXraySettingController(g)
 	a.coreController = NewCoreController(g)
 	a.tunnelController = NewTunnelController(g)
+	a.adminController = NewAdminController(g)
 }
 
 // index renders the main panel index page.
@@ -67,4 +77,9 @@ func (a *XUIController) coreSettings(c *gin.Context) {
 // tunnel renders the Tunnel management page (server-to-server tunnels + nodes).
 func (a *XUIController) tunnel(c *gin.Context) {
 	html(c, "tunnel.html", "pages.tunnel.title", nil)
+}
+
+// admins renders the Admins management page (super admin only).
+func (a *XUIController) admins(c *gin.Context) {
+	html(c, "admins.html", "pages.admins.title", nil)
 }

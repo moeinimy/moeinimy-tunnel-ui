@@ -223,6 +223,14 @@
                         :status="panelUpdate.phase === 'error' ? 'exception' : (panelUpdate.phase === 'restarting' ? 'success' : 'active')"
                         size="small" :style="{ width: '130px', margin: 0 }"></a-progress>
                       <span :style="{ color: '#1890ff', whiteSpace: 'nowrap' }">[[ panelUpdatePhaseText() ]]</span>
+                      <span v-if="panelUpdateSpeedText()"
+                        :style="{ color: '#8c8c8c', whiteSpace: 'nowrap', fontVariantNumeric: 'tabular-nums' }">
+                        [[ panelUpdateSpeedText() ]]
+                      </span>
+                      <a-button v-if="panelUpdate.phase === 'downloading'" size="small" icon="close"
+                        :loading="panelUpdate.cancelling" @click="cancelPanelUpdate">
+                        {{ i18n "cancel" }}
+                      </a-button>
                     </span>
                     <a-tooltip v-if="panelUpdate.error" :title="panelUpdate.error">
                       <a-tag color="red" :style="{ cursor: 'help', margin: 0 }">
@@ -1111,7 +1119,7 @@
         url: '{{ i18n "pages.index.customGeoValidationUrl" }}',
       },
       coreStatuses: [],
-      panelUpdate: { checking: false, checked: false, available: false, latest: '', current: '', updating: false, error: '', percent: 0, phase: '' },
+      panelUpdate: { checking: false, checked: false, available: false, latest: '', current: '', updating: false, cancelling: false, error: '', percent: 0, phase: '', speed: 0, bytes: 0, total: 0 },
       geofilesModal: { visible: false },
       distroModal: { visible: false, pretty: '', tested: '' },
     },
@@ -1155,40 +1163,87 @@
       // tells the user to reload); an error resets it.
       async doPanelUpdate() {
         this.panelUpdate.updating = true;
+        this.panelUpdate.cancelling = false;
         this.panelUpdate.error = '';
         this.panelUpdate.percent = 0;
         this.panelUpdate.phase = 'downloading';
+        this.panelUpdate.speed = 0;
+        this.panelUpdate.bytes = 0;
+        this.panelUpdate.total = 0;
         // Poll the server for live download/install progress while the (blocking)
         // update request runs. Once it succeeds the panel restarts and these polls
         // start failing — harmless, they're ignored — until the page reloads.
+        // A terminal phase left over from a previous attempt is ignored: this run
+        // hasn't reached the server yet, so only forward progress is adopted.
         const poll = setInterval(async () => {
           try {
             const p = await HttpUtil.get('/panel/api/server/updateProgress');
             if (p && p.success && p.obj) {
+              const phase = p.obj.phase;
+              if (phase === 'error' || phase === 'cancelled') return;
               if (typeof p.obj.percent === 'number') this.panelUpdate.percent = p.obj.percent;
-              if (p.obj.phase) this.panelUpdate.phase = p.obj.phase;
+              if (phase) this.panelUpdate.phase = phase;
+              if (typeof p.obj.speed === 'number') this.panelUpdate.speed = p.obj.speed;
+              if (typeof p.obj.bytes === 'number') this.panelUpdate.bytes = p.obj.bytes;
+              if (typeof p.obj.total === 'number') this.panelUpdate.total = p.obj.total;
             }
           } catch (e) { /* panel restarting — ignore */ }
         }, 700);
         try {
           const msg = await HttpUtil.post('/panel/api/server/updatePanel');
+          clearInterval(poll);
+          // Cancelled: the user's own doing, so reset quietly rather than red-barring.
+          if (msg && msg.success && msg.obj && msg.obj.cancelled) {
+            this.resetPanelUpdate();
+            return;
+          }
           if (!msg || !msg.success) {
-            clearInterval(poll);
             this.panelUpdate.updating = false;
+            this.panelUpdate.cancelling = false;
+            this.panelUpdate.speed = 0;
             this.panelUpdate.error = (msg && msg.msg) || 'update failed';
             return;
           }
           // Success: the new binary is installed and the panel is restarting. Hold the
           // bar at 100% "restarting" and reload once it should be back up.
-          clearInterval(poll);
           this.panelUpdate.phase = 'restarting';
           this.panelUpdate.percent = 100;
+          this.panelUpdate.speed = 0;
           setTimeout(() => location.reload(), 9000);
         } catch (e) {
           clearInterval(poll);
           this.panelUpdate.updating = false;
+          this.panelUpdate.cancelling = false;
+          this.panelUpdate.speed = 0;
           this.panelUpdate.error = '' + e;
         }
+      },
+      // Asks the server to abort the download. The blocked updatePanel request is what
+      // actually resolves the UI, so this only arms the cancel and waits.
+      async cancelPanelUpdate() {
+        this.panelUpdate.cancelling = true;
+        try {
+          const msg = await HttpUtil.post('/panel/api/server/cancelUpdate');
+          // Refused (already installing): drop the spinner and let it finish.
+          if (!msg || !msg.success) this.panelUpdate.cancelling = false;
+        } catch (e) {
+          this.panelUpdate.cancelling = false;
+        }
+      },
+      resetPanelUpdate() {
+        this.panelUpdate.updating = false;
+        this.panelUpdate.cancelling = false;
+        this.panelUpdate.error = '';
+        this.panelUpdate.percent = 0;
+        this.panelUpdate.phase = '';
+        this.panelUpdate.speed = 0;
+        this.panelUpdate.bytes = 0;
+        this.panelUpdate.total = 0;
+      },
+      // Download rate, shown only while bytes are actually moving.
+      panelUpdateSpeedText() {
+        if (this.panelUpdate.phase !== 'downloading' || !this.panelUpdate.speed) return '';
+        return SizeFormatter.sizeFormat(this.panelUpdate.speed) + '/s';
       },
       panelUpdatePhaseText() {
         const map = {

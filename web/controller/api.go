@@ -3,6 +3,7 @@ package controller
 import (
 	"net/http"
 
+	"github.com/mhsanaei/3x-ui/v2/database/model"
 	"github.com/mhsanaei/3x-ui/v2/web/service"
 	"github.com/mhsanaei/3x-ui/v2/web/session"
 
@@ -48,10 +49,15 @@ func (a *APIController) initRouter(g *gin.RouterGroup, customGeo *service.Custom
 	server := api.Group("/server")
 	a.serverController = NewServerController(server)
 
-	NewCustomGeoController(api.Group("/custom-geo"), customGeo)
+	// Custom geo sources feed Xray routing, so they follow the Xray permission.
+	customGeoGroup := api.Group("/custom-geo")
+	customGeoGroup.Use(requirePerm(model.PermXraySettings))
+	NewCustomGeoController(customGeoGroup, customGeo)
 
 	// Extra routes
-	api.GET("/backuptotgbot", a.BackuptoTgbot)
+	// Mails the entire SQLite DB (every admin's inbounds, client credentials, and
+	// the users table with its bcrypt hashes) to a Telegram chat: escalation-class.
+	api.GET("/backuptotgbot", requireSuperAdmin(), a.BackuptoTgbot)
 }
 
 // BackuptoTgbot sends a backup of the panel data to Telegram bot admins.

@@ -162,6 +162,9 @@ func (s *L2tpService) GenerateAllConfigs() error {
 	// config are written ONCE for the whole protocol (not per inbound). Link
 	// options (DNS/MTU) come from the first inbound.
 	cleanupLegacyPerInboundFiles("options.xl2tpd", "l2tp")
+	// Conflicting values are refused at save time, but a panel upgraded with them
+	// already on disk still needs the winner named somewhere.
+	logSharedWinner("l2tp", "DNS/MTU link options", inbounds[0], len(inbounds))
 	if err := s.GeneratePPPOptions(inbounds[0]); err != nil {
 		return err
 	}

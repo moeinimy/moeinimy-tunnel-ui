@@ -119,11 +119,21 @@
       this.twoFactorEnable = await this.getTwoFactorEnable();
     },
     methods: {
+      // Two-step. The code field stays hidden until the server says this account
+      // actually has a second factor, which it only says once the password checks
+      // out. Admins without 2FA never see it, and an unauthenticated caller cannot
+      // use the login form to probe which usernames exist or which have 2FA.
       async login() {
         this.loadingStates.spinning = true;
         const msg = await HttpUtil.post('/login', this.user);
         if (msg.success) {
           location.href = basePath + 'panel/';
+        } else if (msg.obj && msg.obj.twoFactorRequired) {
+          this.twoFactorEnable = true;
+          this.$nextTick(() => {
+            const el = this.$el.querySelector('input[name="twoFactorCode"]');
+            if (el) el.focus();
+          });
         }
         this.loadingStates.spinning = false;
       },

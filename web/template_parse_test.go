@@ -62,6 +62,9 @@ func TestEditedTemplatesParse(t *testing.T) {
 		"html/inbounds.html",
 		"html/component/aClientTable.html",
 		"html/index.html", // dashboard incl. the unsupported-distro warning modal
+		"html/admins.html",
+		"html/modals/admin_modal.html",
+		"html/component/aSidebar.html", // permission-gated tabs
 	}
 	for _, f := range files {
 		b, err := htmlFS.ReadFile(f)

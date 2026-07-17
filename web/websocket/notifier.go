@@ -101,3 +101,23 @@ func BroadcastInvalidate(dataType MessageType) {
 		hub.broadcastInvalidate(dataType)
 	}
 }
+
+// BroadcastInboundsToUser sends an inbounds list to one admin's sockets only.
+// Inbounds are per-admin, so BroadcastInbounds (which reaches every connected
+// browser) is wrong for any list built by GetInbounds(userId).
+func BroadcastInboundsToUser(userId int, inbounds any) {
+	hub := GetHub()
+	if hub != nil {
+		hub.BroadcastToUser(userId, MessageTypeInbounds, inbounds)
+	}
+}
+
+// BroadcastTrafficToUser sends a traffic update to one admin's sockets only.
+// Traffic names clients, so it is per-admin data: BroadcastTraffic reaches every
+// connected browser and must not carry it.
+func BroadcastTrafficToUser(userId int, traffic any) {
+	hub := GetHub()
+	if hub != nil {
+		hub.BroadcastToUser(userId, MessageTypeTraffic, traffic)
+	}
+}

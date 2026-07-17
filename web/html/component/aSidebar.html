@@ -72,37 +72,58 @@
     Vue.component('a-sidebar', {
         data() {
             return {
+                // Each tab is emitted only when the logged-in admin holds the
+                // matching permission, so a section they cannot use never appears.
+                // This is presentation only: the routes themselves are gated by
+                // middleware, which is what actually enforces access.
                 tabs: [
                     {
                         key: '{{ .base_path }}panel/',
                         icon: 'dashboard',
                         title: '{{ i18n "menu.dashboard"}}'
                     },
+                    {{ if .perms.accessInbounds }}
                     {
                         key: '{{ .base_path }}panel/inbounds',
                         icon: 'user',
                         title: '{{ i18n "menu.inbounds"}}'
                     },
+                    {{ end }}
+                    {{ if .perms.accessPanelSettings }}
                     {
                         key: '{{ .base_path }}panel/settings',
                         icon: 'setting',
                         title: '{{ i18n "menu.settings"}}'
                     },
+                    {{ end }}
+                    {{ if .perms.accessXraySettings }}
                     {
                         key: '{{ .base_path }}panel/xray',
                         icon: 'tool',
                         title: '{{ i18n "menu.xray"}}'
                     },
+                    {{ end }}
+                    {{ if .perms.accessCoreSettings }}
                     {
                         key: '{{ .base_path }}panel/core',
                         icon: 'cluster',
                         title: '{{ i18n "menu.core"}}'
                     },
+                    {{ end }}
+                    {{ if .perms.superAdmin }}
+                    {
+                        key: '{{ .base_path }}panel/admins',
+                        icon: 'team',
+                        title: '{{ i18n "menu.admins"}}'
+                    },
+                    {{ end }}
+                    {{ if .perms.superAdmin }}
                     {
                         key: '{{ .base_path }}panel/tunnel',
                         icon: 'deployment-unit',
                         title: '{{ i18n "menu.tunnel"}}'
                     },
+                    {{ end }}
                     {
                         key: '{{ .base_path }}logout/',
                         icon: 'logout',

@@ -54,11 +54,49 @@ type ClientExternalProxy struct {
 	Remark string `json:"remark"`
 }
 
-// User represents a user account in the vpn-ui panel.
+// User represents an admin account in the vpn-ui panel.
+//
+// Password and TwoFactorToken are secrets and carry json:"-" so they can never be
+// serialized out to the browser: the panel's session cookie is signed but NOT
+// encrypted, so anything that reaches it is readable client-side. The session
+// stores only Id for the same reason (see web/session).
 type User struct {
 	Id       int    `json:"id" gorm:"primaryKey;autoIncrement"`
-	Username string `json:"username"`
-	Password string `json:"password"`
+	Username string `json:"username" gorm:"uniqueIndex"`
+	Password string `json:"-"`
+
+	// Nickname is a human label for the Admins list; it carries no privilege.
+	Nickname string `json:"nickname" form:"nickname"`
+
+	// IsSuperAdmin bypasses Permissions entirely and is the only role that may
+	// manage admins. Exactly one is seeded from the pre-existing first user.
+	IsSuperAdmin bool `json:"isSuperAdmin" gorm:"default:0"`
+
+	// Permissions is the capability bitmask; ignored for a super admin.
+	Permissions Permission `json:"-" gorm:"default:0"`
+
+	// Enable gates login without deleting the account (and its owned inbounds).
+	Enable bool `json:"enable" form:"enable" gorm:"default:1"`
+
+	// Per-admin TOTP. Replaces the panel-global twoFactorEnable/twoFactorToken
+	// settings pair, which leaked the shared secret to every logged-in user
+	// through GetAllSetting.
+	TwoFactorEnable bool   `json:"twoFactorEnable" gorm:"default:0"`
+	TwoFactorToken  string `json:"-"`
+}
+
+// InboundAccess grants one admin access to one inbound.
+//
+// Access is ASSIGNED, not inferred from who created the row. A super admin ticks
+// which inbounds each admin can see, and anything unticked does not exist as far as
+// that admin is concerned. Inbound.UserId still records the creator (for the Admins
+// list and Reassign), but it is bookkeeping: it does not decide access.
+//
+// Super admins are never listed here; they see every inbound by role.
+type InboundAccess struct {
+	Id        int `json:"id" gorm:"primaryKey;autoIncrement"`
+	UserId    int `json:"userId" gorm:"index:idx_access_user_inbound,unique,priority:1;index"`
+	InboundId int `json:"inboundId" gorm:"index:idx_access_user_inbound,unique,priority:2;index"`
 }
 
 // Inbound represents an Xray inbound configuration with traffic statistics and settings.
@@ -75,6 +113,14 @@ type Inbound struct {
 	TrafficReset         string               `json:"trafficReset" form:"trafficReset" gorm:"default:never;index:idx_enable_traffic_reset,priority:2"` // Traffic reset schedule
 	LastTrafficResetTime int64                `json:"lastTrafficResetTime" form:"lastTrafficResetTime" gorm:"default:0"`                               // Last traffic reset timestamp
 	ClientStats          []xray.ClientTraffic `gorm:"foreignKey:InboundId;references:Id" json:"clientStats" form:"clientStats"`                        // Client traffic statistics
+
+	// Traffic Multiplier: weight a client's usage once they pass a threshold. Below
+	// TrafficMultiplierAfter traffic counts 1:1; past it each byte counts
+	// TrafficMultiplier times against the client's quota. Applies to every protocol.
+	// The multiplier defaults to 1 (not 0) so existing rows keep counting 1:1.
+	TrafficMultiplierEnable bool    `json:"trafficMultiplierEnable" form:"trafficMultiplierEnable" gorm:"default:0"` // Whether the multiplier applies
+	TrafficMultiplierAfter  int64   `json:"trafficMultiplierAfter" form:"trafficMultiplierAfter" gorm:"default:0"`   // Threshold in bytes, counted on up+down
+	TrafficMultiplier       float64 `json:"trafficMultiplier" form:"trafficMultiplier" gorm:"default:1"`             // Weight applied past the threshold
 
 	// Xray configuration fields
 	Listen         string   `json:"listen" form:"listen"`

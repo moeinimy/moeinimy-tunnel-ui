@@ -33,12 +33,41 @@ type CopyClientsResult struct {
 	Errors  []string `json:"errors"`
 }
 
-// GetInbounds retrieves all inbounds for a specific user.
-// Returns a slice of inbound models with their associated client statistics.
-func (s *InboundService) GetInbounds(userId int) ([]*model.Inbound, error) {
+// GetInboundsFor retrieves the inbounds an admin may see, with their client stats.
+//
+// A super admin sees every inbound by role. Everyone else sees exactly what has been
+// granted to them: access is assigned, not inferred from who created the row, so an
+// admin with no grants correctly sees nothing.
+//
+// Takes the whole user rather than an id because the super-admin case is a different
+// query, and a signature taking only an id invites callers to forget that.
+func (s *InboundService) GetInboundsFor(user *model.User) ([]*model.Inbound, error) {
+	if user == nil {
+		return []*model.Inbound{}, nil
+	}
+	if user.IsSuperAdmin {
+		return s.getInboundsWhere(nil)
+	}
+	var adminService AdminService
+	ids, err := adminService.AccessibleInboundIds(user.Id)
+	if err != nil {
+		return nil, err
+	}
+	if len(ids) == 0 {
+		return []*model.Inbound{}, nil
+	}
+	return s.getInboundsWhere(ids)
+}
+
+// getInboundsWhere loads inbounds by id, or all of them when ids is nil.
+func (s *InboundService) getInboundsWhere(ids []int) ([]*model.Inbound, error) {
 	db := database.GetDB()
 	var inbounds []*model.Inbound
-	err := db.Model(model.Inbound{}).Preload("ClientStats").Where("user_id = ?", userId).Find(&inbounds).Error
+	q := db.Model(model.Inbound{}).Preload("ClientStats")
+	if ids != nil {
+		q = q.Where("id IN (?)", ids)
+	}
+	err := q.Find(&inbounds).Error
 	if err != nil && err != gorm.ErrRecordNotFound {
 		return nil, err
 	}
@@ -289,6 +318,19 @@ func ikev2AuthMode(inbound *model.Inbound) string {
 func (s *InboundService) validateInboundConfig(inbound *model.Inbound) error {
 	validPort := func(p int) bool { return p >= 1 && p <= 65535 }
 
+	// Traffic multiplier. Rejected here so a poisoned value never reaches the DB:
+	// the form binder parses "NaN"/"Inf" happily, and a NaN multiplier drives a
+	// client's counter to MinInt64, after which `up + down >= total` is false
+	// forever and the account can never be quota-disabled again.
+	if inbound.TrafficMultiplierEnable && !validMultiplier(inbound.TrafficMultiplier) {
+		return common.NewError(
+			fmt.Sprintf("Traffic multiplier must be a number greater than 1 and at most %d (got %v)",
+				MaxTrafficMultiplier, inbound.TrafficMultiplier))
+	}
+	if inbound.TrafficMultiplierAfter < 0 {
+		return common.NewError("Traffic multiplier threshold cannot be negative")
+	}
+
 	if inbound.Protocol == "openvpn" {
 		var st struct {
 			TcpEnable  bool   `json:"tcpEnable"`
@@ -372,6 +414,11 @@ func (s *InboundService) validateInboundConfig(inbound *model.Inbound) error {
 
 func (s *InboundService) AddInbound(inbound *model.Inbound) (*model.Inbound, bool, error) {
 	if err := s.validateInboundConfig(inbound); err != nil {
+		return inbound, false, err
+	}
+	// Some settings are dictated by the shared daemon, so refuse a value that would
+	// be accepted and then silently ignored.
+	if err := CheckSharedDaemonConflicts(inbound, 0); err != nil {
 		return inbound, false, err
 	}
 	exist, err := s.checkPortExist(inbound.Listen, inbound.Port, 0)
@@ -503,6 +550,13 @@ func (s *InboundService) AddInbound(inbound *model.Inbound) (*model.Inbound, boo
 // It removes the inbound from the database and the running Xray instance if active.
 // Returns whether Xray needs restart and any error.
 func (s *InboundService) DelInbound(id int) (bool, error) {
+	// Drop every admin's grant for this inbound. Ids are AUTOINCREMENT so they are
+	// not reissued, but leaving the rows means a stale grant lingers forever and the
+	// Admins modal would tick a checkbox for an inbound that no longer exists.
+	var adminService AdminService
+	if err := adminService.RevokeInboundEverywhere(id); err != nil {
+		logger.Warning("revoking inbound access on delete: ", err)
+	}
 	db := database.GetDB()
 
 	var tag string
@@ -560,6 +614,9 @@ func (s *InboundService) GetInbound(id int) (*model.Inbound, error) {
 // Returns the updated inbound, whether Xray needs restart, and any error.
 func (s *InboundService) UpdateInbound(inbound *model.Inbound) (*model.Inbound, bool, error) {
 	if err := s.validateInboundConfig(inbound); err != nil {
+		return inbound, false, err
+	}
+	if err := CheckSharedDaemonConflicts(inbound, inbound.Id); err != nil {
 		return inbound, false, err
 	}
 	exist, err := s.checkPortExist(inbound.Listen, inbound.Port, inbound.Id)
@@ -659,6 +716,9 @@ func (s *InboundService) UpdateInbound(inbound *model.Inbound) (*model.Inbound, 
 	oldInbound.Enable = inbound.Enable
 	oldInbound.ExpiryTime = inbound.ExpiryTime
 	oldInbound.TrafficReset = inbound.TrafficReset
+	oldInbound.TrafficMultiplierEnable = inbound.TrafficMultiplierEnable
+	oldInbound.TrafficMultiplierAfter = inbound.TrafficMultiplierAfter
+	oldInbound.TrafficMultiplier = inbound.TrafficMultiplier
 	oldInbound.Listen = inbound.Listen
 	oldInbound.Port = inbound.Port
 	oldInbound.Protocol = inbound.Protocol
@@ -1875,15 +1935,35 @@ func (s *InboundService) addClientTraffic(tx *gorm.DB, traffics []*xray.ClientTr
 		return err
 	}
 
+	// Owning inbounds for the traffic-multiplier policy. A failure here must not cost
+	// us the tick's traffic: fall back to billing everything 1:1.
+	multiplierInbounds, err := loadMultiplierInbounds(tx, dbClientTraffics)
+	if err != nil {
+		logger.Warning("traffic multiplier: cannot load inbounds, counting raw: ", err)
+		multiplierInbounds = nil
+	}
+
 	for dbTraffic_index := range dbClientTraffics {
 		for traffic_index := range traffics {
 			if dbClientTraffics[dbTraffic_index].Email == traffics[traffic_index].Email {
-				dbClientTraffics[dbTraffic_index].Up += traffics[traffic_index].Up
-				dbClientTraffics[dbTraffic_index].Down += traffics[traffic_index].Down
-				dbClientTraffics[dbTraffic_index].AllTime += (traffics[traffic_index].Up + traffics[traffic_index].Down)
+				rawUp := traffics[traffic_index].Up
+				rawDown := traffics[traffic_index].Down
+				// Weight the delta against the client's quota. Computed rather than
+				// mutated in place: the same slice is broadcast over the websocket and
+				// posted to the external traffic API, which must report measured bytes.
+				billedUp, billedDown := multiplyDelta(
+					multiplierInbounds[dbClientTraffics[dbTraffic_index].InboundId],
+					dbClientTraffics[dbTraffic_index].Up+dbClientTraffics[dbTraffic_index].Down,
+					rawUp, rawDown,
+				)
+				dbClientTraffics[dbTraffic_index].Up += billedUp
+				dbClientTraffics[dbTraffic_index].Down += billedDown
+				// AllTime stays raw: it's the lifetime record of bytes actually moved,
+				// and survives the resets that up/down don't.
+				dbClientTraffics[dbTraffic_index].AllTime += (rawUp + rawDown)
 
 				// Add user in onlineUsers array on traffic
-				if traffics[traffic_index].Up+traffics[traffic_index].Down > 0 {
+				if rawUp+rawDown > 0 {
 					onlineClients = append(onlineClients, traffics[traffic_index].Email)
 					dbClientTraffics[dbTraffic_index].LastOnline = time.Now().UnixMilli()
 				}
@@ -1892,8 +1972,12 @@ func (s *InboundService) addClientTraffic(tx *gorm.DB, traffics []*xray.ClientTr
 		}
 	}
 
-	// Set onlineUsers
-	p.SetOnlineClients(onlineClients)
+	// Set onlineUsers. Nil-checked like the empty-traffics path above: the VPN
+	// protocols report traffic through this same tick even when Xray never started,
+	// and an unguarded call there takes the whole traffic job down.
+	if p != nil {
+		p.SetOnlineClients(onlineClients)
+	}
 
 	err = tx.Save(dbClientTraffics).Error
 	if err != nil {
@@ -2735,12 +2819,16 @@ func (s *InboundService) ResetAllClientTraffics(id int) error {
 	})
 }
 
-func (s *InboundService) ResetAllTraffics() error {
+// ResetAllTraffics zeroes inbound counters. ownerId scopes it to one admin's
+// inbounds; 0 means every owner, which only a super admin may ask for.
+func (s *InboundService) ResetAllTraffics(ownerId int) error {
 	db := database.GetDB()
 
-	result := db.Model(model.Inbound{}).
-		Where("user_id > ?", 0).
-		Updates(map[string]any{"up": 0, "down": 0})
+	q := db.Model(model.Inbound{}).Where("user_id > ?", 0)
+	if ownerId > 0 {
+		q = q.Where("user_id = ?", ownerId)
+	}
+	result := q.Updates(map[string]any{"up": 0, "down": 0})
 
 	err := result.Error
 	return err
@@ -3230,6 +3318,12 @@ func (s *InboundService) MigrateDB() {
 }
 
 func (s *InboundService) GetOnlineClients() []string {
+	// Nil-checked like the other p accesses: Xray may never have started (a
+	// VPN-only deployment, or a failed core), and an unguarded deref panics the
+	// request rather than reporting an empty list.
+	if p == nil {
+		return []string{}
+	}
 	return p.GetOnlineClients()
 }
 

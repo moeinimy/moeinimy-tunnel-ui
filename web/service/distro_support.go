@@ -13,8 +13,8 @@ var supportedDistros = map[string][]string{
 	"ubuntu":    {"22", "24", "26"},
 	"debian":    {"12", "13"},
 	"fedora":    {"43", "44"},
-	"almalinux": {"8", "9", "10"},
-	"rocky":     {"8", "9", "10"},
+	"almalinux": {"9", "10"},
+	"rocky":     {"9", "10"},
 	"arch":      nil, // rolling release — any version
 }
 
@@ -57,7 +57,7 @@ func DistroSupported() (ok bool, pretty, reason string) {
 }
 
 // SupportedDistroSummary is a one-line human list of the tested distros, e.g.
-// "Ubuntu 22/24/26, Debian 12/13, Fedora 43/44, AlmaLinux 8/9/10, Rocky 8/9/10, Arch".
+// "Ubuntu 22/24/26, Debian 12/13, Fedora 43/44, AlmaLinux 9/10, Rocky 9/10, Arch".
 func SupportedDistroSummary() string {
 	parts := make([]string, 0, len(supportedOrder))
 	for _, d := range supportedOrder {

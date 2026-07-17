@@ -33,6 +33,7 @@ func initModels() error {
 	models := []any{
 		&model.User{},
 		&model.Inbound{},
+		&model.InboundAccess{},
 		&model.OutboundTraffics{},
 		&model.Setting{},
 		&model.InboundClientIps{},
@@ -78,12 +79,171 @@ func initUser() error {
 		}
 
 		user := &model.User{
-			Username: defaultUsername,
-			Password: hashedPassword,
+			Username:     defaultUsername,
+			Password:     hashedPassword,
+			IsSuperAdmin: true,
+			Enable:       true,
 		}
 		return db.Create(user).Error
 	}
 	return nil
+}
+
+// migrateSuperAdmin promotes the pre-existing admin on upgrade.
+//
+// The multi-admin columns land via AutoMigrate defaulting to is_super_admin=0 and
+// permissions=0, which would leave an upgraded panel with an admin who can log in
+// but do nothing and cannot grant themselves anything back. So the lowest-id user
+// (the historic GetFirstUser, which was the panel's implicit root) is promoted,
+// and any account predating the Enable column is switched on.
+//
+// Guarded on there being no super admin at all, which makes it idempotent and
+// stops it from re-promoting an account a super admin later demoted on purpose.
+func migrateSuperAdmin() {
+	var supers int64
+	if err := db.Model(&model.User{}).Where("is_super_admin = ?", true).Count(&supers).Error; err != nil {
+		log.Printf("super-admin migration skipped: %v", err)
+		return
+	}
+	if supers > 0 {
+		return
+	}
+	first := &model.User{}
+	if err := db.Model(&model.User{}).Order("id asc").First(first).Error; err != nil {
+		return // no users yet; initUser seeds one as super admin
+	}
+	if err := db.Model(&model.User{}).Where("id = ?", first.Id).
+		Updates(map[string]any{"is_super_admin": true, "enable": true}).Error; err != nil {
+		log.Printf("promoting user %d to super admin failed: %v", first.Id, err)
+		return
+	}
+	log.Printf("multi-admin migration: promoted user %q (id %d) to super admin", first.Username, first.Id)
+}
+
+// migrateGlobalTwoFactor moves the old panel-wide 2FA onto the super admin.
+//
+// 2FA used to be one shared secret in the settings table. It is now per-admin, so
+// without this an upgrade would silently drop the second factor off an account
+// that had deliberately enabled it.
+//
+// The old settings rows are then CLEARED, not left behind. They are not inert: the
+// secret is now the super admin's live second factor, and GetAllSetting serves the
+// whole settings table to any admin holding accessPanelSettings, so leaving it
+// would hand a sub-admin the super admin's TOTP.
+func migrateGlobalTwoFactor() {
+	var enable, token model.Setting
+	if err := db.Where("key = ?", "twoFactorEnable").First(&enable).Error; err != nil {
+		return // never configured
+	}
+	if enable.Value != "true" {
+		return
+	}
+	if err := db.Where("key = ?", "twoFactorToken").First(&token).Error; err != nil || token.Value == "" {
+		return
+	}
+	super := &model.User{}
+	if err := db.Model(&model.User{}).Where("is_super_admin = ?", true).Order("id asc").First(super).Error; err != nil {
+		return
+	}
+	// Copy it over unless the admin already has their own. Deliberately NOT an early
+	// return: an earlier build of this migration copied the secret and left the
+	// settings rows, so a panel upgraded through that build sits here with
+	// TwoFactorEnable already true AND the shared copy still being served. The
+	// clearing below has to run either way.
+	if !super.TwoFactorEnable {
+		err := db.Model(&model.User{}).Where("id = ?", super.Id).Updates(map[string]any{
+			"two_factor_enable": true,
+			"two_factor_token":  token.Value,
+		}).Error
+		if err != nil {
+			log.Printf("migrating global 2FA to super admin failed: %v", err)
+			return
+		}
+		log.Printf("multi-admin migration: moved panel-wide 2FA onto super admin %q", super.Username)
+	}
+	// Clear the shared copy now it has an owner. Unconditional: it is the super
+	// admin's live second factor and GetAllSetting serves it to anyone holding
+	// accessPanelSettings.
+	if err := db.Model(&model.Setting{}).Where("key IN ?", []string{"twoFactorEnable", "twoFactorToken"}).
+		Update("value", "").Error; err != nil {
+		log.Printf("clearing the migrated global 2FA settings failed: %v", err)
+	}
+}
+
+// migrateInboundOwners assigns ownerless inbounds to the super admin.
+//
+// GetInbounds has always filtered by user_id; it looked inert only because every
+// row carried the single admin's id. Any row with user_id=0 (or pointing at a user
+// that no longer exists) would render in nobody's list once a second admin exists,
+// so it is adopted by the super admin rather than being silently orphaned.
+func migrateInboundOwners() {
+	super := &model.User{}
+	if err := db.Model(&model.User{}).Where("is_super_admin = ?", true).Order("id asc").First(super).Error; err != nil {
+		return
+	}
+	var ids []int
+	if err := db.Model(&model.User{}).Pluck("id", &ids).Error; err != nil {
+		return
+	}
+	// GORM renders an empty slice as `NOT IN (NULL)`, which is NULL for every row and
+	// therefore never true, so the statement would silently adopt nothing. Cannot
+	// happen today (the super-admin lookup above guarantees at least one id), but the
+	// guard that saves it is incidental and one refactor from being removed.
+	if len(ids) == 0 {
+		return
+	}
+	res := db.Model(&model.Inbound{}).Where("user_id NOT IN (?) OR user_id IS NULL", ids).
+		Update("user_id", super.Id)
+	if res.Error != nil {
+		log.Printf("adopting ownerless inbounds failed: %v", res.Error)
+		return
+	}
+	if res.RowsAffected > 0 {
+		log.Printf("multi-admin migration: assigned %d ownerless inbound(s) to super admin %q",
+			res.RowsAffected, super.Username)
+	}
+}
+
+// migrateInboundAccess seeds the access table from the existing creator column.
+//
+// Access used to be implied by Inbound.UserId (you saw what you created). It is now
+// assigned explicitly, so without this an upgrade would hide every existing inbound
+// from the admin who made it: the assignment table starts empty and empty means no
+// access. Grants each non-super admin their own rows, once.
+//
+// Guarded on the table being empty rather than per-row, so a super admin who later
+// REVOKES an inbound does not have it silently granted back on the next restart.
+func migrateInboundAccess() {
+	empty, err := isTableEmpty("inbound_accesses")
+	if err != nil || !empty {
+		return
+	}
+	var inbounds []*model.Inbound
+	if err := db.Model(&model.Inbound{}).Find(&inbounds).Error; err != nil {
+		return
+	}
+	supers := map[int]bool{}
+	var superIds []int
+	if err := db.Model(&model.User{}).Where("is_super_admin = ?", true).Pluck("id", &superIds).Error; err == nil {
+		for _, id := range superIds {
+			supers[id] = true
+		}
+	}
+	granted := 0
+	for _, ib := range inbounds {
+		// Super admins see everything by role, so an explicit grant would be noise.
+		if ib.UserId <= 0 || supers[ib.UserId] {
+			continue
+		}
+		if err := db.Create(&model.InboundAccess{UserId: ib.UserId, InboundId: ib.Id}).Error; err != nil {
+			log.Printf("seeding inbound access for inbound %d: %v", ib.Id, err)
+			continue
+		}
+		granted++
+	}
+	if granted > 0 {
+		log.Printf("multi-admin migration: granted %d existing inbound(s) to their creators", granted)
+	}
 }
 
 // runSeeders migrates user passwords to bcrypt and records seeder execution to prevent re-running.
@@ -223,6 +383,12 @@ func InitDB(dbPath string) error {
 	if err := initUser(); err != nil {
 		return err
 	}
+	// Order matters: promote a super admin before adopting inbounds, since the
+	// adoption needs an owner to assign them to.
+	migrateSuperAdmin()
+	migrateGlobalTwoFactor()
+	migrateInboundOwners()
+	migrateInboundAccess()
 	return runSeeders(isUsersEmpty)
 }
 
@@ -312,3 +478,11 @@ func ValidateSQLiteDB(dbPath string) error {
 	}
 	return nil
 }
+
+// MigrateSuperAdminForTest exposes the super-admin promotion so tests can drive
+// the upgrade path against an already-open DB.
+func MigrateSuperAdminForTest() { migrateSuperAdmin() }
+
+// MigrateGlobalTwoFactorForTest exposes the 2FA migration so tests can drive the
+// upgrade path against an already-open DB.
+func MigrateGlobalTwoFactorForTest() { migrateGlobalTwoFactor() }

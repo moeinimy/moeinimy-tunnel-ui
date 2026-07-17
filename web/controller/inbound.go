@@ -12,6 +12,7 @@ import (
 	"github.com/mhsanaei/3x-ui/v2/web/service"
 	"github.com/mhsanaei/3x-ui/v2/web/session"
 	"github.com/mhsanaei/3x-ui/v2/web/websocket"
+	"github.com/mhsanaei/3x-ui/v2/xray"
 
 	"github.com/gin-gonic/gin"
 )
@@ -41,44 +42,61 @@ func NewInboundController(g *gin.RouterGroup) *InboundController {
 // initRouter initializes the routes for inbound-related operations.
 func (a *InboundController) initRouter(g *gin.RouterGroup) {
 
-	g.GET("/list", a.getInbounds)
-	g.GET("/get/:id", a.getInbound)
-	g.GET("/getClientTraffics/:email", a.getClientTraffics)
-	g.GET("/getClientTrafficsById/:id", a.getClientTrafficsById)
+	// Every route here needs BOTH a permission (whether the caller may do this at
+	// all) and an ownership assertion (which objects they may do it to). A bit alone
+	// would let any admin with "edit inbound" edit everyone's inbounds.
+	//
+	// /list is already scoped by user_id inside the service, and /add, /import and
+	// the id-less cert generators have no existing object to authorize against.
+	owns := requireInboundAccess()
+	ownsClient := requireClientAccess()
+	read := requirePerm(model.PermAccessInbounds)
 
-	g.POST("/add", a.addInbound)
-	g.POST("/del/:id", a.delInbound)
-	g.POST("/update/:id", a.updateInbound)
-	g.POST("/clientIps/:email", a.getClientIps)
-	g.POST("/clearClientIps/:email", a.clearClientIps)
-	g.POST("/addClient", a.addInboundClient)
-	g.POST("/:id/copyClients", a.copyInboundClients)
-	g.POST("/:id/delClient/:clientId", a.delInboundClient)
-	g.POST("/updateClient/:clientId", a.updateInboundClient)
-	g.POST("/bulkUpdateClients", a.bulkUpdateClients)
-	g.POST("/:id/resetClientTraffic/:email", a.resetClientTraffic)
-	g.POST("/resetAllTraffics", a.resetAllTraffics)
-	g.POST("/resetAllClientTraffics/:id", a.resetAllClientTraffics)
-	g.POST("/delDepletedClients/:id", a.delDepletedClients)
-	g.POST("/import", a.importInbound)
-	g.POST("/onlines", a.onlines)
-	g.POST("/lastOnline", a.lastOnline)
-	g.POST("/updateClientTraffic/:email", a.updateClientTraffic)
-	g.POST("/:id/delClientByEmail/:email", a.delInboundClientByEmail)
-	g.GET("/:id/ovpn/:proto", a.downloadOvpn)
-	g.POST("/:id/generate-openvpn-certs", a.generateOpenVpnCerts)
+	g.GET("/list", read, a.getInbounds)
+	g.GET("/get/:id", read, owns, a.getInbound)
+	g.GET("/getClientTraffics/:email", read, ownsClient, a.getClientTraffics)
+	// NOTE: this :id is a CLIENT id (a UUID, or a username for the VPN protocols),
+	// NOT an inbound id, so requireInboundOwner must not be used here: it would Atoi
+	// the UUID (404ing the route for every non-super admin) and, for a numeric
+	// username, check ownership of an unrelated inbound with that id. Scoped in the
+	// handler instead.
+	g.GET("/getClientTrafficsById/:id", read, a.getClientTrafficsById)
+
+	g.POST("/add", requirePerm(model.PermCreateInbound), a.addInbound)
+	g.POST("/del/:id", requirePerm(model.PermDeleteInbound), owns, a.delInbound)
+	g.POST("/update/:id", requirePerm(model.PermEditInbound), owns, a.updateInbound)
+	g.POST("/clientIps/:email", read, ownsClient, a.getClientIps)
+	g.POST("/clearClientIps/:email", requirePerm(model.PermEditClient), ownsClient, a.clearClientIps)
+	g.POST("/addClient", requirePerm(model.PermCreateClient), a.addInboundClient)
+	g.POST("/:id/copyClients", requirePerm(model.PermCreateClient), owns, a.copyInboundClients)
+	g.POST("/:id/delClient/:clientId", requirePerm(model.PermDeleteClient), owns, a.delInboundClient)
+	g.POST("/updateClient/:clientId", requirePerm(model.PermEditClient), a.updateInboundClient)
+	g.POST("/bulkUpdateClients", requirePerm(model.PermBulkOperation), a.bulkUpdateClients)
+	// ownsClient as well as owns: the service resolves this one by :email and ignores
+	// :id, so guarding only :id checks the wrong object.
+	g.POST("/:id/resetClientTraffic/:email", requirePerm(model.PermEditClient), owns, ownsClient, a.resetClientTraffic)
+	g.POST("/resetAllTraffics", requirePerm(model.PermBulkOperation), a.resetAllTraffics)
+	g.POST("/resetAllClientTraffics/:id", requirePerm(model.PermBulkOperation), owns, a.resetAllClientTraffics)
+	g.POST("/delDepletedClients/:id", requirePerm(model.PermDeleteClient), owns, a.delDepletedClients)
+	g.POST("/import", requirePerm(model.PermCreateInbound), a.importInbound)
+	g.POST("/onlines", read, a.onlines)
+	g.POST("/lastOnline", read, a.lastOnline)
+	g.POST("/updateClientTraffic/:email", requirePerm(model.PermEditClient), ownsClient, a.updateClientTraffic)
+	g.POST("/:id/delClientByEmail/:email", requirePerm(model.PermDeleteClient), owns, a.delInboundClientByEmail)
+	g.GET("/:id/ovpn/:proto", read, owns, a.downloadOvpn)
+	g.POST("/:id/generate-openvpn-certs", requirePerm(model.PermEditInbound), owns, a.generateOpenVpnCerts)
 	// id-less variant so certs can be generated for a not-yet-saved inbound
-	g.POST("/generate-openvpn-certs", a.generateOpenVpnCerts)
-	g.POST("/:id/generate-ocserv-cert", a.generateOcservCert)
-	g.POST("/generate-ocserv-cert", a.generateOcservCert)
-	g.POST("/:id/generate-sstp-cert", a.generateSstpCert)
-	g.POST("/generate-sstp-cert", a.generateSstpCert)
-	g.POST("/:id/generate-ikev2-cert", a.generateIkev2Cert)
-	g.POST("/generate-ikev2-cert", a.generateIkev2Cert)
-	g.POST("/check-ikev2-cert", a.checkIkev2Cert)
+	g.POST("/generate-openvpn-certs", requirePerm(model.PermCreateInbound), a.generateOpenVpnCerts)
+	g.POST("/:id/generate-ocserv-cert", requirePerm(model.PermEditInbound), owns, a.generateOcservCert)
+	g.POST("/generate-ocserv-cert", requirePerm(model.PermCreateInbound), a.generateOcservCert)
+	g.POST("/:id/generate-sstp-cert", requirePerm(model.PermEditInbound), owns, a.generateSstpCert)
+	g.POST("/generate-sstp-cert", requirePerm(model.PermCreateInbound), a.generateSstpCert)
+	g.POST("/:id/generate-ikev2-cert", requirePerm(model.PermEditInbound), owns, a.generateIkev2Cert)
+	g.POST("/generate-ikev2-cert", requirePerm(model.PermCreateInbound), a.generateIkev2Cert)
+	g.POST("/check-ikev2-cert", requirePerm(model.PermCreateInbound), a.checkIkev2Cert)
 	// WireGuard (C): render a client's per-device .conf(s) (keys are server-minted).
-	g.GET("/:id/wgc-configs", a.getWgcConfigs)
-	g.GET("/:id/ssh-configs", a.getSshConfigs)
+	g.GET("/:id/wgc-configs", read, owns, a.getWgcConfigs)
+	g.GET("/:id/ssh-configs", read, owns, a.getSshConfigs)
 }
 
 // onL2tpChanged regenerates L2TP configs and restarts services when an L2TP inbound is modified.
@@ -312,7 +330,7 @@ type CopyInboundClientsRequest struct {
 // getInbounds retrieves the list of inbounds for the logged-in user.
 func (a *InboundController) getInbounds(c *gin.Context) {
 	user := session.GetLoginUser(c)
-	inbounds, err := a.inboundService.GetInbounds(user.Id)
+	inbounds, err := a.inboundService.GetInboundsFor(user)
 	if err != nil {
 		jsonMsg(c, I18nWeb(c, "pages.inbounds.toasts.obtain"), err)
 		return
@@ -353,6 +371,28 @@ func (a *InboundController) getClientTrafficsById(c *gin.Context) {
 	if err != nil {
 		jsonMsg(c, I18nWeb(c, "pages.inbounds.toasts.trafficGetError"), err)
 		return
+	}
+	// The lookup is panel-wide (it matches the client id across every inbound), so
+	// the result is filtered to what the caller owns. Route middleware cannot do this
+	// one: the path param is a client id, not an inbound id.
+	user := session.GetLoginUser(c)
+	if user == nil {
+		jsonObj(c, []xray.ClientTraffic{}, nil)
+		return
+	}
+	if !user.IsSuperAdmin {
+		owned := make([]xray.ClientTraffic, 0, len(clientTraffics))
+		for _, ct := range clientTraffics {
+			ok, oerr := accessService.CanAccessInbound(ct.InboundId, user.Id)
+			if oerr != nil {
+				jsonObj(c, []xray.ClientTraffic{}, nil) // fail closed
+				return
+			}
+			if ok {
+				owned = append(owned, ct)
+			}
+		}
+		clientTraffics = owned
 	}
 	jsonObj(c, clientTraffics, nil)
 }
@@ -401,6 +441,14 @@ func (a *InboundController) addInbound(c *gin.Context) {
 	}
 
 	inbound, needRestart, err := a.inboundService.AddInbound(inbound)
+	// Access is assigned, so a creator has no grant for what they just made and the
+	// inbound would vanish the moment it was created. Grant it. Super admins see
+	// everything by role and need no row.
+	if err == nil && inbound != nil && !user.IsSuperAdmin {
+		if gerr := accessService.GrantInbound(user.Id, inbound.Id); gerr != nil {
+			logger.Warning("granting the creator access to their new inbound: ", gerr)
+		}
+	}
 	if err != nil {
 		jsonMsg(c, I18nWeb(c, "somethingWentWrong"), err)
 		return
@@ -427,9 +475,11 @@ func (a *InboundController) addInbound(c *gin.Context) {
 	} else if needRestart {
 		a.xrayService.SetToNeedRestart()
 	}
-	// Broadcast inbounds update via WebSocket
-	inbounds, _ := a.inboundService.GetInbounds(user.Id)
-	websocket.BroadcastInbounds(inbounds)
+	// Broadcast inbounds update via WebSocket, to this admin's own sockets only.
+	// The list is already scoped to user.Id, so broadcasting it panel-wide handed
+	// every other admin a table that isn't theirs.
+	inbounds, _ := a.inboundService.GetInboundsFor(user)
+	websocket.BroadcastInboundsToUser(user.Id, inbounds)
 }
 
 // delInbound deletes an inbound configuration by its ID.
@@ -473,10 +523,10 @@ func (a *InboundController) delInbound(c *gin.Context) {
 	} else if needRestart {
 		a.xrayService.SetToNeedRestart()
 	}
-	// Broadcast inbounds update via WebSocket
+	// Broadcast inbounds update via WebSocket, to this admin's own sockets only.
 	user := session.GetLoginUser(c)
-	inbounds, _ := a.inboundService.GetInbounds(user.Id)
-	websocket.BroadcastInbounds(inbounds)
+	inbounds, _ := a.inboundService.GetInboundsFor(user)
+	websocket.BroadcastInboundsToUser(user.Id, inbounds)
 }
 
 // updateInbound updates an existing inbound configuration.
@@ -527,10 +577,10 @@ func (a *InboundController) updateInbound(c *gin.Context) {
 	} else if needRestart {
 		a.xrayService.SetToNeedRestart()
 	}
-	// Broadcast inbounds update via WebSocket
+	// Broadcast inbounds update via WebSocket, to this admin's own sockets only.
 	user := session.GetLoginUser(c)
-	inbounds, _ := a.inboundService.GetInbounds(user.Id)
-	websocket.BroadcastInbounds(inbounds)
+	inbounds, _ := a.inboundService.GetInboundsFor(user)
+	websocket.BroadcastInboundsToUser(user.Id, inbounds)
 }
 
 // getClientIps retrieves the IP addresses associated with a client by email.
@@ -597,6 +647,14 @@ func (a *InboundController) addInboundClient(c *gin.Context) {
 		jsonMsg(c, I18nWeb(c, "pages.inbounds.toasts.inboundUpdateSuccess"), err)
 		return
 	}
+	// The target inbound is a BODY field, so the route table cannot guard it and
+	// requireInboundOwner never sees it. Without this an admin holding only
+	// createClient provisions a live, fully working VPN account on another admin's
+	// inbound: invisible in their own list, eating the victim's IP pool and quota.
+	if !a.callerOwnsInbound(c, data.Id) {
+		jsonMsg(c, I18nWeb(c, "pages.inbounds.notFound"), errNotOwned)
+		return
+	}
 
 	needRestart, err := a.inboundService.AddInboundClient(data)
 	if err != nil {
@@ -651,6 +709,14 @@ func (a *InboundController) copyInboundClients(c *gin.Context) {
 	}
 	if req.SourceInboundID <= 0 {
 		jsonMsg(c, I18nWeb(c, "somethingWentWrong"), fmt.Errorf("invalid source inbound id"))
+		return
+	}
+	// The SOURCE arrives in the body, so requireInboundOwner (which only sees :id,
+	// the destination) never checks it. Without this an admin holding only
+	// createClient copies another admin's clients (UUIDs, passwords, emails) into
+	// their own inbound and reads them straight back out of /list.
+	if !a.callerOwnsInbound(c, req.SourceInboundID) {
+		jsonMsg(c, I18nWeb(c, "pages.inbounds.notFound"), errNotOwned)
 		return
 	}
 
@@ -714,6 +780,12 @@ func (a *InboundController) updateInboundClient(c *gin.Context) {
 		jsonMsg(c, I18nWeb(c, "pages.inbounds.toasts.inboundUpdateSuccess"), err)
 		return
 	}
+	// The target inbound arrives in the BODY, so requireInboundOwner has no path
+	// param to check and the assertion has to happen here.
+	if !a.callerOwnsInbound(c, inbound.Id) {
+		jsonMsg(c, I18nWeb(c, "pages.inbounds.notFound"), errNotOwned)
+		return
+	}
 
 	needRestart, err := a.inboundService.UpdateInboundClient(inbound, clientId)
 	if err != nil {
@@ -769,6 +841,16 @@ func (a *InboundController) bulkUpdateClients(c *gin.Context) {
 		jsonMsg(c, I18nWeb(c, "somethingWentWrong"), err)
 		return
 	}
+	// Targets are a JSON array in the body. Reject the whole batch unless the caller
+	// owns every inbound named: a partial apply would be worse than a refusal.
+	ids := make([]int, 0, len(req.Targets))
+	for _, t := range req.Targets {
+		ids = append(ids, t.InboundId)
+	}
+	if !a.callerOwnsInbounds(c, ids) {
+		jsonMsg(c, I18nWeb(c, "pages.inbounds.notFound"), errNotOwned)
+		return
+	}
 	result, touched, err := a.inboundService.BulkUpdateClients(req)
 	if err != nil {
 		jsonMsg(c, I18nWeb(c, "somethingWentWrong"), err)
@@ -807,6 +889,13 @@ func (a *InboundController) bulkUpdateClients(c *gin.Context) {
 }
 
 // resetClientTraffic resets the traffic counter for a specific client in an inbound.
+// resetClientTraffic zeroes one client's counter.
+//
+// The :id is owner-checked by the route, but ResetClientTraffic resolves the client
+// by EMAIL alone and ignores the id, so that check guards the wrong object: an
+// admin could pass their OWN inbound id and any other admin's client email, zeroing
+// the victim's usage and force-enabling a client the quota system had disabled.
+// The email must be owner-checked too.
 func (a *InboundController) resetClientTraffic(c *gin.Context) {
 	id, err := strconv.Atoi(c.Param("id"))
 	if err != nil {
@@ -837,7 +926,17 @@ func (a *InboundController) resetClientTraffic(c *gin.Context) {
 
 // resetAllTraffics resets all traffic counters across all inbounds.
 func (a *InboundController) resetAllTraffics(c *gin.Context) {
-	err := a.inboundService.ResetAllTraffics()
+	// "All" means the caller's own inbounds. A super admin still resets everything.
+	user := session.GetLoginUser(c)
+	if user == nil {
+		jsonMsg(c, I18nWeb(c, "somethingWentWrong"), errNotOwned)
+		return
+	}
+	ownerId := user.Id
+	if user.IsSuperAdmin {
+		ownerId = 0 // 0 = every owner
+	}
+	err := a.inboundService.ResetAllTraffics(ownerId)
 	if err != nil {
 		jsonMsg(c, I18nWeb(c, "somethingWentWrong"), err)
 		return
@@ -907,6 +1006,11 @@ func (a *InboundController) importInbound(c *gin.Context) {
 
 	needRestart := false
 	inbound, needRestart, err = a.inboundService.AddInbound(inbound)
+	if err == nil && inbound != nil && !user.IsSuperAdmin {
+		if gerr := accessService.GrantInbound(user.Id, inbound.Id); gerr != nil {
+			logger.Warning("granting the creator access to their imported inbound: ", gerr)
+		}
+	}
 	jsonMsgObj(c, I18nWeb(c, "pages.inbounds.toasts.inboundCreateSuccess"), inbound, err)
 	if err == nil && needRestart {
 		a.xrayService.SetToNeedRestart()
@@ -930,13 +1034,66 @@ func (a *InboundController) delDepletedClients(c *gin.Context) {
 
 // onlines retrieves the list of currently online clients.
 func (a *InboundController) onlines(c *gin.Context) {
-	jsonObj(c, a.inboundService.GetOnlineClients(), nil)
+	// Both this and lastOnline return a panel-wide list of client emails, which is
+	// per-admin data. Scoping only the websocket broadcast would have been
+	// cosmetic: the same two datasets are one unfiltered POST away.
+	jsonObj(c, a.scopeEmails(c, a.inboundService.GetOnlineClients()), nil)
 }
 
 // lastOnline retrieves the last online timestamps for clients.
 func (a *InboundController) lastOnline(c *gin.Context) {
 	data, err := a.inboundService.GetClientsLastOnline()
-	jsonObj(c, data, err)
+	if err != nil {
+		jsonObj(c, data, err)
+		return
+	}
+	user := session.GetLoginUser(c)
+	if user == nil {
+		jsonObj(c, map[string]int64{}, nil)
+		return
+	}
+	if user.IsSuperAdmin {
+		jsonObj(c, data, nil)
+		return
+	}
+	access, oerr := accessService.ClientEmailAccess()
+	if oerr != nil {
+		// Fail closed: an ownership lookup we cannot do must not default to
+		// handing over every admin's clients.
+		jsonObj(c, map[string]int64{}, nil)
+		return
+	}
+	mine := make(map[string]int64, len(data))
+	for email, t := range data {
+		if access[email][user.Id] {
+			mine[email] = t
+		}
+	}
+	jsonObj(c, mine, nil)
+}
+
+// scopeEmails filters a panel-wide list of client emails down to the caller's own.
+// Super admins see everything; anyone else sees only clients on inbounds they own.
+// Fails CLOSED: if ownership cannot be resolved, nothing is returned.
+func (a *InboundController) scopeEmails(c *gin.Context, emails []string) []string {
+	user := session.GetLoginUser(c)
+	if user == nil {
+		return []string{}
+	}
+	if user.IsSuperAdmin {
+		return emails
+	}
+	access, err := accessService.ClientEmailAccess()
+	if err != nil {
+		return []string{}
+	}
+	mine := make([]string, 0, len(emails))
+	for _, email := range emails {
+		if access[email][user.Id] {
+			mine = append(mine, email)
+		}
+	}
+	return mine
 }
 
 // updateClientTraffic updates the traffic statistics for a client by email.
@@ -1261,4 +1418,23 @@ func (a *InboundController) delInboundClientByEmail(c *gin.Context) {
 	if needRestart {
 		a.xrayService.SetToNeedRestart()
 	}
+}
+
+// callerOwnsInbound reports whether the logged-in admin may act on this inbound.
+// Super admins may act on any. Used where the target comes from the request BODY
+// rather than a path param, so requireInboundAccess cannot see it.
+func (a *InboundController) callerOwnsInbound(c *gin.Context, inboundId int) bool {
+	return a.callerOwnsInbounds(c, []int{inboundId})
+}
+
+func (a *InboundController) callerOwnsInbounds(c *gin.Context, inboundIds []int) bool {
+	user := session.GetLoginUser(c)
+	if user == nil {
+		return false
+	}
+	if user.IsSuperAdmin {
+		return true
+	}
+	owns, err := accessService.CanAccessAllInbounds(inboundIds, user.Id)
+	return err == nil && owns
 }

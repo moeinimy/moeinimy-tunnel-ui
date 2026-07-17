@@ -1,6 +1,7 @@
 package controller
 
 import (
+	"github.com/mhsanaei/3x-ui/v2/database/model"
 	"github.com/mhsanaei/3x-ui/v2/web/service"
 
 	"github.com/gin-gonic/gin"
@@ -22,10 +23,12 @@ func NewCoreController(g *gin.RouterGroup) *CoreController {
 // initRouter sets up the routes for core status and control under /panel/core.
 func (a *CoreController) initRouter(g *gin.RouterGroup) {
 	g = g.Group("/core")
+	g.Use(requirePerm(model.PermCoreSettings))
 	g.GET("/status", a.status)
 	g.POST("/provision", a.provision)
 	g.GET("/provision-status", a.provisionStatus)
-	g.POST("/reboot", a.reboot)
+	// Reboots the HOST: escalation-class.
+	g.POST("/reboot", requireSuperAdmin(), a.reboot)
 	g.POST("/restart/:core", a.restart)
 	g.POST("/restart-all", a.restartAll)
 	g.POST("/stop/:core", a.stop)

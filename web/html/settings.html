@@ -117,6 +117,9 @@
     el: '#app',
     data: {
       themeSwitcher,
+      // The caller's own 2FA state, rendered server-side. Not part of allSetting:
+      // 2FA is per-admin now, and the settings blob goes to every logged-in admin.
+      twoFactorEnable: {{ .two_factor }},
       loadingStates: {
         fetched: false,
         spinning: false
@@ -404,37 +407,41 @@
 
         window.location.replace(url.toString());
       },
+      // Two-factor is per-admin and lives on the admin's own row, not in the shared
+      // settings blob (which was readable by every logged-in admin). So this saves
+      // through its own endpoint rather than riding along with the settings save,
+      // and the SERVER re-verifies the code against the submitted secret: the
+      // browser-side check alone could enrol a secret the admin cannot produce
+      // codes for and lock them out for good.
       toggleTwoFactor(newValue) {
         if (newValue) {
           const newTwoFactorToken = RandomUtil.randomBase32String()
-
           twoFactorModal.show({
             title: '{{ i18n "pages.settings.security.twoFactorModalSetTitle" }}',
             token: newTwoFactorToken,
             type: 'set',
-            confirm: (success) => {
-              if (success) {
-                Vue.prototype.$message['success']('{{ i18n "pages.settings.security.twoFactorModalSetSuccess" }}')
-
-                this.allSetting.twoFactorToken = newTwoFactorToken
-              }
-
-              this.allSetting.twoFactorEnable = success
+            confirm: async (success) => {
+              if (!success) return;
+              const msg = await HttpUtil.post('/panel/setting/twoFactor', {
+                enable: true,
+                token: newTwoFactorToken,
+                code: twoFactorModal.enteredCode,
+              });
+              // Only flip the switch once the server has actually stored it.
+              if (msg && msg.success) this.twoFactorEnable = true;
             }
           })
         } else {
           twoFactorModal.show({
             title: '{{ i18n "pages.settings.security.twoFactorModalDeleteTitle" }}',
             description: '{{ i18n "pages.settings.security.twoFactorModalRemoveStep" }}',
-            token: this.allSetting.twoFactorToken,
             type: 'confirm',
-            confirm: (success) => {
-              if (success) {
-                Vue.prototype.$message['success']('{{ i18n "pages.settings.security.twoFactorModalDeleteSuccess" }}')
-
-                this.allSetting.twoFactorEnable = false
-                this.allSetting.twoFactorToken = ""
-              }
+            confirm: async (success, code) => {
+              if (!success) return;
+              // The server checks the code against the stored secret before clearing:
+              // turning 2FA off should need the authenticator, not just the session.
+              const msg = await HttpUtil.post('/panel/setting/twoFactor', { enable: false, code });
+              if (msg && msg.success) this.twoFactorEnable = false;
             }
           })
         }

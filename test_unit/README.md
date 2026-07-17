@@ -82,7 +82,7 @@ python3 + pip and the python deps, starts the incus daemon, and runs
 
 ```bash
 # place the prebuilt amd64 binary named `vpn-ui` (+ its bin/ dir) in test_subject/
-sudo ./run.sh                          # full 15-distro matrix (auto-setup if needed)
+sudo ./run.sh                          # full 12-distro matrix (auto-setup if needed)
 sudo ./run.sh --only ubuntu-24,arch    # subset
 sudo ./run.sh -c /path/to/other.toml
 ```

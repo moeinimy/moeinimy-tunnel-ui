@@ -11,6 +11,7 @@ package backend
 
 import (
 	"embed"
+	"io"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -140,8 +141,31 @@ func Extract() ([]string, error) {
 // Rename swaps the directory entry to a fresh inode instead — the running
 // process keeps executing the old inode, and the next start picks up the new one.
 func writeExecutable(dest string, data []byte) error {
+	return WriteFileAtomic(dest, data, 0o755)
+}
+
+// WriteFileAtomic writes data to dest via a temp file + atomic rename, the same
+// way writeExecutable does, but for any mode: bundle trees carry 0755 binaries
+// next to 0644 configs and dictionaries.
+//
+// Every file a live daemon holds must be replaced this way, not just the ELF the
+// wrapper names. A bundle's entry point execs the musl loader (lib/ld-musl-*.so.1)
+// with the real binary as an argument, so the loader is what the kernel marks
+// busy, so overwriting it in place is what raises ETXTBSY on a setup re-run. The
+// .so and .bin files are worse: the kernel permits overwriting those under a live
+// daemon, silently corrupting its mmap'd pages until it segfaults. Rename avoids
+// both: the running process keeps the old inode and the next start gets the new one.
+func WriteFileAtomic(dest string, data []byte, mode os.FileMode) error {
 	tmp := dest + ".new"
-	if err := os.WriteFile(tmp, data, 0o755); err != nil {
+	if err := os.WriteFile(tmp, data, mode); err != nil {
+		// O_CREATE|O_TRUNC happens before the write, so a failure part-way through
+		// (ENOSPC, EIO, RLIMIT_FSIZE) leaves a partial file behind.
+		_ = os.Remove(tmp)
+		return err
+	}
+	// os.WriteFile applies the umask on create, so set the mode explicitly.
+	if err := os.Chmod(tmp, mode); err != nil {
+		_ = os.Remove(tmp)
 		return err
 	}
 	if err := os.Rename(tmp, dest); err != nil {
@@ -149,4 +173,16 @@ func writeExecutable(dest string, data []byte) error {
 		return err
 	}
 	return nil
+}
+
+// extractRegularFile writes one tar entry to target, atomically.
+func extractRegularFile(target string, tr io.Reader, mode os.FileMode) error {
+	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+		return err
+	}
+	data, err := io.ReadAll(tr)
+	if err != nil {
+		return err
+	}
+	return WriteFileAtomic(target, data, mode)
 }

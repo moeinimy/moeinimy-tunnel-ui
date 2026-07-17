@@ -285,6 +285,56 @@ def _run_mtproto(cA: Client, cB: Client, cC: Client, sc, result, panel, server_e
             us.detail = str(e)[:200]
     log(f"-> usage-{mode} [{us.status.value}] {us.detail}")
 
+    # Traffic Multiplier. MTProto never reaches the shared traffic block (it is a
+    # relay, not a tunnel), and its accounting is a Prometheus scrape rather than
+    # nft counters, so if the multiplier were wired into the tunnel path only, this
+    # is exactly the protocol that would silently bill 1:1 forever.
+    tm = SubTest(f"traffic-multiplier-{mode}")
+    if panel is None:
+        tm.status, tm.detail = Status.SKIP, "no panel handle"
+    else:
+        try:
+            email = ib.accounts["A"].email
+            after_bytes, mult = 32 * 1024, 10.0
+            # Re-saving restarts the relay, so set the policy BEFORE driving bytes.
+            panel.set_traffic_multiplier(ib.inbound_id, True, after_bytes, mult)
+            panel.reset_client_traffic(ib.inbound_id, email)
+            time.sleep(6)
+            before, _ = traffic._counted(panel, email)
+            pushed, dinfo, _ = mt_mod.drive_bytes(
+                cA, ib, "A", mode, sc.server_ip, target_bytes=256 * 1024)
+            time.sleep(25)  # two 10s accounting ticks plus slack
+            after, row = traffic._counted(panel, email)
+            delta = after - before
+            ratio = (delta / pushed) if pushed else 0
+            tm.log = (f"pushed {pushed}B past a {after_bytes}B threshold at {mult}x; "
+                      f"counted {before} -> {after} (delta {delta}, {ratio:.2f}x); "
+                      f"up={row.get('up')} down={row.get('down')}")
+            if pushed <= 0:
+                tm.status = Status.ERROR
+                tm.detail = f"prober pushed no bytes: {str(dinfo.get('error', ''))[:120]}"
+            elif delta <= 0:
+                tm.status, tm.detail = Status.FAIL, "no traffic counted at all"
+            elif delta < pushed * 2.0:
+                # Counted ~= pushed means the bytes were billed 1:1.
+                tm.status = Status.FAIL
+                tm.detail = (f"counted {delta}B for {pushed}B ({ratio:.2f}x): NOT weighted "
+                             f"(expected ~{mult}x past {after_bytes}B)")
+            else:
+                tm.status = Status.PASS
+                tm.detail = f"counted {delta}B for {pushed}B ({ratio:.2f}x, policy {mult}x)"
+        except Exception as e:  # noqa: BLE001
+            tm.status, tm.detail = Status.ERROR, str(e)[:200]
+        finally:
+            # Hand the account back un-weighted, or a later phase misreads its counter.
+            try:
+                panel.set_traffic_multiplier(ib.inbound_id, False, 0, 1)
+                panel.reset_client_traffic(ib.inbound_id, email)
+            except Exception as e:  # noqa: BLE001
+                log(f"   (traffic-multiplier cleanup failed: {e})")
+    phase.add(tm)
+    log(f"-> {tm.name} [{tm.status.value}] {tm.detail}")
+
     mt_mod.disconnect(cA)
     mt_mod.disconnect(cB)
 
@@ -1339,6 +1389,16 @@ def run(proto: str, cA: Client, cB: Client, cC: Client, sc, cfg: dict, result, p
         u = traffic.usage(cA, panel, ib, cfg, connect_A, log, server_exec=server_exec)
         log(f"-> {u.name} [{u.status.value}] {u.detail}")
         phase.add(u)
+        _disconnect(cA, proto)
+        cA.disconnect_all()
+        time.sleep(2)
+        # Traffic Multiplier lives at the accounting layer, below every protocol's
+        # collector, so it has to be proven per protocol rather than once. Between
+        # usage and termination: it resets A's counter on the way out, which
+        # termination re-establishes anyway.
+        m = traffic.multiplier(cA, panel, ib, cfg, connect_A, log, server_exec=server_exec)
+        log(f"-> {m.name} [{m.status.value}] {m.detail}")
+        phase.add(m)
         _disconnect(cA, proto)
         cA.disconnect_all()
         time.sleep(2)

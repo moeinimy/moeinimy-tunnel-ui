@@ -1,6 +1,7 @@
 package controller
 
 import (
+	"errors"
 	"fmt"
 	"net/http"
 	"regexp"
@@ -8,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/mhsanaei/3x-ui/v2/database/model"
 	"github.com/mhsanaei/3x-ui/v2/web/global"
 	"github.com/mhsanaei/3x-ui/v2/web/service"
 	"github.com/mhsanaei/3x-ui/v2/web/websocket"
@@ -48,8 +50,12 @@ func (a *ServerController) initRouter(g *gin.RouterGroup) {
 	g.GET("/status", a.status)
 	g.GET("/cpuHistory/:bucket", a.getCpuHistoryBucket)
 	g.GET("/getXrayVersion", a.getXrayVersion)
-	g.GET("/getConfigJson", a.getConfigJson)
-	g.GET("/getDb", a.getDb)
+	// Escalation-class: these hand over the whole panel regardless of any
+	// permission bit, so they are super-admin only. getConfigJson and getDb expose
+	// every admin's data (getDb includes the users table and its bcrypt hashes);
+	// importDB replaces it wholesale; updatePanel swaps the running binary.
+	g.GET("/getConfigJson", requireSuperAdmin(), a.getConfigJson)
+	g.GET("/getDb", requireSuperAdmin(), a.getDb)
 	g.GET("/getNewUUID", a.getNewUUID)
 	g.GET("/getNewX25519Cert", a.getNewX25519Cert)
 	g.GET("/getNewmldsa65", a.getNewmldsa65)
@@ -59,15 +65,18 @@ func (a *ServerController) initRouter(g *gin.RouterGroup) {
 	g.GET("/checkUpdate", a.checkUpdate)
 	g.GET("/updateProgress", a.updateProgress)
 
-	g.POST("/stopXrayService", a.stopXrayService)
-	g.POST("/updatePanel", a.updatePanel)
-	g.POST("/restartXrayService", a.restartXrayService)
-	g.POST("/installXray/:version", a.installXray)
-	g.POST("/updateGeofile", a.updateGeofile)
-	g.POST("/updateGeofile/:fileName", a.updateGeofile)
-	g.POST("/logs/:count", a.getLogs)
-	g.POST("/xraylogs/:count", a.getXrayLogs)
-	g.POST("/importDB", a.importDB)
+	// Panel-wide effects rather than per-inbound, so they follow the Xray permission.
+	g.POST("/stopXrayService", requirePerm(model.PermXraySettings), a.stopXrayService)
+	g.POST("/updatePanel", requireSuperAdmin(), a.updatePanel)
+	g.POST("/cancelUpdate", requireSuperAdmin(), a.cancelUpdate)
+	g.POST("/restartXrayService", requirePerm(model.PermXraySettings), a.restartXrayService)
+	g.POST("/installXray/:version", requirePerm(model.PermXraySettings), a.installXray)
+	g.POST("/updateGeofile", requirePerm(model.PermXraySettings), a.updateGeofile)
+	g.POST("/updateGeofile/:fileName", requirePerm(model.PermXraySettings), a.updateGeofile)
+	// Panel and Xray logs name other admins' inbounds, clients and IPs.
+	g.POST("/logs/:count", requireSuperAdmin(), a.getLogs)
+	g.POST("/xraylogs/:count", requireSuperAdmin(), a.getXrayLogs)
+	g.POST("/importDB", requireSuperAdmin(), a.importDB)
 	g.POST("/getNewEchCert", a.getNewEchCert)
 }
 
@@ -209,18 +218,34 @@ func (a *ServerController) checkUpdate(c *gin.Context) {
 // returns an empty message (no toast) — the frontend shows the "restarting" alert;
 // only failures toast.
 func (a *ServerController) updatePanel(c *gin.Context) {
-	if err := a.serverService.UpdatePanel(); err != nil {
+	err := a.serverService.UpdatePanel()
+	if errors.Is(err, service.ErrPanelUpdateCancelled) {
+		// The user asked for this, so it isn't a failure: report success and let the
+		// frontend reset on the "cancelled" flag instead of toasting an error.
+		jsonObj(c, gin.H{"cancelled": true}, nil)
+		return
+	}
+	if err != nil {
 		jsonMsg(c, I18nWeb(c, "pages.index.panelUpdate"), err)
 		return
 	}
 	jsonObj(c, nil, nil)
 }
 
-// updateProgress reports the in-flight self-update's phase + download percent, polled
-// by the overview to render the update progress bar while updatePanel runs.
+// cancelUpdate aborts an in-flight update download. Refused once the update reaches
+// the install phase, which must not be interrupted.
+func (a *ServerController) cancelUpdate(c *gin.Context) {
+	if err := a.serverService.CancelPanelUpdate(); err != nil {
+		jsonMsg(c, I18nWeb(c, "pages.index.updateCancel"), err)
+		return
+	}
+	jsonObj(c, nil, nil)
+}
+
+// updateProgress reports the in-flight self-update's phase, download percent and
+// byte counters, polled by the overview to render the progress bar + speed meter.
 func (a *ServerController) updateProgress(c *gin.Context) {
-	phase, percent := a.serverService.PanelUpdateProgress()
-	jsonObj(c, gin.H{"phase": phase, "percent": percent}, nil)
+	jsonObj(c, a.serverService.PanelUpdateProgress(), nil)
 }
 
 // installXray installs or updates Xray to the specified version.

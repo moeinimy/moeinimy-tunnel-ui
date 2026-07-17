@@ -82,8 +82,10 @@ func NewWebSocketController(hub *websocket.Hub) *WebSocketController {
 
 // HandleWebSocket handles WebSocket connections
 func (w *WebSocketController) HandleWebSocket(c *gin.Context) {
-	// Check authentication
-	if !session.IsLogin(c) {
+	// Check authentication. The user is captured rather than discarded: the socket
+	// is tagged with their id so scoped payloads reach only them.
+	user := session.GetLoginUser(c)
+	if user == nil {
 		logger.Warningf("Unauthorized WebSocket connection attempt from %s", getRemoteIp(c))
 		c.AbortWithStatus(http.StatusUnauthorized)
 		return
@@ -100,6 +102,7 @@ func (w *WebSocketController) HandleWebSocket(c *gin.Context) {
 	clientID := uuid.New().String()
 	client := &websocket.Client{
 		ID:     clientID,
+		UserId: user.Id,
 		Hub:    w.hub,
 		Send:   make(chan []byte, 512), // Increased from 256 to 512 to prevent overflow
 		Topics: make(map[websocket.MessageType]bool),

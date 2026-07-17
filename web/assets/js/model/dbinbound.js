@@ -12,6 +12,9 @@ class DBInbound {
         this.expiryTime = 0;
         this.trafficReset = "never";
         this.lastTrafficResetTime = 0;
+        this.trafficMultiplierEnable = false;
+        this.trafficMultiplierAfter = 0;
+        this.trafficMultiplier = 1;
 
         this.listen = "";
         this.port = 0;
@@ -33,6 +36,16 @@ class DBInbound {
 
     set totalGB(gb) {
         this.total = NumberFormatter.toFixed(gb * SizeFormatter.ONE_GB, 0);
+    }
+
+    // The traffic-multiplier threshold is stored in bytes, like total, so accounting
+    // can compare it to up+down directly. The form binds these GB accessors.
+    get trafficMultiplierAfterGB() {
+        return NumberFormatter.toFixed(this.trafficMultiplierAfter / SizeFormatter.ONE_GB, 2);
+    }
+
+    set trafficMultiplierAfterGB(gb) {
+        this.trafficMultiplierAfter = NumberFormatter.toFixed(gb * SizeFormatter.ONE_GB, 0);
     }
 
     get isVMess() {

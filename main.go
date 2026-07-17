@@ -767,13 +767,19 @@ func updateSetting(port int, username string, password string, webBasePath strin
 	}
 
 	if resetTwoFactor {
-		err := settingService.SetTwoFactorEnable(false)
-
+		// Two-factor moved from one panel-wide setting onto each admin's own row, so
+		// clearing the old settings keys does nothing at all. This switch is the only
+		// recovery path for a lost authenticator (login needs the code, and disabling
+		// it through the UI needs the code too), so it must act on the real store or
+		// it strands the operator while printing success.
+		var userService service.UserService
+		user, err := userService.GetFirstUser()
 		if err != nil {
 			fmt.Println("Failed to reset two-factor authentication:", err)
+		} else if err := userService.SetTwoFactor(user.Id, false, ""); err != nil {
+			fmt.Println("Failed to reset two-factor authentication:", err)
 		} else {
-			settingService.SetTwoFactorToken("")
-			fmt.Println("Two-factor authentication reset successfully")
+			fmt.Printf("Two-factor authentication reset successfully for %q\n", user.Username)
 		}
 	}
 

@@ -297,6 +297,12 @@ def sc_quota(panel, ib, proto, transport, cA):
         rec(proto, transport, "quota-usage-counted", 1, "ERROR", str(e)[:120])
     all_down([cA], proto)
     try:
+        m = traffic.multiplier(cA, panel, ib, CFG, cf, log, server_exec=server_exec)
+        rec(proto, transport, "quota-traffic-multiplier", 1, m.status.value.upper(), m.detail)
+    except Exception as e:  # noqa: BLE001
+        rec(proto, transport, "quota-traffic-multiplier", 1, "ERROR", str(e)[:120])
+    all_down([cA], proto)
+    try:
         t = traffic.termination(cA, panel, ib, CFG, cf, log)
         rec(proto, transport, "quota-terminate-on-limit", 1, t.status.value.upper(), t.detail)
     except Exception as e:  # noqa: BLE001

@@ -209,6 +209,54 @@
         <template slot="label">
             <a-tooltip>
                 <template slot="title">
+                    {{ i18n "pages.inbounds.trafficMultiplierDesc" }}
+                </template>
+                {{ i18n "pages.inbounds.trafficMultiplierTitle" }}
+                <a-icon type="question-circle"></a-icon>
+            </a-tooltip>
+        </template>
+        <a-switch v-model="dbInbound.trafficMultiplierEnable"></a-switch>
+    </a-form-item>
+
+    <template v-if="dbInbound.trafficMultiplierEnable">
+        <a-form-item>
+            <template slot="label">
+                <a-tooltip>
+                    <template slot="title">
+                        0 <span>{{ i18n "pages.inbounds.trafficMultiplierFromStart" }}</span>
+                    </template>
+                    {{ i18n "pages.inbounds.trafficMultiplierApplyAfter" }}
+                    <a-icon type="question-circle"></a-icon>
+                </a-tooltip>
+            </template>
+            <a-input-number
+                v-model.number="dbInbound.trafficMultiplierAfterGB"
+                :min="0"
+            ></a-input-number>
+        </a-form-item>
+
+        <a-form-item>
+            <template slot="label">
+                <a-tooltip>
+                    <template slot="title">
+                        {{ i18n "pages.inbounds.trafficMultiplierValueDesc" }}
+                    </template>
+                    {{ i18n "pages.inbounds.trafficMultiplierValue" }}
+                    <a-icon type="question-circle"></a-icon>
+                </a-tooltip>
+            </template>
+            <a-input-number
+                v-model.number="dbInbound.trafficMultiplier"
+                :min="1"
+                :step="0.5"
+            ></a-input-number>
+        </a-form-item>
+    </template>
+
+    <a-form-item>
+        <template slot="label">
+            <a-tooltip>
+                <template slot="title">
                     <span
                         >{{ i18n "pages.inbounds.periodicTrafficResetDesc"
                         }}</span

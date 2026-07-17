@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"strconv"
 
+	"github.com/mhsanaei/3x-ui/v2/database/model"
 	"github.com/mhsanaei/3x-ui/v2/util/common"
 	"github.com/mhsanaei/3x-ui/v2/web/service"
 
@@ -31,6 +32,7 @@ func NewXraySettingController(g *gin.RouterGroup) *XraySettingController {
 // initRouter sets up the routes for Xray settings management.
 func (a *XraySettingController) initRouter(g *gin.RouterGroup) {
 	g = g.Group("/xray")
+	g.Use(requirePerm(model.PermXraySettings))
 	g.GET("/getDefaultJsonConfig", a.getDefaultXrayConfig)
 	g.GET("/getOutboundsTraffic", a.getOutboundsTraffic)
 	g.GET("/getXrayResult", a.getXrayResult)

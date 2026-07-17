@@ -1,7 +1,9 @@
 package service
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -11,6 +13,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"syscall"
 	"time"
@@ -24,6 +27,19 @@ import (
 // (e.g. a proxy 504 makes the browser retry while the first is still downloading),
 // which would race on the ".new" temp path and the binary swap.
 var panelUpdateInFlight atomic.Bool
+
+// ErrPanelUpdateCancelled reports an update the user aborted. It is not a failure:
+// the controller reports it as a success so the overview resets quietly instead of
+// flashing an error toast and a red bar.
+var ErrPanelUpdateCancelled = errors.New("panel update cancelled")
+
+// panelUpdateCancel aborts the in-flight download. Guarded by its mutex because
+// UpdatePanel (one request goroutine) publishes it while CancelPanelUpdate
+// (another) reads it. Nil whenever no download is cancellable.
+var (
+	panelUpdateCancelMu sync.Mutex
+	panelUpdateCancel   context.CancelFunc
+)
 
 // Panel self-update. The panel binary ships as a single GitHub release asset
 // ("vpn-ui-amd64") — the same source deploy.sh installs from — so the overview
@@ -88,12 +104,25 @@ func (s *ServerService) CheckPanelUpdate() (*PanelUpdateInfo, error) {
 	return info, nil
 }
 
-// Self-update progress, polled by the overview to render a % bar. percent is the
-// download percent (0-99 while downloading, 100 once the restart is armed); phase is
-// one of "" | "downloading" | "installing" | "restarting" | "error".
+// Self-update phases, as polled by the overview.
+const (
+	updatePhaseDownloading = "downloading"
+	updatePhaseInstalling  = "installing"
+	updatePhaseRestarting  = "restarting"
+	updatePhaseCancelled   = "cancelled"
+	updatePhaseError       = "error"
+)
+
+// Self-update progress, polled by the overview to render a % bar and a speed
+// readout. percent is the download percent (0-99 while downloading, 100 once the
+// restart is armed). bytes/total/speed describe the download only; total is 0 when
+// the server sends no Content-Length, in which case there is no percent either.
 var (
 	panelUpdatePercent atomic.Int32
 	panelUpdatePhase   atomic.Value // string
+	panelUpdateBytes   atomic.Int64
+	panelUpdateTotal   atomic.Int64
+	panelUpdateSpeed   atomic.Int64 // bytes/sec
 )
 
 func setUpdateProgress(phase string, percent int32) {
@@ -101,29 +130,93 @@ func setUpdateProgress(phase string, percent int32) {
 	panelUpdatePercent.Store(percent)
 }
 
-// PanelUpdateProgress returns the current self-update phase and download percent.
-func (s *ServerService) PanelUpdateProgress() (string, int) {
-	phase, _ := panelUpdatePhase.Load().(string)
-	return phase, int(panelUpdatePercent.Load())
+// resetUpdateCounters clears the download counters so a fresh attempt can't briefly
+// report the previous one's bytes and speed before its first Read lands.
+func resetUpdateCounters() {
+	panelUpdateBytes.Store(0)
+	panelUpdateTotal.Store(0)
+	panelUpdateSpeed.Store(0)
 }
 
+// PanelUpdateProgressInfo is the live self-update state polled by the overview.
+type PanelUpdateProgressInfo struct {
+	Phase   string `json:"phase"`
+	Percent int    `json:"percent"`
+	Bytes   int64  `json:"bytes"`
+	Total   int64  `json:"total"`
+	Speed   int64  `json:"speed"` // bytes/sec
+}
+
+// PanelUpdateProgress returns the current self-update phase and download counters.
+func (s *ServerService) PanelUpdateProgress() PanelUpdateProgressInfo {
+	phase, _ := panelUpdatePhase.Load().(string)
+	return PanelUpdateProgressInfo{
+		Phase:   phase,
+		Percent: int(panelUpdatePercent.Load()),
+		Bytes:   panelUpdateBytes.Load(),
+		Total:   panelUpdateTotal.Load(),
+		Speed:   panelUpdateSpeed.Load(),
+	}
+}
+
+// speedSampleInterval bounds how often the published speed is recomputed, and
+// speedEMAAlpha weights each new sample against the running average. Raw per-Read
+// deltas are far too bursty to show verbatim: TCP delivers in chunks, so an
+// unsmoothed readout swings wildly between 0 and multiples of the true rate.
+const (
+	speedSampleInterval = 500 * time.Millisecond
+	speedEMAAlpha       = 0.3
+)
+
 // progressReader tallies bytes read from the download so the overview can show a
-// live % bar via the PanelUpdateProgress poll.
+// live % bar and speed readout via the PanelUpdateProgress poll. Counters are
+// published to atomics rather than exposed as fields: only the download goroutine
+// touches the fields, while poll handlers read the atomics concurrently.
 type progressReader struct {
 	r     io.Reader
 	total int64
 	read  int64
+
+	lastSampleAt    time.Time
+	lastSampleBytes int64
+}
+
+func newProgressReader(r io.Reader, total int64) *progressReader {
+	if total < 0 {
+		total = 0 // unknown length (chunked): still count bytes, just skip percent
+	}
+	panelUpdateTotal.Store(total)
+	return &progressReader{r: r, total: total, lastSampleAt: time.Now()}
 }
 
 func (pr *progressReader) Read(p []byte) (int, error) {
 	n, err := pr.r.Read(p)
-	if n > 0 && pr.total > 0 {
+	if n > 0 {
 		pr.read += int64(n)
-		if pct := pr.read * 99 / pr.total; pct >= 0 && pct <= 99 {
-			panelUpdatePercent.Store(int32(pct))
+		panelUpdateBytes.Store(pr.read)
+		if pr.total > 0 {
+			if pct := pr.read * 99 / pr.total; pct >= 0 && pct <= 99 {
+				panelUpdatePercent.Store(int32(pct))
+			}
 		}
+		pr.sampleSpeed(time.Now())
 	}
 	return n, err
+}
+
+// sampleSpeed republishes the download rate at most once per speedSampleInterval,
+// smoothing each sample into the previous value.
+func (pr *progressReader) sampleSpeed(now time.Time) {
+	elapsed := now.Sub(pr.lastSampleAt)
+	if elapsed < speedSampleInterval {
+		return
+	}
+	bps := float64(pr.read-pr.lastSampleBytes) / elapsed.Seconds()
+	if prev := panelUpdateSpeed.Load(); prev > 0 {
+		bps = speedEMAAlpha*bps + (1-speedEMAAlpha)*float64(prev)
+	}
+	panelUpdateSpeed.Store(int64(bps))
+	pr.lastSampleAt, pr.lastSampleBytes = now, pr.read
 }
 
 // UpdatePanel downloads the latest release binary, snapshots the DB, atomically
@@ -134,15 +227,33 @@ func (s *ServerService) UpdatePanel() error {
 	if !panelUpdateInFlight.CompareAndSwap(false, true) {
 		return fmt.Errorf("a panel update is already in progress")
 	}
-	setUpdateProgress("downloading", 0)
+	resetUpdateCounters()
+	setUpdateProgress(updatePhaseDownloading, 0)
+
+	// Scope a cancellable context to the download so CancelPanelUpdate can abort a
+	// slow or stalled transfer. Publishing it under the mutex is what gives the
+	// cancel endpoint something to signal.
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	setPanelUpdateCancel(cancel)
+
 	// Reset the guard on every early/error return. On success we intentionally leave
 	// it set: restartPanel is about to replace this process, so the in-memory flag
 	// dies with it (and blocks a duplicate update during the restart window).
 	restarting := false
+	cancelled := false
 	defer func() {
+		setPanelUpdateCancel(nil)
 		if !restarting {
+			panelUpdateSpeed.Store(0)
+			if cancelled {
+				setUpdateProgress(updatePhaseCancelled, 0)
+			} else {
+				setUpdateProgress(updatePhaseError, 0)
+			}
+			// Released LAST. A second attempt that wins the CAS in between would have
+			// its fresh "downloading" phase clobbered by the terminal one above.
 			panelUpdateInFlight.Store(false)
-			setUpdateProgress("error", 0)
 		}
 	}()
 
@@ -156,8 +267,15 @@ func (s *ServerService) UpdatePanel() error {
 
 	tmp := exe + ".new"
 	logger.Infof("panel update: downloading %s", panelDownloadURL)
-	if err := downloadPanelBinary(tmp, panelDownloadURL); err != nil {
+	if err := downloadPanelBinary(ctx, tmp, panelDownloadURL); err != nil {
 		_ = os.Remove(tmp)
+		// A cancelled download surfaces as a transport error; ctx is what says the
+		// user asked for it rather than the network failing.
+		if ctx.Err() != nil {
+			cancelled = true
+			logger.Info("panel update: cancelled by user during download")
+			return ErrPanelUpdateCancelled
+		}
 		return err
 	}
 	// Validate it's an ELF for THIS architecture — a 404 HTML page, a truncated
@@ -172,7 +290,24 @@ func (s *ServerService) UpdatePanel() error {
 		return err
 	}
 
-	setUpdateProgress("installing", 99)
+	// A cancel can land between the download returning and the hook being dropped
+	// below. ctx is not consulted anywhere after downloadPanelBinary, so without
+	// this the user would get an HTTP success for their cancel and be updated
+	// anyway. Checked before the install starts, which is the last moment aborting
+	// is free.
+	if ctx.Err() != nil {
+		_ = os.Remove(tmp)
+		cancelled = true
+		logger.Info("panel update: cancelled by user just before installing")
+		return ErrPanelUpdateCancelled
+	}
+
+	setUpdateProgress(updatePhaseInstalling, 99)
+	// Point of no return: the DB snapshot and the binary swap below must not be
+	// interrupted half-way, so drop the cancel hook. A nil hook is what makes
+	// CancelPanelUpdate refuse from here on.
+	setPanelUpdateCancel(nil)
+	panelUpdateSpeed.Store(0)
 	// Best-effort DB snapshot before the new binary can migrate it.
 	backupPanelDB()
 
@@ -189,7 +324,7 @@ func (s *ServerService) UpdatePanel() error {
 		return fmt.Errorf("replacing binary failed: %w", err)
 	}
 	logger.Infof("panel update: installed new binary at %s — restarting", exe)
-	setUpdateProgress("restarting", 100)
+	setUpdateProgress(updatePhaseRestarting, 100)
 
 	// Restart detached so our own termination can't abort the restart.
 	restarting = true
@@ -197,10 +332,36 @@ func (s *ServerService) UpdatePanel() error {
 	return nil
 }
 
-// downloadPanelBinary streams url into dst (0755).
-func downloadPanelBinary(dst, url string) error {
+// setPanelUpdateCancel publishes (or clears) the hook CancelPanelUpdate signals.
+func setPanelUpdateCancel(cancel context.CancelFunc) {
+	panelUpdateCancelMu.Lock()
+	panelUpdateCancel = cancel
+	panelUpdateCancelMu.Unlock()
+}
+
+// CancelPanelUpdate aborts an in-flight download. Only the download is cancellable:
+// once installing starts, the DB snapshot and the binary swap have to run to
+// completion, so a late cancel is refused rather than risk a half-swapped panel.
+func (s *ServerService) CancelPanelUpdate() error {
+	if !panelUpdateInFlight.Load() {
+		return fmt.Errorf("no panel update is in progress")
+	}
+	panelUpdateCancelMu.Lock()
+	cancel := panelUpdateCancel
+	panelUpdateCancelMu.Unlock()
+	// A nil hook IS the gate: UpdatePanel drops it the moment it starts installing.
+	if cancel == nil {
+		return fmt.Errorf("the update is already installing and can no longer be cancelled")
+	}
+	logger.Info("panel update: cancel requested")
+	cancel()
+	return nil
+}
+
+// downloadPanelBinary streams url into dst (0755), aborting if ctx is cancelled.
+func downloadPanelBinary(ctx context.Context, dst, url string) error {
 	client := &http.Client{Timeout: 5 * time.Minute}
-	req, err := http.NewRequest(http.MethodGet, url, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return err
 	}
@@ -218,12 +379,9 @@ func downloadPanelBinary(dst, url string) error {
 		return err
 	}
 	defer f.Close()
-	// Report download progress for the overview's % bar when the length is known.
-	var src io.Reader = resp.Body
-	if resp.ContentLength > 0 {
-		src = &progressReader{r: resp.Body, total: resp.ContentLength}
-	}
-	if _, err := io.Copy(f, src); err != nil {
+	// Feed the overview's % bar and speed readout. Attached even when the length is
+	// unknown: bytes and speed are still meaningful, only the percent isn't.
+	if _, err := io.Copy(f, newProgressReader(resp.Body, resp.ContentLength)); err != nil {
 		return err
 	}
 	return nil

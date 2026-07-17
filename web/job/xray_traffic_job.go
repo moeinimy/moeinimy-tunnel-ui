@@ -14,6 +14,7 @@ import (
 
 // XrayTrafficJob collects and processes traffic statistics from Xray, updating the database and optionally informing external APIs.
 type XrayTrafficJob struct {
+	adminService    service.AdminService
 	settingService  service.SettingService
 	xrayService     service.XrayService
 	inboundService  service.InboundService
@@ -202,31 +203,22 @@ func (j *XrayTrafficJob) Run() {
 		lastOnlineMap = make(map[string]int64)
 	}
 
-	// Broadcast traffic update (deltas and online stats) via WebSocket
-	trafficUpdate := map[string]any{
-		"traffics":       traffics,
-		"clientTraffics": clientTraffics,
-		"onlineClients":  onlineClients,
-		"lastOnlineMap":  lastOnlineMap,
-	}
-	websocket.BroadcastTraffic(trafficUpdate)
+	// Traffic names clients, so it is per-admin data and cannot go out panel-wide:
+	// broadcasting it whole put every admin's client emails and usage in every other
+	// admin's browser. Each connected admin gets only their own slice.
+	j.broadcastTrafficScoped(traffics, clientTraffics, onlineClients, lastOnlineMap)
 
-	// Fetch updated inbounds from database with accumulated traffic values
-	// This ensures frontend receives the actual total traffic for real-time UI refresh.
-	updatedInbounds, err := j.inboundService.GetAllInbounds()
-	if err != nil {
-		logger.Warning("get all inbounds for websocket failed:", err)
-	}
+	// Inbounds are per-admin, so this job cannot push a payload: it has no single
+	// correct audience. It used to broadcast GetAllInbounds() to every browser every
+	// tick, which handed each admin every other admin's inbounds and overwrote their
+	// table with them. Sending the lightweight invalidate instead makes each browser
+	// re-fetch through /panel/api/inbounds/list, which is scoped to the caller and
+	// permission-gated. The frontend already debounces this signal.
+	websocket.BroadcastInvalidate(websocket.MessageTypeInbounds)
 
 	updatedOutbounds, err := j.outboundService.GetOutboundsTraffic()
 	if err != nil {
 		logger.Warning("get all outbounds for websocket failed:", err)
-	}
-
-	// The WebSocket hub will automatically check the payload size.
-	// If it exceeds 100MB, it sends a lightweight 'invalidate' signal instead.
-	if updatedInbounds != nil {
-		websocket.BroadcastInbounds(updatedInbounds)
 	}
 
 	if updatedOutbounds != nil {
@@ -255,5 +247,79 @@ func (j *XrayTrafficJob) informTrafficToExternalAPI(inboundTraffics []*xray.Traf
 	defer fasthttp.ReleaseResponse(response)
 	if err := fasthttp.Do(request, response); err != nil {
 		logger.Warning("POST ExternalTrafficInformURI failed:", err)
+	}
+}
+
+// broadcastTrafficScoped delivers the traffic tick to each connected admin,
+// filtered to the clients they own. Super admins get the unfiltered payload.
+func (j *XrayTrafficJob) broadcastTrafficScoped(
+	traffics []*xray.Traffic,
+	clientTraffics []*xray.ClientTraffic,
+	onlineClients []string,
+	lastOnlineMap map[string]int64,
+) {
+	hub := websocket.GetHub()
+	if hub == nil {
+		return
+	}
+	userIds := hub.ConnectedUserIds()
+	if len(userIds) == 0 {
+		return
+	}
+
+	supers, err := j.adminService.SuperAdminIds()
+	if err != nil {
+		logger.Warning("traffic broadcast: cannot load super admins, skipping:", err)
+		return
+	}
+	// Only pay for the access map if a non-super admin is actually watching.
+	var access map[string]map[int]bool
+	for _, id := range userIds {
+		if !supers[id] {
+			access, err = j.adminService.ClientEmailAccess()
+			if err != nil {
+				logger.Warning("traffic broadcast: cannot load client access, skipping:", err)
+				return
+			}
+			break
+		}
+	}
+
+	for _, userId := range userIds {
+		if supers[userId] {
+			websocket.BroadcastTrafficToUser(userId, map[string]any{
+				"traffics":       traffics,
+				"clientTraffics": clientTraffics,
+				"onlineClients":  onlineClients,
+				"lastOnlineMap":  lastOnlineMap,
+			})
+			continue
+		}
+		mine := make([]*xray.ClientTraffic, 0, len(clientTraffics))
+		for _, ct := range clientTraffics {
+			if access[ct.Email][userId] {
+				mine = append(mine, ct)
+			}
+		}
+		myOnline := make([]string, 0, len(onlineClients))
+		for _, email := range onlineClients {
+			if access[email][userId] {
+				myOnline = append(myOnline, email)
+			}
+		}
+		myLastOnline := make(map[string]int64, len(lastOnlineMap))
+		for email, t := range lastOnlineMap {
+			if access[email][userId] {
+				myLastOnline[email] = t
+			}
+		}
+		// traffics is inbound-level and keyed by Xray tag rather than email, so it is
+		// omitted for non-super admins rather than shipped unfiltered. The per-client
+		// figures above are what the inbounds table renders.
+		websocket.BroadcastTrafficToUser(userId, map[string]any{
+			"clientTraffics": mine,
+			"onlineClients":  myOnline,
+			"lastOnlineMap":  myLastOnline,
+		})
 	}
 }

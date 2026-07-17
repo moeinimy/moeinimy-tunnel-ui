@@ -109,6 +109,67 @@ api_meta() {
         "$(json_escape "$opt")" "${TM_AGENT_PORT:-8271}" "$(api_protocols | tr -d '\n')"
 }
 
+# --- Port ownership ---------------------------------------------------------
+# Each protocol keeps its server<->server port under a different TUN key, so a
+# generic "is this port taken" check has to know the mapping. GRE is absent on
+# purpose: it is a kernel tunnel and binds no port.
+_tm_port_key() {
+    case "$1" in
+        gost)     printf 'GO_PORT' ;;
+        backpack) printf 'BP_PORT' ;;
+        backhaul) printf 'BH_PORT' ;;
+        rathole)  printf 'RH_PORT' ;;
+        frp)      printf 'FRP_PORT' ;;
+        hysteria) printf 'HY_PORT' ;;
+        paqet)    printf 'PAQET_PORT' ;;
+        *)        printf '' ;;
+    esac
+}
+
+# _tm_port_owner PORT [SKIP] — print the name of another tunnel already holding
+# PORT (returns 1 when nobody does). Loads other profiles, so callers must not
+# rely on TUN afterwards.
+_tm_port_owner() {
+    local port="$1" skip="${2:-}" other key val
+    [[ -n "$port" ]] || return 1
+    local -a names; mapfile -t names < <(list_tunnels)
+    local saved_name="${TUN[NAME]:-}"
+    local -A saved=(); for key in "${!TUN[@]}"; do saved["$key"]="${TUN[$key]}"; done
+    local found=""
+    for other in "${names[@]}"; do
+        [[ -z "$other" || "$other" == "$skip" ]] && continue
+        load_tunnel "$other" || continue
+        key="$(_tm_port_key "${TUN[PROTOCOL]:-}")"
+        [[ -n "$key" ]] || continue
+        val="${TUN[$key]:-}"
+        if [[ -n "$val" && "$val" == "$port" ]]; then found="$other"; break; fi
+    done
+    # Restore the caller's profile — load_tunnel clobbers the global TUN.
+    TUN=(); for key in "${!saved[@]}"; do TUN["$key"]="${saved[$key]}"; done
+    [[ -n "$saved_name" ]] && TUN[NAME]="$saved_name"
+    [[ -n "$found" ]] || return 1
+    printf '%s' "$found"
+}
+
+# api_ports — which server<->server port each tunnel holds, so the panel can show
+# what is taken instead of letting the operator pick a doomed one.
+api_ports() {
+    local -a t; mapfile -t t < <(list_tunnels)
+    local first=1 n key val
+    printf '['
+    for n in "${t[@]}"; do
+        load_tunnel "$n" || continue
+        key="$(_tm_port_key "${TUN[PROTOCOL]:-}")"
+        [[ -n "$key" ]] || continue
+        val="${TUN[$key]:-}"
+        [[ -n "$val" ]] || continue
+        if [[ $first -eq 1 ]]; then first=0; else printf ','; fi
+        printf '{"name":"%s","protocol":"%s","port":"%s"}' \
+            "$(json_escape "$n")" "$(json_escape "${TUN[PROTOCOL]}")" "$(json_escape "$val")"
+    done
+    printf ']\n'
+}
+
 # --- Non-interactive create -------------------------------------------------
 # tunnel_add_kv KEY=VALUE... — create a tunnel from explicit fields (no TTY).
 # The panel builds these args from its form. Secrets/ports left empty are
@@ -154,6 +215,21 @@ tunnel_add_kv() {
         driver_validate || die "create: validation failed for '$name'"
     fi
 
+    # Port sanity. Two tunnels cannot bind the same port: the loser dies with
+    # "address already in use" and systemd crash-loops it forever, while the
+    # profile still looks fine. Without this the panel happily created tunnels
+    # that could never come up, and it looked like "only some protocols work".
+    # Deliberately an error, not an auto-shift: both ends of a tunnel must agree
+    # on the port, so silently moving one side would break the pair instead.
+    local _pkey _want _owner
+    _pkey="$(_tm_port_key "${TUN[PROTOCOL]}")"
+    if [[ -n "$_pkey" ]]; then
+        _want="${TUN[$_pkey]:-}"
+        if [[ -n "$_want" ]] && _owner="$(_tm_port_owner "$_want" "$name")"; then
+            die "create: port $_want is already used by tunnel '$_owner' on this server. Pick a different ${_pkey}."
+        fi
+    fi
+
     save_tunnel
     if declare -F svc_install >/dev/null 2>&1; then
         svc_install "$name" || die "create: could not install service for '$name'"
@@ -179,6 +255,7 @@ api_dispatch() {
         tunnel)     api_tunnel_obj "${1:?tunnel name}"; echo ;;
         protocols)  api_protocols ;;
         schema)     api_schema ;;
+        ports)      api_ports ;;
         fields)     api_fields "${1:?tunnel name}" ;;
         meta)       api_meta ;;
         *)          printf '{"error":"unknown json subcommand: %s"}\n' "$(json_escape "$sub")"; return 1 ;;

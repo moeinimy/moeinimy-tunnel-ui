@@ -78,7 +78,7 @@ api_schema() {
     _sp_open backpack "BackPack (wssmux)"
     _sf BP_TRANSPORT "Transport" select wssmux "wssmux wsmux wss ws tcpmux tcp" both \
         "wssmux = TLS websocket + mux: DPI-resistant, best for xray/Reality"
-    _sf BP_PORT "Tunnel port (server ↔ server)" port 8443 "" both "$_TUNNEL_PORT_HELP"
+    _sf BP_PORT "Tunnel port (server ↔ server)" port 8444 "" both "$_TUNNEL_PORT_HELP"
     _sf BP_TOKEN "Shared token" password "" "" both "Blank = auto-generate; must match on both sides"
     _sf BP_PORTS "$_CLIENT_PORTS_LABEL" portmap "443=443" "" iran \
         "Ports users connect to on the Iran side, forwarded over the tunnel"
@@ -109,7 +109,7 @@ api_schema() {
 
     # ---- Hysteria: QUIC/UDP, foreign = server ------------------------------
     _sp_open hysteria "Hysteria 2 (QUIC/UDP)"
-    _sf HY_PORT "Tunnel port (server ↔ server, UDP)" port 8443 "" both \
+    _sf HY_PORT "Tunnel port (server ↔ server, UDP)" port 8445 "" both \
         "QUIC/UDP — dead if your provider blocks inbound UDP"
     _sf HY_PASS "Password" password "" "" both "Blank = auto-generate; must match on both sides"
     _sf HY_OBFS "Salamander obfuscation" select on "on off" both "Recommended vs DPI; must match both sides"

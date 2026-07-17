@@ -12,6 +12,10 @@
 #   * Only fields left EMPTY are filled — anything the panel/operator supplied wins.
 #   * Each function mirrors its driver's wizard; keep them in sync.
 #
+# Default ports are deliberately DISTINCT per protocol. They used to share 8443
+# (gost/backpack/hysteria), so the second tunnel you created silently failed to
+# bind and crash-looped forever while its profile looked perfectly healthy.
+#
 # CRITICAL — the role mapping is per-driver and NOT uniform. Mirrors `def_role`:
 #   gost, hysteria, paqet      -> foreign = server, iran = client
 #   backhaul, backpack,
@@ -108,7 +112,7 @@ backpack_prepare() {
     _prep_common
     : "${TUN[BP_ROLE]:=$(_prep_role_iran_server)}"
     : "${TUN[BP_TRANSPORT]:=wssmux}"
-    : "${TUN[BP_PORT]:=8443}"
+    : "${TUN[BP_PORT]:=8444}"
     : "${TUN[MTU]:=1400}"
     [[ -n "${TUN[BP_TOKEN]:-}" ]] || TUN[BP_TOKEN]="$(gen_secret 32)"
     [[ "${TUN[BP_ROLE]}" == server ]] && : "${TUN[BP_PORTS]:=$_PREP_DEFAULT_PORTS}"
@@ -156,7 +160,7 @@ frp_prepare() {
 hysteria_prepare() {
     _prep_common
     : "${TUN[HY_ROLE]:=$(_prep_role_foreign_server)}"
-    : "${TUN[HY_PORT]:=8443}"
+    : "${TUN[HY_PORT]:=8445}"
     : "${TUN[HY_OBFS]:=on}"
     : "${TUN[HY_UP]:=100}"
     : "${TUN[HY_DOWN]:=100}"

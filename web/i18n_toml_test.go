@@ -107,7 +107,7 @@ var knownMissing = keySet(
 	"pages.tunnel.toasts.started", "pages.tunnel.toasts.stopped",
 	"pages.tunnel.toasts.restarted", "pages.tunnel.toasts.enabled",
 	"pages.tunnel.toasts.disabled", "pages.tunnel.toasts.saved",
-	"pages.tunnel.toasts.saveFailed", "pages.tunnel.toasts.updateFailed",
+	"pages.tunnel.toasts.saveFailed", "pages.tunnel.toasts.removedOnNodes", "pages.tunnel.toasts.updateFailed",
 	"pages.tunnel.update", "pages.tunnel.updateConfirm",
 	"pages.tunnel.updateDone", "pages.tunnel.updateNone",
 	"pages.tunnel.autoGen", "pages.tunnel.mtuHint", "pages.tunnel.node.setupTunnel",

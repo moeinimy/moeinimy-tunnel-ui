@@ -1082,6 +1082,7 @@
 "pairCreated" = "Tunnel created on both servers"
 "createFailed" = "Could not create tunnel"
 "removed" = "Tunnel removed"
+"removedOnNodes" = "also removed on"
 "started" = "Tunnel started"
 "stopped" = "Tunnel stopped"
 "restarted" = "Tunnel restarted"

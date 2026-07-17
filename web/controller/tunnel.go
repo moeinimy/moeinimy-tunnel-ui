@@ -190,9 +190,21 @@ func (a *TunnelController) create(c *gin.Context) {
 	jsonMsg(c, I18nWeb(c, "pages.tunnel.toasts.created"), err)
 }
 
+// remove deletes the tunnel here AND on every online node carrying one by the
+// same name. A tunnel is a pair created under one name, so removing only the
+// local half leaves the node's half running, holding its port and crash-looping
+// against an endpoint that no longer exists — which is how a node ends up full
+// of dead tunnels blocking the ports of every new one.
 func (a *TunnelController) remove(c *gin.Context) {
-	err := a.tunnelService.Remove(c.Param("name"))
-	jsonMsg(c, I18nWeb(c, "pages.tunnel.toasts.removed"), err)
+	name := c.Param("name")
+	err := a.tunnelService.Remove(name)
+	msg := I18nWeb(c, "pages.tunnel.toasts.removed")
+	// Mirror to the nodes even if the local half was already gone, so a
+	// half-removed pair can still be cleaned up from the panel.
+	if nodes := a.nodeService.RemoveTunnelEverywhere(name); len(nodes) > 0 {
+		msg += " — " + I18nWeb(c, "pages.tunnel.toasts.removedOnNodes") + ": " + strings.Join(nodes, ", ")
+	}
+	jsonMsg(c, msg, err)
 }
 
 func (a *TunnelController) start(c *gin.Context) {

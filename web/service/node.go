@@ -324,6 +324,55 @@ func (s *NodeService) SetSetup(id string, setup *NodeSetup) error {
 	return nil
 }
 
+// OnlineIDs lists the nodes currently reachable (their agent is polling).
+func (s *NodeService) OnlineIDs() []string {
+	nodeReg.mu.Lock()
+	defer nodeReg.mu.Unlock()
+	nodeReg.load()
+	var ids []string
+	for id, n := range nodeReg.nodes {
+		if !n.lastSeen.IsZero() && time.Since(n.lastSeen) < nodeOnlineWindow {
+			ids = append(ids, id)
+		}
+	}
+	return ids
+}
+
+// NameOf returns a node's display name (empty when unknown).
+func (s *NodeService) NameOf(id string) string {
+	nodeReg.mu.Lock()
+	defer nodeReg.mu.Unlock()
+	nodeReg.load()
+	if n := nodeReg.nodes[id]; n != nil {
+		return n.Name
+	}
+	return ""
+}
+
+// RemoveTunnelEverywhere asks every online node to drop the tunnel called name,
+// and reports the nodes where one was actually removed.
+//
+// A tunnel is a PAIR created under a single name, so deleting only the local half
+// strands the node's half: still running, still holding its port, crash-looping
+// against an endpoint that no longer exists. That is how a node silently
+// accumulates dead tunnels that block the ports of every new one.
+//
+// Best effort by design: a node that never had this tunnel just answers "No such
+// tunnel", and an offline node must not block deleting the local side.
+func (s *NodeService) RemoveTunnelEverywhere(name string) []string {
+	var removed []string
+	for _, id := range s.OnlineIDs() {
+		out, err := s.Exec(id, []string{"remove", name})
+		if err != nil || strings.Contains(out, "No such tunnel") {
+			continue
+		}
+		if n := s.NameOf(id); n != "" {
+			removed = append(removed, n)
+		}
+	}
+	return removed
+}
+
 // Remove deletes a node.
 func (s *NodeService) Remove(id string) error {
 	nodeReg.mu.Lock()

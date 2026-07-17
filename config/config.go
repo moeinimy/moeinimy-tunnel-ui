@@ -38,6 +38,51 @@ func GetName() string {
 	return strings.TrimSpace(name)
 }
 
+// defaultBrand is the display name shown in the UI. It is NOT the same thing as
+// GetName(): that one ("x-ui") is the internal identity baked into paths, the
+// systemd unit and the database filename, and renaming it would break upgrades
+// and 3x-ui backup compatibility. This is presentation only.
+const defaultBrand = "Moeinimy-UI"
+
+// brandFile is the operator's private override, kept next to the binary so it
+// survives restarts and panel self-updates.
+func brandFile() string { return filepath.Join(getBaseDir(), "brand") }
+
+// GetBrand returns the panel's display name.
+//
+// Resolution order, highest first:
+//  1. PANEL_BRAND in the environment (settable in the systemd unit, so it can be
+//     fixed at install time),
+//  2. the "brand" file next to the binary (settable at any time afterwards),
+//  3. the built-in default.
+//
+// Deliberately shell-only: there is no UI field for it, so only someone with
+// access to the box can rename the panel.
+func GetBrand() string {
+	if b := strings.TrimSpace(os.Getenv("PANEL_BRAND")); b != "" {
+		return b
+	}
+	if data, err := os.ReadFile(brandFile()); err == nil {
+		if b := strings.TrimSpace(string(data)); b != "" {
+			return b
+		}
+	}
+	return defaultBrand
+}
+
+// SetBrand persists a new display name (empty restores the default).
+func SetBrand(b string) error {
+	b = strings.TrimSpace(b)
+	if b == "" {
+		err := os.Remove(brandFile())
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	return os.WriteFile(brandFile(), []byte(b+"\n"), 0o644)
+}
+
 // GetLogLevel returns the current logging level based on environment variables or defaults to Info.
 func GetLogLevel() LogLevel {
 	if IsDebug() {

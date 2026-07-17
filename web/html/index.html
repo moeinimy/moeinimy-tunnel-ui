@@ -187,7 +187,7 @@
                 </a-card>
               </a-col>
               <a-col :sm="24" :lg="12">
-                <a-card title='VPN-UI' hoverable>
+                <a-card title='{{ .brand }}' hoverable>
                   <!-- Single wrapping row so the card stays as short as its grid
                        neighbours (a tall vertical stack staggered the card grid). The
                        update UI appears inline only when relevant. Native flex-wrap:
@@ -978,7 +978,7 @@
           if (message.startsWith("XRAY:"))
             message = "<b>XRAY: </b>" + message.substring(5);
           else
-            message = "<b>VPN-UI: </b>" + message;
+            message = "<b>" + brand + ": </b>" + message;
         }
 
         formattedLogs += message ? ' - ' + message : '';
@@ -1131,7 +1131,7 @@
           if (msg && msg.success && msg.obj) this.coreStatuses = msg.obj.cores || [];
         } catch (e) { /* dashboard card is best-effort */ }
       },
-      // --- Panel self-update (VPN-UI card) ------------------------------
+      // --- Panel self-update (brand card) -------------------------------
       // Runs automatically on every overview load (manual=false, silent) and on
       // the "Check for Update" button (manual=true, surfaces errors in the card).
       async checkForUpdate(manual) {

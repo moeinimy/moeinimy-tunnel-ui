@@ -156,6 +156,10 @@ func templatePerms(c *gin.Context) map[string]bool {
 func getContext(h gin.H) gin.H {
 	a := gin.H{
 		"cur_ver": config.GetVersion(),
+		// Display name only — see config.GetBrand. Every template renders the
+		// panel's name from this rather than hardcoding one, so the operator's
+		// override applies everywhere at once.
+		"brand": config.GetBrand(),
 	}
 	for key, value := range h {
 		a[key] = value

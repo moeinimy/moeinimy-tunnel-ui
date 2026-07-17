@@ -4,8 +4,8 @@
         <a-layout-sider :theme="themeSwitcher.currentTheme" collapsible :collapsed="collapsed"
             @collapse="(isCollapsed, type) => collapseHandle(isCollapsed, type)" breakpoint="md">
             <div class="sidebar-brand">
-                <a href="{{ .base_path }}panel/" aria-label="VPN-UI">
-                    <img src="{{ .base_path }}assets/img/logo.png" alt="VPN-UI" />
+                <a href="{{ .base_path }}panel/" aria-label="{{ .brand }}">
+                    <img src="{{ .base_path }}assets/img/logo.png" alt="{{ .brand }}" />
                 </a>
             </div>
             <a-theme-switch></a-theme-switch>
@@ -23,8 +23,8 @@
                 <a-icon :type="visible ? 'close' : 'menu-fold'"></a-icon>
             </div>
             <div class="sidebar-brand">
-                <a href="{{ .base_path }}panel/" aria-label="VPN-UI">
-                    <img src="{{ .base_path }}assets/img/logo.png" alt="VPN-UI" />
+                <a href="{{ .base_path }}panel/" aria-label="{{ .brand }}">
+                    <img src="{{ .base_path }}assets/img/logo.png" alt="{{ .brand }}" />
                 </a>
             </div>
             <a-theme-switch></a-theme-switch>

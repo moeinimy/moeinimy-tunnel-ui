@@ -202,16 +202,23 @@ gre_relay_all() {
 }
 
 # gre_forwards_apply ensure|remove — DNAT/SNAT rules for TUN[FORWARDS].
+#
+# Every rule is pinned to the WAN interface, exactly like gre_relay_all. Without
+# -i "$wan" the PREROUTING DNAT also matches packets arriving ON THE TUNNEL
+# itself, so a reply coming back from the peer to this port gets DNAT'd straight
+# back at the peer — a loop that ate the traffic and made "specific ports" look
+# broken while "all ports" (which always had -i "$wan") worked fine.
 gre_forwards_apply() {
-    local action="$1" entry proto lp dp
+    local action="$1" entry proto lp dp wan dev="${TUN[IFNAME]}"
     [[ -n "${TUN[FORWARDS]:-}" ]] || return 0
+    wan="$(detect_wan_iface)"
     local fn=_ipt_ensure; [[ "$action" == remove ]] && fn=_ipt_remove
     local IFS=';'
     for entry in ${TUN[FORWARDS]}; do
         IFS=':' read -r proto lp dp <<<"$entry"
         [[ -n "$proto" && -n "$lp" && -n "$dp" ]] || continue
-        "$fn" nat PREROUTING  -p "$proto" --dport "$lp" -j DNAT --to-destination "${TUN[INNER_REMOTE]}:$dp"
-        "$fn" nat POSTROUTING -p "$proto" -d "${TUN[INNER_REMOTE]}" --dport "$dp" -j SNAT --to-source "${TUN[INNER_LOCAL]}"
+        "$fn" nat PREROUTING  -i "$wan" -p "$proto" --dport "$lp" -j DNAT --to-destination "${TUN[INNER_REMOTE]}:$dp"
+        "$fn" nat POSTROUTING -o "$dev" -p "$proto" -d "${TUN[INNER_REMOTE]}" --dport "$dp" -j SNAT --to-source "${TUN[INNER_LOCAL]}"
         "$fn" filter FORWARD  -p "$proto" -d "${TUN[INNER_REMOTE]}" --dport "$dp" -j ACCEPT
     done
 }

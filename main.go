@@ -1683,6 +1683,21 @@ func main() {
 			return
 		}
 		runWebServer()
+	case "brand":
+		// Rename the panel's display name. Shell-only on purpose: there is no UI
+		// field for it, so only someone with access to this box can rebrand it.
+		//   <binary> brand              -> show the current name
+		//   <binary> brand "My Panel"   -> set it (takes effect on next page load)
+		//   <binary> brand ""           -> restore the built-in default
+		if len(os.Args) < 3 {
+			fmt.Println(config.GetBrand())
+			return
+		}
+		if err := config.SetBrand(os.Args[2]); err != nil {
+			fmt.Println("could not set brand:", err)
+			return
+		}
+		fmt.Println("brand is now:", config.GetBrand())
 	case "migrate":
 		migrateDb()
 	case "setting":

@@ -73,6 +73,11 @@
 {{ end }}
 
 {{ define "page/body_scripts" }}
+<script>
+    // Panel display name (config.GetBrand). Global so every page and component
+    // renders the operator's chosen name instead of a hardcoded one.
+    const brand = {{ .brand }};
+</script>
 <script src="{{ .base_path }}assets/vue/vue.min.js?{{ .cur_ver }}"></script>
 <script src="{{ .base_path }}assets/moment/moment.min.js"></script>
 <script src="{{ .base_path }}assets/ant-design-vue/antd.min.js"></script>

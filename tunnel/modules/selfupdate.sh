@@ -28,7 +28,7 @@ selfupdate_run() {
 }
 
 selfupdate_tarball() {
-    local tmp url dir
+    local tmp url dir src
     tmp="$(mktemp -d)"
     url="https://github.com/${TM_REPO}/archive/refs/heads/${TM_BRANCH}.tar.gz"
     log_info "Downloading $url"
@@ -38,14 +38,21 @@ selfupdate_tarball() {
     tar -xzf "$tmp/src.tar.gz" -C "$tmp" || { rm -rf "$tmp"; die "extract failed"; }
     dir="$(find "$tmp" -maxdepth 1 -type d -name '*-*' | head -1)"
     [[ -d "$dir" ]] || { rm -rf "$tmp"; die "unexpected archive layout"; }
-    bash "$dir/install.sh" --update || { rm -rf "$tmp"; die "reinstall failed"; }
+    # The backend ships inside the panel monorepo under tunnel/; fall back to the
+    # archive root for a standalone tunnel-manager repo.
+    if [[ -f "$dir/tunnel/install.sh" ]]; then src="$dir/tunnel"; else src="$dir"; fi
+    [[ -f "$src/tunnelctl" ]] || { rm -rf "$tmp"; die "archive has no tunnelctl (wrong TM_REPO?)"; }
+    bash "$src/install.sh" --update || { rm -rf "$tmp"; die "reinstall failed"; }
     rm -rf "$tmp"
 }
 
 # selfupdate_check — compare local VERSION against remote (best-effort, for alerts).
 selfupdate_check() {
     local remote
+    # Monorepo layout first (tunnel/VERSION), then a standalone repo's root.
     remote="$(curl -fsSL --max-time 15 \
+        "https://raw.githubusercontent.com/${TM_REPO}/${TM_BRANCH}/tunnel/VERSION" 2>/dev/null | tr -d '[:space:]')"
+    [[ -n "$remote" ]] || remote="$(curl -fsSL --max-time 15 \
         "https://raw.githubusercontent.com/${TM_REPO}/${TM_BRANCH}/VERSION" 2>/dev/null | tr -d '[:space:]')"
     local local_v; local_v="$(cat "$TM_HOME/VERSION" 2>/dev/null | tr -d '[:space:]')"
     [[ -n "$remote" && -n "$local_v" && "$remote" != "$local_v" ]] || return 1

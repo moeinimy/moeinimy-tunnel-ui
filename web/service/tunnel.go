@@ -66,7 +66,12 @@ func (s *TunnelService) Installed() bool {
 // folded into the returned error on failure (tunnelctl prints JSON to stdout
 // and human/log lines to stderr, so the two never mix).
 func (s *TunnelService) run(args ...string) ([]byte, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), tunnelCmdTimeout)
+	return s.runTimeout(tunnelCmdTimeout, args...)
+}
+
+// runTimeout is run() with an explicit deadline, for slow commands like update.
+func (s *TunnelService) runTimeout(timeout time.Duration, args ...string) ([]byte, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, tunnelctlPath(), args...)
@@ -187,6 +192,25 @@ func (s *TunnelService) Create(fields map[string]string) error {
 	}
 	_, err := s.run(args...)
 	return err
+}
+
+// Update pulls the latest tunnel backend from GitHub and re-runs its installer,
+// preserving all config. Combined stdout+stderr is returned so the UI can show
+// the log (tunnelctl reports progress on stderr). Generous timeout: it downloads
+// a tarball and re-installs systemd units.
+func (s *TunnelService) Update() (string, error) {
+	out, err := s.runTimeout(5*time.Minute, "update")
+	if err != nil {
+		// tunnelctl logs progress + failures to stderr, which run() folds into err.
+		return err.Error(), err
+	}
+	return string(out), nil
+}
+
+// Version reports the installed tunnel backend version.
+func (s *TunnelService) Version() (string, error) {
+	out, err := s.run("version")
+	return strings.TrimSpace(string(out)), err
 }
 
 // Optimize applies/reverts the reversible network tuning (sysctl, ip_forward).

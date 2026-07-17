@@ -80,6 +80,7 @@ func (a *TunnelController) initRouter(g *gin.RouterGroup) {
 	g.POST("/disable/:name", a.disable)
 	g.POST("/set/:name", a.set)
 	g.POST("/optimize/:action", a.optimize)
+	g.POST("/update", a.update)
 
 	// Iran-node management (login-protected). The node's own poll/result
 	// endpoints are token-authed and registered separately in web.go.
@@ -216,6 +217,21 @@ func (a *TunnelController) set(c *gin.Context) {
 func (a *TunnelController) optimize(c *gin.Context) {
 	err := a.tunnelService.Optimize(c.Param("action"))
 	jsonMsg(c, I18nWeb(c, "pages.tunnel.toasts.saved"), err)
+}
+
+// update pulls the latest tunnel backend from GitHub and reinstalls it, so the
+// operator never needs SSH for a backend upgrade. Returns the version before and
+// after plus the log, which the UI shows.
+func (a *TunnelController) update(c *gin.Context) {
+	before, _ := a.tunnelService.Version()
+	log, err := a.tunnelService.Update()
+	if err != nil {
+		jsonMsg(c, I18nWeb(c, "pages.tunnel.toasts.updateFailed")+": "+log, err)
+		return
+	}
+	after, _ := a.tunnelService.Version()
+	jsonObj(c, gin.H{"before": before, "after": after, "log": log,
+		"changed": before != after}, nil)
 }
 
 // ---- Iran-node management --------------------------------------------------

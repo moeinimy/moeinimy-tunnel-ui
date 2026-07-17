@@ -35,6 +35,14 @@
                         <a-icon type="setting"></a-icon>{{ i18n "pages.tunnel.optimize" }}<a-icon type="down"></a-icon>
                       </a-button>
                     </a-dropdown>
+                    <a-popconfirm title="{{ i18n "pages.tunnel.updateConfirm" }}" placement="bottomRight"
+                      @confirm="updateBackend" ok-text="{{ i18n "pages.tunnel.update" }}"
+                      cancel-text="{{ i18n "cancel" }}">
+                      <a-button :loading="updating">
+                        <a-icon type="cloud-download"></a-icon>{{ i18n "pages.tunnel.update" }}
+                        <a-tag v-if="meta.version" :style="{ marginLeft: '6px' }">[[ meta.version ]]</a-tag>
+                      </a-button>
+                    </a-popconfirm>
                     <a-button @click="loadAll(true)">
                       <a-icon type="reload"></a-icon>{{ i18n "pages.tunnel.refresh" }}
                     </a-button>
@@ -196,6 +204,11 @@
             <a-button type="dashed" size="small" @click="nodeExtraFields.push({key:'',value:''})"><a-icon type="plus"></a-icon>{{ i18n "pages.tunnel.addField" }}</a-button>
           </template>
         </a-form-model>
+      </a-modal>
+
+      <!-- Backend update result -->
+      <a-modal v-model="updateLogVisible" title='{{ i18n "pages.tunnel.update" }}' :footer="null" :width="760">
+        <pre class="tunnel-logs">[[ updateLogText ]]</pre>
       </a-modal>
 
       <!-- Node one-liner modal -->
@@ -368,6 +381,10 @@
       logsLoading: false,
       logsName: '',
       logsContent: '',
+      // backend update
+      updating: false,
+      updateLogVisible: false,
+      updateLogText: '',
       // nodes
       nodes: [],
       nodeOnelinerVisible: false,
@@ -386,7 +403,8 @@
       upCount() { return this.tunnels.filter(t => t.active).length; },
       anyModalOpen() {
         return this.createVisible || this.editVisible || this.logsVisible ||
-          this.nodeCreateVisible || this.nodeOnelinerVisible || this.nodeTunnelsVisible;
+          this.nodeCreateVisible || this.nodeOnelinerVisible || this.nodeTunnelsVisible ||
+          this.updateLogVisible || this.updating;
       },
     },
     methods: {
@@ -479,6 +497,21 @@
         this.spinning = true;
         await HttpUtil.post('/panel/tunnel/' + (v ? 'enable' : 'disable') + '/' + encodeURIComponent(t.name));
         await this.loadAll(false);
+      },
+      // Pull the latest tunnel backend from GitHub and reinstall it — no SSH.
+      // Config is preserved; running tunnels keep their profiles.
+      async updateBackend() {
+        this.updating = true;
+        const msg = await HttpUtil.post('/panel/tunnel/update');
+        this.updating = false;
+        if (msg && msg.success && msg.obj) {
+          const o = msg.obj;
+          this.updateLogText = (o.changed
+            ? '{{ i18n "pages.tunnel.updateDone" }}: ' + o.before + ' → ' + o.after
+            : '{{ i18n "pages.tunnel.updateNone" }} (' + o.after + ')') + '\n\n' + (o.log || '');
+          this.updateLogVisible = true;
+          await this.loadAll(false);
+        }
       },
       async onOptimizeMenu({ key }) {
         this.spinning = true;

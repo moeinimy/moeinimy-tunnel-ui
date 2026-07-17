@@ -33,7 +33,7 @@
 TM_UNIT_PREFIX="tm-tunnel-"
 
 # GitHub repository used for self-update (owner/name). Override in settings.conf.
-: "${TM_REPO:=moeinimy/tunnel-manager}"
+: "${TM_REPO:=moeinimy/moeinimy-tunnel-ui}"
 
 # ---------------------------------------------------------------------------
 # Colors (disabled automatically when output is not a TTY or NO_COLOR is set)

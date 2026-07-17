@@ -18,7 +18,7 @@ _src="${BASH_SOURCE[0]}"
 SRC_DIR="$(cd -P "$(dirname "$_src")" >/dev/null 2>&1 && pwd)"
 
 if [[ ! -f "$SRC_DIR/tunnelctl" ]]; then
-    : "${TM_REPO:=moeinimy/tunnel-manager}"
+    : "${TM_REPO:=moeinimy/moeinimy-tunnel-ui}"
     : "${TM_BRANCH:=main}"
     echo "Fetching Tunnel Manager source from $TM_REPO ($TM_BRANCH)…"
     _tmp="$(mktemp -d)"
@@ -28,7 +28,14 @@ if [[ ! -f "$SRC_DIR/tunnelctl" ]]; then
         exit 1
     fi
     tar -xzf "$_tmp/src.tar.gz" -C "$_tmp"
-    SRC_DIR="$(find "$_tmp" -maxdepth 1 -type d -name '*-*' | head -1)"
+    _root="$(find "$_tmp" -maxdepth 1 -type d -name '*-*' | head -1)"
+    # The backend now lives in the panel monorepo under tunnel/; fall back to the
+    # archive root so a standalone tunnel-manager checkout still installs.
+    if [[ -f "$_root/tunnel/tunnelctl" ]]; then
+        SRC_DIR="$_root/tunnel"
+    else
+        SRC_DIR="$_root"
+    fi
     exec bash "$SRC_DIR/install.sh" "$@"
 fi
 
@@ -86,7 +93,7 @@ ensure_dirs
 if [[ ! -f "$TM_SETTINGS_FILE" ]]; then
     cat >"$TM_SETTINGS_FILE" <<EOF
 # Tunnel Manager settings — edit and restart services to apply.
-TM_REPO=${TM_REPO:-moeinimy/tunnel-manager}
+TM_REPO=${TM_REPO:-moeinimy/moeinimy-tunnel-ui}
 TM_BRANCH=main
 
 # Paqet binary source (see docs if downloads fail)
@@ -105,6 +112,15 @@ TM_DISK_ALERT=90
 EOF
     chmod 600 "$TM_SETTINGS_FILE"
     log_ok "Wrote default settings to $TM_SETTINGS_FILE"
+else
+    # Migration: settings.conf is written once and never overwritten, so an install
+    # from before the panel merge still pins the standalone tunnel-manager repo.
+    # Left alone, `tunnelctl update` would pull that repo and DOWNGRADE the backend
+    # (no api.sh/prepare.sh/nodeagent.sh), silently breaking the panel integration.
+    if grep -q '^TM_REPO=moeinimy/tunnel-manager[[:space:]]*$' "$TM_SETTINGS_FILE" 2>/dev/null; then
+        sed -i 's|^TM_REPO=moeinimy/tunnel-manager[[:space:]]*$|TM_REPO=moeinimy/moeinimy-tunnel-ui|' "$TM_SETTINGS_FILE"
+        log_ok "Migrated TM_REPO in $TM_SETTINGS_FILE to the panel monorepo."
+    fi
 fi
 
 # --- Infra systemd units ----------------------------------------------------

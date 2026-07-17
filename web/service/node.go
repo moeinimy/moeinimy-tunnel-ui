@@ -32,9 +32,17 @@ func nodesFile() string {
 }
 
 const (
-	nodeOnlineWindow = 15 * time.Second // last-seen within this ⇒ "online"
-	nodeExecTimeout  = 20 * time.Second // how long Exec waits for a node result
-	nodePollHold     = 25 * time.Second // long-poll hold when the queue is empty
+	nodeExecTimeout = 20 * time.Second // how long Exec waits for a node result
+	nodePollHold    = 25 * time.Second // long-poll hold when the queue is empty
+
+	// A node counts as online while its last poll is within this window. It MUST
+	// stay comfortably larger than nodePollHold: an agent sitting inside a held
+	// long-poll is *connected*, but it isn't issuing new requests, so a window
+	// shorter than the hold marks a perfectly healthy node offline partway
+	// through every cycle — which is exactly the online/offline flapping this
+	// used to show (15s window vs. 25s hold). Poll also refreshes last-seen
+	// while it holds, so this only has to cover a whole missed cycle plus jitter.
+	nodeOnlineWindow = 75 * time.Second
 )
 
 // protoSecretKey maps each tunnel protocol to the field holding its shared
@@ -395,11 +403,18 @@ func (s *NodeService) Poll(token, remoteIP string) (cmds []*nodeCommand, ok bool
 		nodeReg.mu.Lock()
 		nodeReg.load()
 		n := s.byToken(token)
-		if n != nil && len(n.queue) > 0 {
-			cmds = n.queue
-			n.queue = nil
-			nodeReg.mu.Unlock()
-			return cmds, true
+		if n != nil {
+			// Keep last-seen fresh FOR THE DURATION of the hold. The agent is
+			// connected the whole time it is parked here, but it issues no new
+			// request until we return, so without this the node would age out
+			// mid-hold and flap offline->online on every cycle.
+			n.lastSeen = time.Now()
+			if len(n.queue) > 0 {
+				cmds = n.queue
+				n.queue = nil
+				nodeReg.mu.Unlock()
+				return cmds, true
+			}
 		}
 		nodeReg.mu.Unlock()
 		if time.Now().After(deadline) {

@@ -230,6 +230,18 @@ tunnel_add_kv() {
         fi
     fi
 
+    # The same guard the interactive wizard applies. Matters most for GRE: the
+    # kernel allows only ONE keyless GRE tunnel per local->remote pair, so a
+    # second one to the same peer dies with 'add tunnel "gre0" failed: File
+    # exists' and crash-loops. Without this the panel created it anyway and the
+    # failure looked like "GRE with NAT is broken" — it wasn't; it was simply the
+    # second tunnel to that peer. Give several GRE tunnels distinct GRE_KEYs.
+    if ! profile_conflicts "$name" "${TUN[PROTOCOL]}" "${TUN[LOCAL_IP]:-}" \
+                           "${TUN[REMOTE_IP]:-}" "${TUN[PAQET_PORT]:-}" "${TUN[GRE_KEY]:-}"; then
+        [[ -n "${TUN[IPAM_INDEX]:-}" ]] && ipam_free "$name"
+        die "create: conflicts with an existing tunnel (see above). For a second GRE tunnel to the same peer, set a unique GRE_KEY."
+    fi
+
     save_tunnel
     if declare -F svc_install >/dev/null 2>&1; then
         svc_install "$name" || die "create: could not install service for '$name'"

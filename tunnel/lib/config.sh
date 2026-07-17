@@ -75,7 +75,12 @@ tget() { local k="$1"; printf '%s' "${TUN[$k]:-${2:-}}"; }
 # returns 1 if any conflict is found. The candidate NAME is skipped (for edit).
 profile_conflicts() {
     local cand="$1" proto="$2" local_ip="$3" remote_ip="$4" port="$5" gkey="$6"
-    local other bad=0
+    local other bad=0 k
+    # load_tunnel below overwrites the global TUN, which still holds the profile
+    # the caller is about to save. Snapshot and restore it, or a create/edit that
+    # scans past an existing tunnel would write THAT profile back out under the
+    # wrong name.
+    local -A _saved=(); for k in "${!TUN[@]}"; do _saved["$k"]="${TUN[$k]}"; done
     while read -r other; do
         [[ -z "$other" || "$other" == "$cand" ]] && continue
         load_tunnel "$other" || continue
@@ -95,5 +100,6 @@ profile_conflicts() {
             fi
         fi
     done < <(list_tunnels)
+    TUN=(); for k in "${!_saved[@]}"; do TUN["$k"]="${_saved[$k]}"; done
     return "$bad"
 }

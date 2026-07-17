@@ -118,6 +118,11 @@ func (s *TunnelService) List() (json.RawMessage, error)      { return s.runJSON(
 func (s *TunnelService) Meta() (json.RawMessage, error)      { return s.runJSON("meta") }
 func (s *TunnelService) Protocols() (json.RawMessage, error) { return s.runJSON("protocols") }
 
+// Schema returns the per-protocol form definition (the same questions the CLI
+// wizard asks), so the UI renders each protocol's real fields instead of a
+// hardcoded guess.
+func (s *TunnelService) Schema() (json.RawMessage, error) { return s.runJSON("schema") }
+
 func (s *TunnelService) Tunnel(name string) (json.RawMessage, error) {
 	if !validName(name) {
 		return nil, errors.New("invalid tunnel name")

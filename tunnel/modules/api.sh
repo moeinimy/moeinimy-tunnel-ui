@@ -131,9 +131,11 @@ tunnel_add_kv() {
     is_protocol "${TUN[PROTOCOL]:-}" || die "create: unknown protocol '${TUN[PROTOCOL]:-}'"
 
     : "${TUN[ROLE]:=foreign}"
-    : "${TUN[MTU]:=1400}"
     : "${TUN[AUTOSTART]:=yes}"
-    TUN[CREATED_AT]="$(date +%s)"
+    TUN[CREATED_AT]="$(date '+%Y-%m-%d %H:%M:%S')"
+    # NOTE: MTU is deliberately NOT defaulted here — each driver's <p>_prepare
+    # sets its own (paqet wants 1350, others 1400), and ":=" would make a generic
+    # value stick and silently override that.
 
     # Driver-specific derivation (IPAM for GRE, secrets/ports for userspace).
     # A driver may provide <p>_prepare for non-interactive field completion;
@@ -176,6 +178,7 @@ api_dispatch() {
         list)       api_list ;;
         tunnel)     api_tunnel_obj "${1:?tunnel name}"; echo ;;
         protocols)  api_protocols ;;
+        schema)     api_schema ;;
         fields)     api_fields "${1:?tunnel name}" ;;
         meta)       api_meta ;;
         *)          printf '{"error":"unknown json subcommand: %s"}\n' "$(json_escape "$sub")"; return 1 ;;

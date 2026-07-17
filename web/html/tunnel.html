@@ -194,14 +194,31 @@
                 <a-select-option v-for="p in protocols" :key="p" :value="p">[[ p.toUpperCase() ]]</a-select-option>
               </a-select>
             </a-form-model-item>
-            <a-divider :style="{ margin: '8px 0' }">{{ i18n "pages.tunnel.advanced" }}</a-divider>
-            <p :style="{ opacity: .6, fontSize: '12px', marginTop: '-4px' }">{{ i18n "pages.tunnel.advancedHint" }}</p>
-            <div v-for="(row, i) in nodeExtraFields" :key="i" class="tunnel-extra-row" :style="{ display:'flex', gap:'8px', marginBottom:'8px' }">
-              <a-input v-model="row.key" placeholder="KEY" class="tunnel-extra-key" :style="{ flex: '0 0 200px' }"></a-input>
-              <a-input v-model="row.value" placeholder="value" :style="{ flex: 1 }"></a-input>
-              <a-button icon="minus" @click="nodeExtraFields.splice(i,1)"></a-button>
-            </div>
-            <a-button type="dashed" size="small" @click="nodeExtraFields.push({key:'',value:''})"><a-icon type="plus"></a-icon>{{ i18n "pages.tunnel.addField" }}</a-button>
+            <!-- Same schema-driven fields as the create form, from the node's
+                 (Iran) point of view; the panel builds the foreign side to match. -->
+            <a-divider :style="{ margin: '8px 0' }">[[ protoLabel(nodeForm.protocol) ]]</a-divider>
+            <a-form-model-item v-for="f in nodeVisibleFields" :key="f.key" :label="f.label">
+              <a-select v-if="f.type === 'select'" v-model="nodeForm[f.key]">
+                <a-select-option v-for="o in f.options" :key="o" :value="o">[[ o ]]</a-select-option>
+              </a-select>
+              <a-input-number v-else-if="f.type === 'number' || f.type === 'port'" v-model="nodeForm[f.key]"
+                :min="1" :max="f.type === 'port' ? 65535 : 1000000" :style="{ width: '180px' }"></a-input-number>
+              <a-input-password v-else-if="f.type === 'password'" v-model="nodeForm[f.key]"
+                placeholder='{{ i18n "pages.tunnel.autoGen" }}'></a-input-password>
+              <a-input v-else v-model="nodeForm[f.key]" :placeholder="f.default"></a-input>
+              <div v-if="f.help" :style="{ opacity: .55, fontSize: '12px' }">[[ f.help ]]</div>
+            </a-form-model-item>
+
+            <a-collapse :bordered="false" :style="{ background: 'transparent' }">
+              <a-collapse-panel key="adv" header='{{ i18n "pages.tunnel.advanced" }}'>
+                <div v-for="(row, i) in nodeExtraFields" :key="i" class="tunnel-extra-row" :style="{ display:'flex', gap:'8px', marginBottom:'8px' }">
+                  <a-input v-model="row.key" placeholder="KEY" class="tunnel-extra-key" :style="{ flex: '0 0 200px' }"></a-input>
+                  <a-input v-model="row.value" placeholder="value" :style="{ flex: 1 }"></a-input>
+                  <a-button icon="minus" @click="nodeExtraFields.splice(i,1)"></a-button>
+                </div>
+                <a-button type="dashed" size="small" @click="nodeExtraFields.push({key:'',value:''})"><a-icon type="plus"></a-icon>{{ i18n "pages.tunnel.addField" }}</a-button>
+              </a-collapse-panel>
+            </a-collapse>
           </template>
         </a-form-model>
       </a-modal>
@@ -242,7 +259,7 @@
           </a-row>
           <a-row :gutter="12">
             <a-col :span="12"><a-form-model-item label='{{ i18n "pages.tunnel.role" }}'>
-              <a-select v-model="form.ROLE">
+              <a-select :value="form.ROLE" @change="onRoleChange">
                 <a-select-option value="foreign">{{ i18n "pages.tunnel.roleForeign" }}</a-select-option>
                 <a-select-option value="iran">{{ i18n "pages.tunnel.roleIran" }}</a-select-option>
               </a-select></a-form-model-item></a-col>
@@ -251,16 +268,35 @@
           </a-row>
           <a-form-model-item label='{{ i18n "pages.tunnel.mtu" }}'>
             <a-input-number v-model="form.MTU" :min="576" :max="9000" :style="{ width: '160px' }"></a-input-number>
+            <div :style="{ opacity: .55, fontSize: '12px' }">{{ i18n "pages.tunnel.mtuHint" }}</div>
           </a-form-model-item>
 
-          <a-divider :style="{ margin: '8px 0' }">{{ i18n "pages.tunnel.advanced" }}</a-divider>
-          <p :style="{ opacity: 0.6, fontSize: '12px', marginTop: '-4px' }">{{ i18n "pages.tunnel.advancedHint" }}</p>
-          <div v-for="(row, i) in extraFields" :key="i" class="tunnel-extra-row" :style="{ display:'flex', gap:'8px', marginBottom:'8px' }">
-            <a-input v-model="row.key" placeholder="KEY" class="tunnel-extra-key" :style="{ flex: '0 0 200px' }"></a-input>
-            <a-input v-model="row.value" placeholder="value" :style="{ flex: 1 }"></a-input>
-            <a-button icon="minus" @click="extraFields.splice(i,1)"></a-button>
-          </div>
-          <a-button type="dashed" size="small" @click="extraFields.push({key:'',value:''})"><a-icon type="plus"></a-icon>{{ i18n "pages.tunnel.addField" }}</a-button>
+          <!-- Protocol-specific fields, rendered from the backend schema so the
+               panel asks exactly what the CLI wizard asks. -->
+          <a-divider :style="{ margin: '8px 0' }">[[ protoLabel(form.PROTOCOL) ]]</a-divider>
+          <a-form-model-item v-for="f in visibleFields" :key="f.key" :label="f.label">
+            <a-select v-if="f.type === 'select'" v-model="form[f.key]">
+              <a-select-option v-for="o in f.options" :key="o" :value="o">[[ o ]]</a-select-option>
+            </a-select>
+            <a-input-number v-else-if="f.type === 'number' || f.type === 'port'" v-model="form[f.key]"
+              :min="1" :max="f.type === 'port' ? 65535 : 1000000" :style="{ width: '180px' }"></a-input-number>
+            <a-input-password v-else-if="f.type === 'password'" v-model="form[f.key]"
+              placeholder='{{ i18n "pages.tunnel.autoGen" }}'></a-input-password>
+            <a-input v-else v-model="form[f.key]" :placeholder="f.default"></a-input>
+            <div v-if="f.help" :style="{ opacity: .55, fontSize: '12px' }">[[ f.help ]]</div>
+          </a-form-model-item>
+
+          <a-collapse :bordered="false" :style="{ background: 'transparent' }">
+            <a-collapse-panel key="adv" header='{{ i18n "pages.tunnel.advanced" }}'>
+              <p :style="{ opacity: 0.6, fontSize: '12px', marginTop: '-4px' }">{{ i18n "pages.tunnel.advancedHint" }}</p>
+              <div v-for="(row, i) in extraFields" :key="i" class="tunnel-extra-row" :style="{ display:'flex', gap:'8px', marginBottom:'8px' }">
+                <a-input v-model="row.key" placeholder="KEY" class="tunnel-extra-key" :style="{ flex: '0 0 200px' }"></a-input>
+                <a-input v-model="row.value" placeholder="value" :style="{ flex: 1 }"></a-input>
+                <a-button icon="minus" @click="extraFields.splice(i,1)"></a-button>
+              </div>
+              <a-button type="dashed" size="small" @click="extraFields.push({key:'',value:''})"><a-icon type="plus"></a-icon>{{ i18n "pages.tunnel.addField" }}</a-button>
+            </a-collapse-panel>
+          </a-collapse>
         </a-form-model>
       </a-modal>
 
@@ -333,24 +369,10 @@
 </style>
 
 <script>
-  // Recommended protocol-specific fields prefilled into the create form's
-  // Advanced list. Blank *_SECRET values are auto-generated by tunnelctl, so we
-  // leave secrets empty here. These are hints — the operator can edit/remove.
-  // Field names MUST match the driver's own "TUN keys" (tunnel/drivers/<p>.sh) —
-  // a wrong name is silently ignored and the tunnel never comes up. Anything left
-  // blank (secrets) or omitted (roles, targets, mux) is derived by <p>_prepare.
-  // "…_PORTS" is the port map "listenHere=targetThere" (default: xray on 443).
-  const PROTO_TEMPLATES = {
-    gost:     [{ key: 'GO_PORT', value: '8443' }, { key: 'GO_PROTO', value: 'mtls' }, { key: 'GO_PORTS', value: '443=443' }, { key: 'GO_PASS', value: '' }],
-    backpack: [{ key: 'BP_PORT', value: '8443' }, { key: 'BP_TRANSPORT', value: 'wssmux' }, { key: 'BP_PORTS', value: '443=443' }, { key: 'BP_TOKEN', value: '' }],
-    backhaul: [{ key: 'BH_PORT', value: '3080' }, { key: 'BH_TRANSPORT', value: 'tcpmux' }, { key: 'BH_PORTS', value: '443=443' }, { key: 'BH_TOKEN', value: '' }],
-    rathole:  [{ key: 'RH_PORT', value: '2333' }, { key: 'RH_PORTS', value: '443=443' }, { key: 'RH_TOKEN', value: '' }],
-    frp:      [{ key: 'FRP_PORT', value: '7000' }, { key: 'FRP_PORTS', value: '443=443' }, { key: 'FRP_TOKEN', value: '' }],
-    hysteria: [{ key: 'HY_PORT', value: '8443' }, { key: 'HY_PORTS', value: '443=443' }, { key: 'HY_OBFS', value: 'on' }, { key: 'HY_PASS', value: '' }],
-    paqet:    [{ key: 'PAQET_PORT', value: '9000' }, { key: 'PAQET_SECRET', value: '' }],
-    gre:      [{ key: 'GRE_KEY', value: '1' }, { key: 'ENABLE_NAT', value: 'yes' }],
-  };
-
+  // Protocol fields are NOT hardcoded here: they come from the backend schema
+  // (`tunnelctl json schema`, GET /panel/tunnel/schema), which mirrors each
+  // driver's own wizard. That way the panel asks exactly what the CLI asks and
+  // the two can never drift apart.
   const app = new Vue({
     delimiters: ['[[', ']]'],
     mixins: [MediaQueryMixin],
@@ -363,6 +385,7 @@
       meta: {},
       tunnels: [],
       protocols: [],
+      schema: {},
       timer: null,
       basePath: '{{ .base_path }}',
       // create
@@ -401,6 +424,10 @@
     },
     computed: {
       upCount() { return this.tunnels.filter(t => t.active).length; },
+      // Fields for the chosen protocol, minus the ones that don't apply to the
+      // chosen role (a GOST port-map only exists on the Iran/client side).
+      visibleFields() { return this.fieldsFor(this.form.PROTOCOL, this.form.ROLE); },
+      nodeVisibleFields() { return this.fieldsFor(this.nodeForm.protocol, 'iran'); },
       anyModalOpen() {
         return this.createVisible || this.editVisible || this.logsVisible ||
           this.nodeCreateVisible || this.nodeOnelinerVisible || this.nodeTunnelsVisible ||
@@ -425,12 +452,14 @@
           this.meta = m.obj.meta || {};
         }
         if (this.installed) {
-          const [pl, tl] = await Promise.all([
+          const [pl, tl, sc] = await Promise.all([
             HttpUtil.get('/panel/tunnel/protocols'),
             HttpUtil.get('/panel/tunnel/list'),
+            HttpUtil.get('/panel/tunnel/schema'),
           ]);
           if (pl && pl.success) this.protocols = pl.obj || [];
           if (tl && tl.success) this.tunnels = tl.obj || [];
+          if (sc && sc.success) this.schema = sc.obj || {};
           const nl = await HttpUtil.get('/panel/tunnel/nodes');
           if (nl && nl.success) this.nodes = nl.obj || [];
         }
@@ -446,14 +475,20 @@
         this.nodeCreateVisible = true;
       },
       onNodeProtocolChange(p) {
-        const tpl = PROTO_TEMPLATES[p] || [];
-        this.nodeExtraFields = tpl.map(x => ({ key: x.key, value: x.value }));
+        // The auto-provisioned tunnel is configured from the Iran side's point of
+        // view (that's the node); the panel derives the matching foreign side.
+        this.nodeForm = { name: this.nodeForm.name, protocol: p };
+        this.applySchemaDefaults(this.nodeForm, p, 'iran');
       },
       async submitNode() {
         const body = { name: (this.nodeForm.name || '').trim() };
         if (this.nodeSetupEnabled && this.nodeForm.protocol) {
           body.protocol = this.nodeForm.protocol;
           const fields = {};
+          for (const f of this.nodeVisibleFields) {
+            const v = this.nodeForm[f.key];
+            if (v !== undefined && v !== null && String(v) !== '') fields[f.key] = String(v);
+          }
           for (const row of this.nodeExtraFields) {
             const k = (row.key || '').trim();
             if (k) fields[k] = (row.value || '').trim();
@@ -519,6 +554,20 @@
         await this.loadAll(false);
       },
       // ---- create ----
+      // ---- schema helpers ----
+      protoLabel(p) { return (this.schema[p] && this.schema[p].label) || (p || '').toUpperCase(); },
+      fieldsFor(proto, role) {
+        const s = this.schema[proto];
+        if (!s || !s.fields) return [];
+        return s.fields.filter(f => f.side === 'both' || f.side === role);
+      },
+      // Vue 2 can't see properties added to an object after creation, so every
+      // schema key must go through $set to stay reactive.
+      applySchemaDefaults(target, proto, role) {
+        for (const f of this.fieldsFor(proto, role)) {
+          this.$set(target, f.key, f.default || '');
+        }
+      },
       openCreate() {
         this.form = { NAME: '', PROTOCOL: this.protocols[0] || '', ROLE: 'foreign', REMOTE_IP: '', MTU: 1400 };
         this.extraFields = [];
@@ -526,8 +575,15 @@
         this.createVisible = true;
       },
       onProtocolChange(p) {
-        const tpl = PROTO_TEMPLATES[p] || [];
-        this.extraFields = tpl.map(x => ({ key: x.key, value: x.value }));
+        // Drop the previous protocol's keys, then seed this one's defaults.
+        this.form = { NAME: this.form.NAME, PROTOCOL: p, ROLE: this.form.ROLE,
+                      REMOTE_IP: this.form.REMOTE_IP, MTU: this.form.MTU };
+        this.applySchemaDefaults(this.form, p, this.form.ROLE);
+      },
+      onRoleChange(r) {
+        // Role flips which fields exist (e.g. GOST's port map is client-only).
+        this.form.ROLE = r;
+        this.applySchemaDefaults(this.form, this.form.PROTOCOL, r);
       },
       async submitCreate() {
         const fields = {
@@ -537,6 +593,12 @@
           REMOTE_IP: (this.form.REMOTE_IP || '').trim(),
           MTU: String(this.form.MTU || 1400),
         };
+        // Protocol-specific fields from the schema. Empty values are omitted so
+        // the backend's <p>_prepare fills its own default (and generates secrets).
+        for (const f of this.visibleFields) {
+          const v = this.form[f.key];
+          if (v !== undefined && v !== null && String(v) !== '') fields[f.key] = String(v);
+        }
         for (const row of this.extraFields) {
           const k = (row.key || '').trim();
           if (k) fields[k] = (row.value || '').trim();

@@ -66,6 +66,7 @@ func (a *TunnelController) initRouter(g *gin.RouterGroup) {
 	g.GET("/meta", a.meta)
 	g.GET("/list", a.list)
 	g.GET("/protocols", a.protocols)
+	g.GET("/schema", a.schema)
 	g.GET("/tunnel/:name", a.tunnel)
 	g.GET("/fields/:name", a.fields)
 	g.GET("/logs/:name", a.logs)
@@ -117,6 +118,17 @@ func (a *TunnelController) list(c *gin.Context) {
 
 func (a *TunnelController) protocols(c *gin.Context) {
 	raw, err := a.tunnelService.Protocols()
+	if err != nil {
+		jsonMsg(c, I18nWeb(c, "pages.tunnel.toasts.loadFailed"), err)
+		return
+	}
+	jsonObj(c, raw, nil)
+}
+
+// schema returns the per-protocol form definition the UI renders its create form
+// from, so the panel asks exactly what the CLI wizard asks.
+func (a *TunnelController) schema(c *gin.Context) {
+	raw, err := a.tunnelService.Schema()
 	if err != nil {
 		jsonMsg(c, I18nWeb(c, "pages.tunnel.toasts.loadFailed"), err)
 		return

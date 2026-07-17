@@ -49,8 +49,21 @@ jobs:
           path: corebundle/core
           key: xray-core-${{ hashFiles('build/core/**') }}
 
+      # The daemon bundle apk-installs from the Alpine mirror inside Docker (9 such
+      # calls, none retried). A transient mirror/TLS drop there — "unexpected eof
+      # while reading" / "unable to select packages" — fails the whole release for
+      # reasons that have nothing to do with the code. Retrying the step is cheaper
+      # and merge-safer than patching every upstream bundle script; build.sh skips
+      # the stages that already succeeded, so an attempt resumes rather than restarts.
       - name: Build (Xray core + daemon bundle + panel binary)
-        run: SKIP_SUBMODULES=1 ./build.sh
+        run: |
+          for attempt in 1 2 3; do
+            if SKIP_SUBMODULES=1 ./build.sh; then exit 0; fi
+            echo "::warning::build attempt ${attempt} failed (often a transient Alpine mirror drop); retrying in 20s"
+            sleep 20
+          done
+          echo "::error::build failed after 3 attempts"
+          exit 1
 
       # Compile is the real gate (it just passed by building the binary). Some
       # upstream tests shell out to a live xray/daemon runtime that isn't wired up

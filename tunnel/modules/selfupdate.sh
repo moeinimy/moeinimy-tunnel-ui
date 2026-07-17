@@ -23,7 +23,21 @@ selfupdate_run() {
     fi
 
     latest="$(cat "$TM_HOME/VERSION" 2>/dev/null || echo unknown)"
-    log_ok "Updated: $current -> $latest"
+    # The version only moves when the backend's VERSION file does, but `update`
+    # always refreshes the code from the branch tip. Reporting a bare
+    # "3.0.0 -> 3.0.0" reads as "nothing happened" even though new code just
+    # landed, so say which of the two actually occurred.
+    if [[ "$current" == "$latest" ]]; then
+        log_ok "Code refreshed from ${TM_REPO}@${TM_BRANCH} (version unchanged: $latest)"
+    else
+        log_ok "Updated: $current -> $latest"
+    fi
+    # The node agent is long-running: without a restart it keeps executing the
+    # code that was on disk when it started. install.sh try-restarts it; say so,
+    # since that is the whole point of updating a node.
+    if systemctl is-active --quiet tm-node-agent.service 2>/dev/null; then
+        log_ok "Node control agent restarted on the new code."
+    fi
     tg_notify "⬆️ Tunnel Manager updated on $(hostname): $current → $latest"
 }
 

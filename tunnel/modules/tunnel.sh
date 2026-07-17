@@ -306,6 +306,10 @@ tunnel_up_hook() {   # __up NAME
     local name="${1:-}"
     load_tunnel "$name" || die "unknown tunnel: $name"
     driver_up
+    # Keep queue management right for EVERY protocol, on every start: GRE's own
+    # tm* device plus the WAN that all the userspace relays share. Without an AQM
+    # qdisc the bottleneck queue grows unbounded and latency explodes under load.
+    declare -F tm_aqm_ensure >/dev/null && tm_aqm_ensure 2>/dev/null || true
     state_set "$name" STATUS up
 }
 

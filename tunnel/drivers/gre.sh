@@ -131,6 +131,9 @@ gre_up() {
     ip link set "$dev" up
     ip addr add "${TUN[INNER_LOCAL]}/${TUN[INNER_CIDR]:-30}" dev "$dev"
     [[ -n "${TUN[MTU]:-}" ]] && ip link set "$dev" mtu "${TUN[MTU]}" 2>/dev/null || true
+    # AQM for this tm* device is applied centrally by tm_aqm_ensure (called from
+    # tunnel_up_hook right after this), so it picks cake/fq_codel consistently
+    # with the WAN instead of hard-coding one here.
     gre_rules_up
     log_ok "GRE tunnel '${TUN[NAME]}' up on $dev (${TUN[INNER_LOCAL]} <-> ${TUN[INNER_REMOTE]})"
 }
@@ -153,6 +156,12 @@ gre_rules_up() {
         sysctl -qw net.ipv4.ip_forward=1 || true
     fi
 
+    # Clamp TCP MSS on sessions entering the tunnel. GRE costs 24 bytes, so an
+    # unclamped 1460-MSS SYN produces oversized segments that fragment or hit a
+    # PMTU black hole — retransmits that only bite once the link is busy. Each
+    # side clamps its own tunnel-bound SYNs, which covers both directions.
+    _ipt_ensure mangle FORWARD -o "$dev" -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu
+
     if [[ "${TUN[ENABLE_NAT]:-no}" == yes ]]; then
         wan="$(detect_wan_iface)"
         _ipt_ensure nat POSTROUTING -s "$net" -o "$wan" -j MASQUERADE
@@ -169,6 +178,7 @@ gre_rules_down() {
     local dev="${TUN[IFNAME]}" wan net
     net="$(ipam_network "${TUN[IPAM_INDEX]}")/30"
     wan="$(detect_wan_iface)"
+    _ipt_remove mangle FORWARD -o "$dev" -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu
     _ipt_remove nat POSTROUTING -s "$net" -o "$wan" -j MASQUERADE
     _ipt_remove filter FORWARD -i "$dev" -o "$wan" -j ACCEPT
     _ipt_remove filter FORWARD -i "$wan" -o "$dev" -m state --state RELATED,ESTABLISHED -j ACCEPT

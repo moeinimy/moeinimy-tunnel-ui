@@ -253,6 +253,69 @@ func (s *NodeService) Provision(token, iranIP, foreignHost string) (foreignField
 	return ff, true
 }
 
+// BuildPair prepares BOTH sides of a tunnel for a registered node: the foreign
+// side (created locally on the panel host) and the Iran side (pushed to the
+// node). They share one secret and each points at the other's public address.
+//
+// This is the whole product in one call: the operator configures the tunnel once
+// in the panel and both servers get a matching, working half. Creating a single
+// side from the panel — which is what the old "role" picker did — always produced
+// a tunnel with nothing on the other end.
+func (s *NodeService) BuildPair(id, name, protocol string, fields map[string]string, foreignHost string) (foreign, iran map[string]string, online bool, err error) {
+	nodeReg.mu.Lock()
+	defer nodeReg.mu.Unlock()
+	nodeReg.load()
+
+	n := nodeReg.nodes[id]
+	if n == nil {
+		return nil, nil, false, errors.New("node not found")
+	}
+	if n.remoteIP == "" {
+		return nil, nil, false, errors.New("this node has never connected — run its install one-liner first")
+	}
+	online = time.Since(n.lastSeen) < nodeOnlineWindow
+
+	if fields == nil {
+		fields = map[string]string{}
+	}
+	// One shared secret, stored under the driver's own key name. Left blank, each
+	// side's <p>_prepare would mint its own and the two ends would never authenticate.
+	if key := protoSecretKey[protocol]; key != "" && fields[key] == "" {
+		fields[key] = randToken()[:32]
+	}
+
+	side := func(role, remote string) map[string]string {
+		m := map[string]string{}
+		for k, v := range fields {
+			m[k] = v
+		}
+		// Set the identity fields AFTER copying the form: a stray ROLE/REMOTE_IP in
+		// the submitted fields must never be able to flip a side onto the wrong host.
+		m["NAME"] = name
+		m["PROTOCOL"] = protocol
+		m["ROLE"] = role
+		m["REMOTE_IP"] = remote
+		return m
+	}
+	return side("foreign", n.remoteIP), side("iran", foreignHost), online, nil
+}
+
+// SetSetup stores/replaces a node's pending auto-provision setup, so a tunnel
+// configured before the node ever connects is applied on its first poll.
+func (s *NodeService) SetSetup(id string, setup *NodeSetup) error {
+	nodeReg.mu.Lock()
+	defer nodeReg.mu.Unlock()
+	nodeReg.load()
+	n := nodeReg.nodes[id]
+	if n == nil {
+		return errors.New("node not found")
+	}
+	n.Setup = setup
+	n.Provisioned = false // let it fire again for the new setup
+	nodeReg.save()
+	return nil
+}
+
 // Remove deletes a node.
 func (s *NodeService) Remove(id string) error {
 	nodeReg.mu.Lock()

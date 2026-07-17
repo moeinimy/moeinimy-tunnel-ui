@@ -257,7 +257,29 @@
                 <a-select-option v-for="p in protocols" :key="p" :value="p">[[ p.toUpperCase() ]]</a-select-option>
               </a-select></a-form-model-item></a-col>
           </a-row>
-          <a-row :gutter="12">
+          <!-- Deploy target. Picking a node builds BOTH halves in one action: the
+               panel already knows each side's address, so there is no role or peer
+               IP left to get wrong. Building a single side from here (the old
+               behaviour) always produced a tunnel with nothing on the other end. -->
+          <a-form-model-item label='{{ i18n "pages.tunnel.deployTo" }}'>
+            <a-select :value="form.__target" @change="onTargetChange">
+              <a-select-option v-for="n in nodes" :key="n.id" :value="n.id" :disabled="!n.online">
+                [[ n.name ]] — [[ n.online ? '{{ i18n "pages.tunnel.node.online" }}' : '{{ i18n "pages.tunnel.node.offline" }}' ]][[ n.remoteIP ? ' (' + n.remoteIP + ')' : '' ]]
+              </a-select-option>
+              <a-select-option value="__local">{{ i18n "pages.tunnel.deployLocal" }}</a-select-option>
+            </a-select>
+            <div :style="{ opacity: .55, fontSize: '12px' }">
+              [[ form.__target === '__local' ? '{{ i18n "pages.tunnel.deployLocalHint" }}' : '{{ i18n "pages.tunnel.deployPairHint" }}' ]]
+            </div>
+          </a-form-model-item>
+
+          <a-alert v-if="form.__target !== '__local' && !onlineNodes.length" type="warning" show-icon
+            :style="{ marginBottom: '12px' }">
+            <span slot="message">{{ i18n "pages.tunnel.noNodesWarn" }}</span>
+          </a-alert>
+
+          <!-- Only a manual single-side build needs a role + peer IP. -->
+          <a-row :gutter="12" v-if="form.__target === '__local'">
             <a-col :span="12"><a-form-model-item label='{{ i18n "pages.tunnel.role" }}'>
               <a-select :value="form.ROLE" @change="onRoleChange">
                 <a-select-option value="foreign">{{ i18n "pages.tunnel.roleForeign" }}</a-select-option>
@@ -460,9 +482,15 @@
     },
     computed: {
       upCount() { return this.tunnels.filter(t => t.active).length; },
-      // Fields for the chosen protocol, minus the ones that don't apply to the
-      // chosen role (a GOST port-map only exists on the Iran/client side).
-      visibleFields() { return this.fieldsFor(this.form.PROTOCOL, this.form.ROLE); },
+      onlineNodes() { return this.nodes.filter(n => n.online); },
+      // Fields for the chosen protocol. Building a single side shows only that
+      // role's fields; building a pair covers BOTH ends, so every side's fields
+      // are asked once and sent to both (each driver keeps what it needs).
+      visibleFields() {
+        return this.form.__target === '__local'
+          ? this.fieldsFor(this.form.PROTOCOL, this.form.ROLE)
+          : this.fieldsFor(this.form.PROTOCOL, null);
+      },
       nodeVisibleFields() { return this.fieldsFor(this.nodeForm.protocol, 'iran'); },
       anyModalOpen() {
         return this.createVisible || this.editVisible || this.logsVisible ||
@@ -588,9 +616,12 @@
       // ---- create ----
       // ---- schema helpers ----
       protoLabel(p) { return (this.schema[p] && this.schema[p].label) || (p || '').toUpperCase(); },
+      // role === null means "both ends" (a pair): every side's fields apply, and
+      // each driver ignores the ones it doesn't use.
       fieldsFor(proto, role) {
         const s = this.schema[proto];
         if (!s || !s.fields) return [];
+        if (role === null) return s.fields;
         return s.fields.filter(f => f.side === 'both' || f.side === role);
       },
       // Vue 2 can't see properties added to an object after creation, so every
@@ -650,16 +681,32 @@
         return out;
       },
       openCreate() {
-        this.form = { NAME: '', PROTOCOL: this.protocols[0] || '', ROLE: 'foreign', REMOTE_IP: '', MTU: 1400 };
+        // Default to the first ONLINE node, so the common case is "configure once,
+        // both servers get their half".
+        const firstNode = (this.nodes.find(n => n.online) || {}).id;
+        this.form = {
+          NAME: '', PROTOCOL: this.protocols[0] || '', ROLE: 'foreign', REMOTE_IP: '', MTU: 1400,
+          __target: firstNode || '__local',
+        };
         this.extraFields = [];
         this.onProtocolChange(this.form.PROTOCOL);
         this.createVisible = true;
       },
-      onProtocolChange(p) {
-        // Drop the previous protocol's keys, then seed this one's defaults.
-        this.form = { NAME: this.form.NAME, PROTOCOL: p, ROLE: this.form.ROLE,
-                      REMOTE_IP: this.form.REMOTE_IP, MTU: this.form.MTU };
-        this.applySchemaDefaults(this.form, p, this.form.ROLE);
+      // Rebuild the form for the current protocol/target, keeping the identity
+      // fields. Vue 2 needs a fresh object here so stale protocol keys disappear.
+      reseedForm(p) {
+        this.form = {
+          NAME: this.form.NAME, PROTOCOL: p, ROLE: this.form.ROLE,
+          REMOTE_IP: this.form.REMOTE_IP, MTU: this.form.MTU,
+          __target: this.form.__target,
+        };
+        this.applySchemaDefaults(this.form, p, this.form.__target === '__local' ? this.form.ROLE : null);
+      },
+      onProtocolChange(p) { this.reseedForm(p); },
+      onTargetChange(t) {
+        // Switching between a pair and a single side changes which fields apply.
+        this.form.__target = t;
+        this.reseedForm(this.form.PROTOCOL);
       },
       onRoleChange(r) {
         // Role flips which fields exist (e.g. GOST's port map is client-only).
@@ -667,22 +714,35 @@
         this.applySchemaDefaults(this.form, this.form.PROTOCOL, r);
       },
       async submitCreate() {
-        const fields = {
-          NAME: (this.form.NAME || '').trim(),
-          PROTOCOL: this.form.PROTOCOL,
-          ROLE: this.form.ROLE,
-          REMOTE_IP: (this.form.REMOTE_IP || '').trim(),
-          MTU: String(this.form.MTU || 1400),
-        };
-        Object.assign(fields, this.collectFields(this.form, this.visibleFields));
+        const name = (this.form.NAME || '').trim();
+        const proto = this.form.PROTOCOL;
+        // Protocol settings, shared by both halves of a pair.
+        const settings = { MTU: String(this.form.MTU || 1400) };
+        Object.assign(settings, this.collectFields(this.form, this.visibleFields));
         for (const row of this.extraFields) {
           const k = (row.key || '').trim();
-          if (k) fields[k] = (row.value || '').trim();
+          if (k) settings[k] = (row.value || '').trim();
         }
+
         this.createLoading = true;
-        // The panel's axios form-urlencodes every body, so structured payloads go
-        // as a JSON string in "data" (same convention as inbound.js).
-        const msg = await HttpUtil.post('/panel/tunnel/create', { data: JSON.stringify({ fields }) });
+        let msg;
+        if (this.form.__target === '__local') {
+          // Single side on this server only.
+          const fields = Object.assign({
+            NAME: name, PROTOCOL: proto, ROLE: this.form.ROLE,
+            REMOTE_IP: (this.form.REMOTE_IP || '').trim(),
+          }, settings);
+          // The panel's axios form-urlencodes every body, so structured payloads go
+          // as a JSON string in "data" (same convention as inbound.js).
+          msg = await HttpUtil.post('/panel/tunnel/create', { data: JSON.stringify({ fields }) });
+        } else {
+          // Both halves at once: the panel creates the foreign side here and pushes
+          // the Iran side to the node, sharing one secret and cross-pointing the
+          // addresses. ROLE/REMOTE_IP are decided server-side, never from this form.
+          msg = await HttpUtil.post('/panel/tunnel/pair', {
+            data: JSON.stringify({ nodeId: this.form.__target, name, protocol: proto, fields: settings }),
+          });
+        }
         this.createLoading = false;
         if (msg && msg.success) {
           this.createVisible = false;

@@ -26,10 +26,15 @@ import (
 var panelUpdateInFlight atomic.Bool
 
 // Panel self-update. The panel binary ships as a single GitHub release asset
-// (Sir-MmD/vpn-ui, "vpn-ui-amd64") — the same source deploy.sh installs from — so
-// the overview can both check for and apply updates in place.
+// ("vpn-ui-amd64") — the same source deploy.sh installs from — so the overview
+// can both check for and apply updates in place.
+//
+// This MUST point at THIS fork, not upstream: this build carries the tunnel
+// integration, and pulling upstream's asset over it would silently replace the
+// running panel with one that has no Tunnels section at all (and no tunnelctl
+// bridge), i.e. the update button would uninstall the feature set.
 const (
-	panelRepo        = "Sir-MmD/vpn-ui"
+	panelRepo        = "moeinimy/moeinimy-tunnel-ui"
 	panelAsset       = "vpn-ui-amd64"
 	panelLatestAPI   = "https://api.github.com/repos/" + panelRepo + "/releases/latest"
 	panelDownloadURL = "https://github.com/" + panelRepo + "/releases/latest/download/" + panelAsset
@@ -353,6 +358,16 @@ func restartPanel(exe string) {
 func versionNewer(a, b string) bool {
 	a = strings.TrimPrefix(strings.TrimSpace(a), "v")
 	b = strings.TrimPrefix(strings.TrimSpace(b), "v")
+	// Drop any semver pre-release/build suffix ("1.7.3-tunnel" -> "1.7.3"). This
+	// fork tags releases with a "-tunnel" suffix; without stripping it, Atoi on the
+	// last part fails, that part compares as 0, and every release looks NOT newer —
+	// i.e. the panel silently reports "up to date" forever.
+	if i := strings.IndexAny(a, "-+"); i >= 0 {
+		a = a[:i]
+	}
+	if i := strings.IndexAny(b, "-+"); i >= 0 {
+		b = b[:i]
+	}
 	if a == "" {
 		return false
 	}

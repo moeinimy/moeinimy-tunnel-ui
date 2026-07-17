@@ -1059,9 +1059,16 @@
 "updateDone" = "Updated"
 "updateNone" = "Already up to date"
 
+"deployTo" = "Deploy to"
+"deployLocal" = "This server only (advanced)"
+"deployLocalHint" = "Builds one side here. You must create the matching side on the other server yourself."
+"deployPairHint" = "Builds BOTH sides: this server and the node. Nothing else to do."
+"noNodesWarn" = "No node is online. Add a node first and run its one-liner on the Iran server."
+
 [pages.tunnel.toasts]
 "loadFailed" = "Could not load tunnel data"
 "created" = "Tunnel created"
+"pairCreated" = "Tunnel created on both servers"
 "createFailed" = "Could not create tunnel"
 "removed" = "Tunnel removed"
 "started" = "Tunnel started"

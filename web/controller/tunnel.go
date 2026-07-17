@@ -3,13 +3,21 @@ package controller
 import (
 	"encoding/json"
 	"errors"
+	"net"
 	"net/http"
+	"regexp"
 	"strings"
 
+	"github.com/mhsanaei/3x-ui/v2/logger"
 	"github.com/mhsanaei/3x-ui/v2/web/service"
 
 	"github.com/gin-gonic/gin"
 )
+
+// validTunnelName mirrors the charset tunnelctl itself accepts.
+var tunnelNamePattern = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_-]{0,31}$`)
+
+func validTunnelName(s string) bool { return tunnelNamePattern.MatchString(s) }
 
 // bindData decodes a structured payload from the panel UI.
 //
@@ -82,6 +90,9 @@ func (a *TunnelController) initRouter(g *gin.RouterGroup) {
 	g.POST("/set/:name", a.set)
 	g.POST("/optimize/:action", a.optimize)
 	g.POST("/update", a.update)
+
+	// One form -> both sides of a tunnel (foreign here + Iran on the node).
+	g.POST("/pair", a.createPair)
 
 	// Iran-node management (login-protected). The node's own poll/result
 	// endpoints are token-authed and registered separately in web.go.
@@ -244,6 +255,71 @@ func (a *TunnelController) update(c *gin.Context) {
 	after, _ := a.tunnelService.Version()
 	jsonObj(c, gin.H{"before": before, "after": after, "log": log,
 		"changed": before != after}, nil)
+}
+
+// panelHost returns the address the caller reached this panel on (no port) —
+// what the Iran side must dial back to.
+func panelHost(c *gin.Context) string {
+	h := c.Request.Host
+	if host, _, err := net.SplitHostPort(h); err == nil {
+		h = host
+	}
+	return h
+}
+
+type pairReq struct {
+	NodeID   string            `json:"nodeId"`
+	Name     string            `json:"name"`
+	Protocol string            `json:"protocol"`
+	Fields   map[string]string `json:"fields"`
+}
+
+// createPair builds a complete tunnel across both servers from one form: it
+// pushes the Iran side to the node and creates the foreign side here, sharing a
+// secret and pointing each end at the other. If either half fails the other is
+// rolled back, so the panel never leaves a tunnel with a missing end.
+func (a *TunnelController) createPair(c *gin.Context) {
+	var req pairReq
+	if err := bindData(c, &req); err != nil {
+		jsonMsg(c, I18nWeb(c, "pages.tunnel.toasts.createFailed"), err)
+		return
+	}
+	if !validTunnelName(req.Name) {
+		jsonMsg(c, I18nWeb(c, "pages.tunnel.toasts.createFailed"), errors.New("invalid tunnel name"))
+		return
+	}
+
+	ff, inf, online, err := a.nodeService.BuildPair(req.NodeID, req.Name, req.Protocol, req.Fields, panelHost(c))
+	if err != nil {
+		jsonMsg(c, I18nWeb(c, "pages.tunnel.toasts.createFailed"), err)
+		return
+	}
+	if !online {
+		jsonMsg(c, I18nWeb(c, "pages.tunnel.toasts.createFailed"),
+			errors.New(I18nWeb(c, "pages.tunnel.node.execFailed")))
+		return
+	}
+
+	// Iran side first: if the far end can't be built there's nothing to clean up
+	// here yet.
+	args := []string{"create"}
+	for k, v := range inf {
+		args = append(args, k+"="+v)
+	}
+	if out, err := a.nodeService.Exec(req.NodeID, args); err != nil {
+		jsonMsg(c, strings.TrimSpace(out), err)
+		return
+	}
+
+	// Foreign side. On failure, remove the Iran half we just made.
+	if err := a.tunnelService.Create(ff); err != nil {
+		if _, rbErr := a.nodeService.Exec(req.NodeID, []string{"remove", req.Name}); rbErr != nil {
+			logger.Warning("pair rollback: could not remove Iran side of ", req.Name, ": ", rbErr)
+		}
+		jsonMsg(c, I18nWeb(c, "pages.tunnel.toasts.createFailed"), err)
+		return
+	}
+	jsonMsg(c, I18nWeb(c, "pages.tunnel.toasts.pairCreated"), nil)
 }
 
 // ---- Iran-node management --------------------------------------------------

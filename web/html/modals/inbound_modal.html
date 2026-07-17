@@ -390,6 +390,10 @@
                     // 443 is what MTProto clients expect and what FakeTLS needs to be
                     // plausible (an "HTTPS" session on a non-443 port is a giveaway).
                     inModal.inbound.port = 443;
+                } else if (protocol === 'ssh') {
+                    // Non-privileged default so the in-binary SSH server binds without
+                    // colliding with the host's own sshd on 22.
+                    inModal.inbound.port = 2222;
                 }
             },
             streamNetworkChange() {

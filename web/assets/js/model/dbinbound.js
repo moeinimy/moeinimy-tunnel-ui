@@ -178,6 +178,10 @@ class DBInbound {
                 // MTProto Proxy is account-based: one secret per account, many
                 // accounts per inbound (the proxy matches the presented secret).
                 return true;
+            case Protocols.SSH:
+                // SSH relay is account-based: many username/password accounts per
+                // inbound (the in-binary SSH server authenticates each login).
+                return true;
             case Protocols.SHADOWSOCKS:
                 return this.toInbound().isSSMultiUser;
             default:

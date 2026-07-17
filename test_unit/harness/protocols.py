@@ -18,10 +18,11 @@ from .clients import openconnect as oc_mod
 from .clients import sstp as sstp_mod
 from .clients import ikev2 as ikev2_mod
 from .clients import wgc as wgc_mod
+from .clients import ssh as ssh_mod
 from .clients.base import Client
 from .model import Phase, SubTest, Status
 from .model import (PHASE_OPENVPN, PHASE_L2TP, PHASE_PPTP, PHASE_OPENCONNECT,
-                    PHASE_SSTP, PHASE_WGC, IKEV2_PHASE_BY_MODE)
+                    PHASE_SSTP, PHASE_WGC, PHASE_SSH, PHASE_SSH_UDP, IKEV2_PHASE_BY_MODE)
 
 # Grace for a client edit to land. telemt itself is NOT restarted (the panel rewrites
 # config.toml and telemt picks it up via inotify), but a client edit also flags Xray
@@ -31,14 +32,17 @@ from .model import (PHASE_OPENVPN, PHASE_L2TP, PHASE_PPTP, PHASE_OPENCONNECT,
 # bug this phase detects, and a false FAIL there is worse than a slow test.
 MTPROTO_RELOAD_WAIT = 8.0
 
-# cross-inbound peer: X's cross test pings a client on peer[X]'s inbound
+# cross-inbound peer: X's cross test pings a client on peer[X]'s inbound. ssh has no
+# entry: its cross-inbound is recorded NA (a relay has no client tunnel address to ping),
+# so PEER["ssh"] is never read.
 PEER = {"openvpn": "l2tp", "l2tp": "pptp", "pptp": "openvpn",
         "openconnect": "openvpn", "sstp": "openvpn", "ikev2": "openvpn",
         "wg-c": "openvpn"}
 # Non-ikev2 protocols map straight to their phase. ikev2 is split per auth mode
 # (IKEV2_PHASE_BY_MODE), resolved inside run() from its `mode` arg.
 PHASE = {"openvpn": PHASE_OPENVPN, "l2tp": PHASE_L2TP, "pptp": PHASE_PPTP,
-         "openconnect": PHASE_OPENCONNECT, "sstp": PHASE_SSTP, "wg-c": PHASE_WGC}
+         "openconnect": PHASE_OPENCONNECT, "sstp": PHASE_SSTP, "wg-c": PHASE_WGC,
+         "ssh": PHASE_SSH}
 
 # Connect variant used when dialing the SECOND same-protocol inbound (TEST 1,
 # _multi_inbound_check): l2tp uses RAW (the client's IPsec config is pinned to the
@@ -46,7 +50,7 @@ PHASE = {"openvpn": PHASE_OPENVPN, "l2tp": PHASE_L2TP, "pptp": PHASE_PPTP,
 # udp/new, pptp has no variant. sstp/ikev2 have no variant (single-variant protocols).
 _SECOND_VARIANT = {"openvpn": ("udp", "new"), "l2tp": "raw", "pptp": None,
                    "openconnect": "dtls", "sstp": None, "ikev2": None,
-                   "wg-c": None}
+                   "wg-c": None, "ssh": None}
 
 
 def _connect(client: Client, sc, proto: str, which: str, variant=None, ib=None):
@@ -71,6 +75,8 @@ def _connect(client: Client, sc, proto: str, which: str, variant=None, ib=None):
         return ikev2_mod.connect(client, ib, which, server_ip=sc.server_ip)
     if proto == "wg-c":
         return wgc_mod.connect(client, ib, which, server_ip=sc.server_ip)
+    if proto == "ssh":
+        return ssh_mod.connect(client, ib, which, server_ip=sc.server_ip)
     raise ValueError(proto)
 
 
@@ -81,7 +87,8 @@ def _disconnect(client: Client, proto: str):
      "openconnect": oc_mod.disconnect,
      "sstp": sstp_mod.disconnect,
      "ikev2": ikev2_mod.disconnect,
-     "wg-c": wgc_mod.disconnect}[proto](client)
+     "wg-c": wgc_mod.disconnect,
+     "ssh": ssh_mod.disconnect}[proto](client)
 
 
 def _variants(proto: str):
@@ -416,6 +423,556 @@ def _run_mtproto_toggle(cA: Client, sc, result, panel, server_exec) -> None:
                               f"could not restore account modes: {e}"))
 
 
+def _run_mtproto_termination(cA: Client, sc, result, panel, server_exec) -> None:
+    """Quota -> auto-disable -> the account can no longer relay.
+
+    The per-mode `usage` subtest proves bytes are COUNTED. It says nothing about them
+    being ENFORCED, and those are different code paths: mtproto has neither RADIUS nor
+    nft, so enforcement is the panel re-rendering [access.user_enabled] from
+    client_traffics and telemt's config watcher cancelling the account's live sessions.
+    Nothing covered that, which is the same shape as the ikev2 psk/eap-tls leak (evicted
+    every tick, but re-admitted in the gaps because the daemon was never told).
+
+    Two subtests, deliberately split: "the DB flipped enable=false" and "the proxy
+    actually stops serving it" are different claims, and the whole class of bug lives in
+    the gap between them. A single merged verdict would report the leak as a quota
+    failure and send the next reader to the wrong file.
+
+    Scale note: the quota is KiB, not MB. The prober's ceiling is ~1.6 KiB/s per
+    connection (each req_pq is a full round-trip to a DC, which does not pipeline
+    unauthenticated requests), so the MB-scale limit traffic.termination uses for tunnel
+    protocols could never be driven over here. That helper is tunnel-shaped anyway: it
+    curls through an interface this protocol does not have.
+    """
+    from .clients import mtproto as mt_mod
+    from .model import PHASE_MTPROTO_TERMINATION
+
+    phase: Phase = result.phase(PHASE_MTPROTO_TERMINATION)
+    ib = sc.inbounds.get("mtproto")
+    log = cA.log
+
+    if ib is None or panel is None:
+        phase.add(SubTest("mtproto-termination", Status.SKIP, "no mtproto inbound was built"))
+        return
+    ok, plog = mt_mod.ensure_probe(cA)
+    if not ok:
+        phase.add(SubTest("mtproto-termination", Status.FAIL, f"prober unavailable: {plog[:160]}"))
+        return
+    reach, rlog = mt_mod.dc_reachable(server_exec)
+    if not reach:
+        phase.add(SubTest("account-termination", Status.NA,
+                          f"server cannot reach any Telegram DC: {rlog[:120]}"))
+        return
+
+    _V = {"pass": Status.PASS, "fail": Status.FAIL, "na": Status.NA}
+    email = ib.accounts["A"].email
+    mode = "secure"          # account A holds every mode; secure needs no FakeTLS domain
+    limit = 64 * 1024        # KiB-scale on purpose (see the docstring)
+    push = 256 * 1024        # 4x the limit, ~7s at the prober's measured rate
+
+    try:
+        # Zero the counter BEFORE arming the quota, not after. The mode phases already
+        # billed this account ~768 KiB (256 KiB per usage subtest), which is well past a
+        # 64 KiB limit: arming first would let the very next traffic tick disable the
+        # account before the baseline probe, and the phase would measure its own setup.
+        panel.reset_client_traffic(ib.inbound_id, email)
+        time.sleep(MTPROTO_RELOAD_WAIT)
+        panel.set_client_total(ib.inbound_id, email, limit)
+        time.sleep(MTPROTO_RELOAD_WAIT)
+
+        # Baseline. A limited-but-under-quota account must relay, or "it stopped working
+        # after the quota" proves nothing: it might never have worked in this phase.
+        base = phase.add(SubTest("termination-baseline"))
+        v, info, _ = mt_mod.probe(cA, ib, "A", mode, server_ip=sc.server_ip)
+        base.status = _V.get(v, Status.ERROR)
+        base.detail = ("account relays while under its quota"
+                       if v == "pass" else str(info.get("error", ""))[:200])
+        log(f"-> termination-baseline [{base.status.value}] {base.detail}")
+
+        st = phase.add(SubTest("account-termination"))
+        en = phase.add(SubTest("termination-enforced"))
+        if base.status is not Status.PASS:
+            st.status = en.status = Status.NA
+            st.detail = en.detail = ("undecidable: the account did not relay before the "
+                                     "quota, so it not relaying after proves nothing")
+            log(f"-> account-termination [na] {st.detail}")
+            return
+
+        pushed, dinfo, _ = mt_mod.drive_bytes(cA, ib, "A", mode, sc.server_ip,
+                                              target_bytes=push)
+        if pushed <= 0:
+            st.status = Status.ERROR
+            st.detail = f"prober pushed no bytes: {str(dinfo.get('error', ''))[:160]}"
+            en.status = Status.NA
+            en.detail = "undecidable: no traffic was driven, so no quota could be crossed"
+            log(f"-> account-termination [error] {st.detail}")
+            return
+
+        # Poll for the auto-disable. The scrape + AddTraffic run on the 10s traffic job,
+        # and the disable lands a tick after the bytes do, so allow several ticks.
+        disabled, row = False, {}
+        deadline = time.monotonic() + 75
+        while time.monotonic() < deadline:
+            row = panel.get_client_traffics(email) or {}
+            if not bool(row.get("enable", True)):
+                disabled = True
+                break
+            time.sleep(4)
+        counted = int(row.get("up", 0) or 0) + int(row.get("down", 0) or 0)
+
+        if not disabled:
+            # Distinguish "enforcement is broken" from "we never actually crossed the
+            # line": only the former is this suite's bug to report.
+            if counted < limit:
+                st.status = Status.NA
+                st.detail = (f"could not drive past the {limit}B limit "
+                             f"(pushed {pushed}B, counted {counted}B)")
+            else:
+                st.status = Status.FAIL
+                st.detail = (f"account NOT disabled despite counted {counted}B "
+                             f"over a {limit}B limit")
+            en.status = Status.NA
+            en.detail = "undecidable: the account was never disabled"
+            log(f"-> account-termination [{st.status.value}] {st.detail}")
+            return
+        st.status = Status.PASS
+        st.detail = f"auto-disabled after counted {counted}B over a {limit}B limit"
+        log(f"-> account-termination [pass] {st.detail}")
+
+        # THE point of the phase. enable=false in the DB is not enforcement: the ikev2
+        # psk/eap-tls bug looked exactly like this and still relayed. Only a refused
+        # handshake proves the verdict reached the running daemon.
+        v, info, _ = mt_mod.probe(cA, ib, "A", mode, server_ip=sc.server_ip,
+                                  expect_fail=True)
+        en.status = _V.get(v, Status.ERROR)
+        en.detail = ("the disabled account is refused by the proxy"
+                     if v == "pass"
+                     else "the account is disabled in the DB but STILL relays: "
+                          "[access.user_enabled] is not reaching the running daemon")
+        if en.status is not Status.PASS:
+            try:
+                cs = panel.core("mtproto")
+                en.detail += f" | core state={cs.get('state')}"
+            except Exception:  # noqa: BLE001
+                pass
+        log(f"-> termination-enforced [{en.status.value}] {en.detail}")
+
+        # Re-enabling must bring it back, or a quota trip would be a one-way door for
+        # the operator. This is also the mirror of the enforcement assertion: it proves
+        # the refusal above came from the account's state and not from a wedged daemon.
+        panel.set_client_total(ib.inbound_id, email, 0)
+        panel.reset_client_traffic(ib.inbound_id, email)
+        time.sleep(MTPROTO_RELOAD_WAIT)
+        re = phase.add(SubTest("termination-reenable"))
+        v, info, _ = mt_mod.probe(cA, ib, "A", mode, server_ip=sc.server_ip)
+        re.status = _V.get(v, Status.ERROR)
+        re.detail = ("the re-enabled account relays again"
+                     if v == "pass"
+                     else f"still refused after re-enable: {str(info.get('error', ''))[:140]}")
+        log(f"-> termination-reenable [{re.status.value}] {re.detail}")
+    finally:
+        # Leave the account unlimited + enabled: later phases (and a re-run) assume it.
+        try:
+            panel.set_client_total(ib.inbound_id, email, 0)
+            panel.reset_client_traffic(ib.inbound_id, email)
+            time.sleep(MTPROTO_RELOAD_WAIT)
+        except Exception as e:  # noqa: BLE001
+            phase.add(SubTest("termination-restore", Status.ERROR,
+                              f"could not restore account A: {e}"))
+        mt_mod.disconnect(cA)
+
+
+def _run_mtproto_adtag(cA: Client, sc, result, panel, server_exec) -> None:
+    """An Ad Tag turns middle-proxy mode on for the whole inbound, and Xray routing off.
+
+    Why the client cannot see any of this: the tag rides the proxy->Telegram leg (a
+    RPC_PROXY_REQ field, flagged RPC_FLAG_HAS_AD_TAG). The client->proxy handshake is
+    byte-identical with the tag on or off, so the prober can never tell them apart and a
+    client-side assertion would be pure theatre. Every check here is server-side.
+
+    What is NOT covered, deliberately: that Telegram actually credits the tag and renders
+    the sponsored channel. That needs a real account, and it is Telegram's behavior, not
+    the panel's. What IS covered is the whole of the panel's contract:
+
+      adtag-off-routing : baseline. The inbound HAS its Xray socks inbound while untagged.
+      adtag-xray-off    : tagging any account drops it -> the operator's routing rules stop
+                          applying to EVERY account on the inbound. This is the XOR, the
+                          one thing a user can be surprised by, and it was untested.
+      adtag-config      : telemt is actually told: use_middle_proxy + a direct upstream +
+                          [access.user_ad_tags] carrying the tag.
+      adtag-middle-proxy: telemt actually ENTERED that path rather than silently taking
+                          its me2dc_fallback back to direct mode (see below).
+      adtag-relay       : the proxy STILL relays once on the middle-proxy path, so the
+                          routing traded away bought something.
+      adtag-restore     : clearing the tag restores the socks inbound (the XOR is a toggle,
+                          not a one-way door) and leaves the rig as other phases expect.
+
+    Restart, not hot-reload: use_middle_proxy needs a socket re-bind, which telemt's
+    hot-reload path skips with a warning. A client-only edit would leave the running
+    daemon on the old path and every assertion below would read the wrong process.
+
+    The trap that makes adtag-middle-proxy necessary: middle-proxy mode must first fetch
+    Telegram's proxy-secret (a different secret from the user's), and telemt's
+    me2dc_fallback defaults to TRUE, which the panel never overrides. If that fetch
+    fails, telemt logs "falling back to direct mode" and relays perfectly well with no
+    tag on the wire. A relay-only assertion would go green on exactly the state the
+    operator is paying routing for and not getting.
+
+    And there are TWO ways to end up on that silent direct path, which is why the check
+    is not just "did it fall back". telemt logs the middle-proxy banner BEFORE its ME
+    pool exists, then serves over a direct fallback while the pool builds. If the pool
+    never comes up (every ME server refusing the handshake), the banner is still there,
+    nothing says "falling back", and no tag is ever sent. That is the failure a NATed
+    host hits, and it is the one that reached a real user.
+    """
+    from .clients import mtproto as mt_mod
+    from .model import PHASE_MTPROTO_ADTAG
+
+    phase: Phase = result.phase(PHASE_MTPROTO_ADTAG)
+    ib = sc.inbounds.get("mtproto")
+    log = cA.log
+
+    if ib is None or panel is None:
+        phase.add(SubTest("mtproto-adtag", Status.SKIP, "no mtproto inbound was built"))
+        return
+    ok, plog = mt_mod.ensure_probe(cA)
+    if not ok:
+        phase.add(SubTest("mtproto-adtag", Status.FAIL, f"prober unavailable: {plog[:160]}"))
+        return
+
+    # Exactly 32 hex chars. telemt rejects any other length and then runs WITHOUT the
+    # tag, which would quietly turn every assertion below into a test of nothing.
+    tag = "0123456789abcdef0123456789abcdef"
+    email = ib.accounts["A"].email
+    conf = f"/etc/vpn-ui-mtproto/server-{ib.inbound_id}/config.toml"
+
+    # The paired socks inbound lands on the panel-wide "Xray port for inbound N is
+    # 12300+N" convention (GetSocksPort), which is stable and inbound-unique.
+    socks_port = 12300 + ib.inbound_id
+
+    def socks_inbound_present() -> tuple[bool, str]:
+        """Is the inbound's paired Xray socks inbound in the MERGED runtime config?
+        That inbound is the whole of mtproto's Xray routing: GetSocksConfig returns nil
+        when any account carries a tag, so its presence IS 'routing applies here'."""
+        try:
+            cfgj = panel.get_config_json() or {}
+        except Exception as e:  # noqa: BLE001
+            return False, f"could not read the merged Xray config: {e}"
+        found = [i for i in (cfgj.get("inbounds") or [])
+                 if i.get("protocol") == "socks" and i.get("port") == socks_port]
+        return bool(found), f"socks inbounds on port {socks_port}: {len(found)}"
+
+    def telemt_egress_is_socks() -> tuple[bool, str]:
+        """Is the RUNNING telemt egressing through Xray, rather than direct?
+
+        The config on disk is NOT evidence. telemt cannot hot-reload use_middle_proxy or
+        [[upstreams]], so a file that says socks5 says nothing about the live process:
+        that gap is precisely the production bug (tag cleared, config correct, telemt
+        still egressing direct, Xray routing silently not applying).
+
+        The middle-proxy path holds persistent writer connections to Telegram's ME
+        servers on :8888; the socks path never opens one. So a live :8888 socket owned
+        by telemt means it is still on the direct egress.
+        """
+        if server_exec is None:
+            return True, "no server_exec (cannot inspect telemt egress)"
+        try:
+            _, out, _ = server_exec(
+                "ss -tnp state established 2>/dev/null | grep telemt | grep -c ':8888' || true",
+                timeout=25)
+        except Exception as e:  # noqa: BLE001
+            return True, f"egress probe failed: {e}"
+        raw = (out or "").strip().splitlines()
+        try:
+            live = int(raw[-1].strip()) if raw else 0
+        except ValueError:
+            live = 0
+        return live == 0, (f"telemt still holds {live} middle-proxy (:8888) connections"
+                           if live else "telemt holds no middle-proxy connections")
+
+    try:
+        # --- baseline: untagged, the socks inbound must be there -------------
+        # Without this, "the socks inbound is gone after tagging" could just mean it was
+        # never generated, and the XOR assertion below would be vacuous.
+        off = phase.add(SubTest("adtag-off-routing"))
+        present, pdetail = socks_inbound_present()
+        off.status = Status.PASS if present else Status.FAIL
+        off.detail = (f"untagged inbound routes through Xray ({pdetail})" if present
+                      else f"no Xray socks inbound while UNTAGGED ({pdetail}): "
+                           f"mtproto routing is already off, so the adtag XOR "
+                           f"cannot be demonstrated")
+        log(f"-> adtag-off-routing [{off.status.value}] {off.detail}")
+
+        # --- tag account A. NO restart_core here, on purpose -----------------
+        # use_middle_proxy + [[upstreams]] are not hot-reloadable, so the PANEL has to
+        # notice the egress moved and restart telemt itself. Restarting from the test
+        # would do the panel's job for it and hide the bug that reached production:
+        # telemt kept the old egress and either refused every client (tag on, dialing a
+        # socks port the panel had just deleted) or silently bypassed Xray routing
+        # entirely (tag off, still egressing direct).
+        panel.set_mtproto_adtag(ib.inbound_id, email, tag)
+        time.sleep(MTPROTO_RELOAD_WAIT * 2)
+
+        # --- the XOR ---------------------------------------------------------
+        xo = phase.add(SubTest("adtag-xray-off"))
+        if off.status is not Status.PASS:
+            xo.status = Status.NA
+            xo.detail = ("undecidable: the socks inbound was already absent before "
+                         "tagging, so its absence now proves nothing")
+        else:
+            still, sdetail = socks_inbound_present()
+            xo.status = Status.PASS if not still else Status.FAIL
+            xo.detail = ("tagging an account dropped the inbound's Xray socks inbound: "
+                         "routing correctly stops applying to every account on it"
+                         if not still else
+                         f"the Xray socks inbound SURVIVED an ad tag ({sdetail}): telemt "
+                         f"is on the middle-proxy path but Xray still re-originates its "
+                         f"egress, so the ME handshake cannot key and the tag is broken")
+        log(f"-> adtag-xray-off [{xo.status.value}] {xo.detail}")
+
+        # --- telemt is actually told ----------------------------------------
+        cf = phase.add(SubTest("adtag-config"))
+        try:
+            _, toml, _ = server_exec(f"cat {conf} 2>/dev/null || true", timeout=30)
+            toml = toml or ""
+            missing = []
+            if "use_middle_proxy = true" not in toml:
+                missing.append("use_middle_proxy = true")
+            if "[access.user_ad_tags]" not in toml:
+                missing.append("[access.user_ad_tags]")
+            if tag not in toml:
+                missing.append("the tag itself")
+            if 'type = "direct"' not in toml:
+                missing.append('an [[upstreams]] type = "direct"')
+            if not toml.strip():
+                cf.status = Status.ERROR
+                cf.detail = f"{conf} is empty or unreadable"
+            elif missing:
+                cf.status = Status.FAIL
+                cf.detail = ("config.toml is missing " + ", ".join(missing) +
+                             " with an ad tag set")
+            else:
+                cf.status = Status.PASS
+                cf.detail = ("config.toml carries use_middle_proxy, a direct upstream "
+                             "and the per-account tag")
+        except Exception as e:  # noqa: BLE001
+            cf.status = Status.ERROR
+            cf.detail = f"could not read {conf}: {e}"
+        log(f"-> adtag-config [{cf.status.value}] {cf.detail}")
+
+        # --- did telemt actually ENTER middle-proxy mode? --------------------
+        # The vacuity trap of this whole phase. Middle-proxy needs Telegram's
+        # proxy-secret (a different secret from the user's), and telemt's me2dc_fallback
+        # defaults to TRUE, which the panel never overrides: if that fetch fails it logs
+        # "falling back to direct mode" and keeps relaying happily WITHOUT the tag. So a
+        # relay check alone would go green while the tag does nothing. Fetch failure is a
+        # network fault (NA); never entering the mode at all is a real bug (FAIL).
+        mp = phase.add(SubTest("adtag-middle-proxy"))
+        clog = ""
+        try:
+            clog = panel.core_logs("mtproto") or ""
+        except Exception as e:  # noqa: BLE001
+            mp.status = Status.ERROR
+            mp.detail = f"core logs unavailable: {e}"
+        if mp.status is not Status.ERROR:
+            fell_back = "falling back to direct mode" in clog
+            entered = "=== Middle Proxy Mode ===" in clog
+            # "Entered middle-proxy mode" is NOT the same as "the ME pool came up", and
+            # the difference is the whole test. telemt logs the banner, then builds its
+            # ME pool in the background and serves over a DIRECT fallback until it is
+            # ready. If every ME server rejects the handshake the pool stays empty, the
+            # fallback becomes permanent, and NO tag is ever sent, while the banner sits
+            # in the log looking like success. Real cause seen in the field: behind a
+            # port-rewriting NAT the ME session key (derived from the proxy's own
+            # ip:PORT on both sides independently) never matches, so Telegram drops every
+            # connection with an early eof. That is an environment limit, not a panel
+            # bug, hence NA rather than FAIL: the panel cannot give a NATed host a
+            # stable public port.
+            pool_dead = "All ME servers for DC failed at init" in clog
+            if fell_back:
+                mp.status = Status.NA
+                mp.detail = ("telemt could not fetch Telegram's proxy-secret and fell "
+                             "back to direct mode (me2dc_fallback), so the tag is not "
+                             "on the wire: an egress limitation of this network, not a "
+                             "panel bug")
+            elif pool_dead:
+                mp.status = Status.NA
+                mp.detail = ("telemt entered middle-proxy mode but EVERY ME server "
+                             "refused its handshake (pool alive=0), so it serves over "
+                             "the direct fallback and sends no tag. Typically this host "
+                             "has no stable public ip:port (NAT rewrites the source "
+                             "port), which the ME key derivation cannot survive")
+            elif entered:
+                mp.status = Status.PASS
+                mp.detail = "telemt entered middle-proxy mode and did not fall back"
+            else:
+                mp.status = Status.FAIL
+                mp.detail = ("telemt never logged middle-proxy startup after the tag + "
+                             "restart: use_middle_proxy did not reach the running daemon")
+        log(f"-> adtag-middle-proxy [{mp.status.value}] {mp.detail}")
+
+        # --- and it still relays --------------------------------------------
+        # Only meaningful once we know the middle-proxy path is the one being used:
+        # relaying via the direct fallback says nothing about the tagged path.
+        rel = phase.add(SubTest("adtag-relay"))
+        reach, rlog = mt_mod.dc_reachable(server_exec)
+        if mp.status is not Status.PASS:
+            rel.status = Status.NA
+            rel.detail = ("undecidable: telemt is not on the middle-proxy path "
+                          f"({mp.detail[:90]})")
+        elif not reach:
+            rel.status = Status.NA
+            rel.detail = f"server cannot reach any Telegram DC: {rlog[:120]}"
+        else:
+            v, info, _ = mt_mod.probe(cA, ib, "A", "secure", server_ip=sc.server_ip)
+            rel.status = {"pass": Status.PASS, "fail": Status.FAIL,
+                          "na": Status.NA}.get(v, Status.ERROR)
+            rel.detail = ("the tagged account still relays, over the middle-proxy path"
+                          if v == "pass" else
+                          f"the tagged inbound stopped relaying: "
+                          f"{str(info.get('error', ''))[:140]}")
+            if rel.status is not Status.PASS:
+                try:
+                    rel.detail += f" | log: {(panel.core_logs('mtproto') or '').strip()[-300:]}"
+                except Exception:  # noqa: BLE001
+                    pass
+        log(f"-> adtag-relay [{rel.status.value}] {rel.detail}")
+    finally:
+        # Clear the tag and prove the XOR reverses. This is both the restore (every later
+        # phase assumes this inbound routes through Xray) and a real assertion.
+        rs = phase.add(SubTest("adtag-restore"))
+        try:
+            # Again no restart_core: clearing the tag must put telemt BACK on the socks
+            # upstream by itself. This is the dangerous direction, so it is asserted,
+            # not assumed: a telemt left on the direct egress keeps relaying happily
+            # while every Xray routing rule for the inbound quietly stops applying.
+            panel.set_mtproto_adtag(ib.inbound_id, email, "")
+            time.sleep(MTPROTO_RELOAD_WAIT * 2)
+            back, bdetail = socks_inbound_present()
+            egress_ok, egress_detail = telemt_egress_is_socks()
+            rs.status = Status.PASS if (back and egress_ok) else Status.FAIL
+            rs.detail = ("clearing the tag restored the Xray socks inbound and telemt "
+                         "went back to egressing through it"
+                         if back and egress_ok else
+                         f"tag cleared but routing is NOT restored: "
+                         f"socks_inbound_back={back} ({bdetail}); telemt_egress={egress_detail}")
+        except Exception as e:  # noqa: BLE001
+            rs.status = Status.ERROR
+            rs.detail = f"could not clear the ad tag: {e}"
+        log(f"-> adtag-restore [{rs.status.value}] {rs.detail}")
+        mt_mod.disconnect(cA)
+
+
+def _run_ssh_udp(cA: Client, sc, cfg: dict, result, panel, server_exec) -> None:
+    """Dedicated UDP test for the SSH relay: prove UDP survives the badvpn-udpgw path
+    end-to-end AND is billed to the account.
+
+    The standard suite's dns-resolve / dns-leak checks can pass even if UDP is broken,
+    because SSH tunnels TCP natively and DNS may fall back to TCP. This phase forces UDP: a
+    `dig +notcp` to a public resolver traverses tun2socks -> udpgw -> the SSH server's
+    in-process udpgw bridge -> Xray SOCKS UDP. A reply proves the whole UDP path; then a
+    burst of UDP DNS queries must move the account's counted traffic (routed + accounted
+    exactly like the TCP path, keyed on the socks username = email).
+
+    Runs AFTER the main ssh phase, whose account-termination sub-test disables account A;
+    so it first resets account A's traffic (re-enables + zeroes usage) before connecting,
+    and the tiny UDP burst stays well under the account limit."""
+    phase: Phase = result.phase(PHASE_SSH_UDP)
+    ib = sc.inbounds.get("ssh")
+    log = cA.log
+    iface = ssh_mod.IFACE
+
+    if ib is None:
+        phase.add(SubTest("ssh-udp", Status.SKIP, "no ssh inbound was built"))
+        return
+
+    email = ib.accounts["A"].email
+    cA.disconnect_all()
+    time.sleep(2)
+    # The main ssh phase's account-termination sub-test leaves account A disabled with a
+    # usage limit; re-enable + zero it so the tunnel can come up here (the UDP burst is far
+    # under the limit, so it will not re-trip enforcement).
+    if panel is not None:
+        try:
+            panel.reset_client_traffic(ib.inbound_id, email)
+            time.sleep(6)  # re-enable + on-ssh-changed daemon reconcile
+        except Exception as e:  # noqa: BLE001
+            log(f"-> (reset account A before ssh-udp failed: {e})")
+
+    ok, ip, clog = _connect(cA, sc, "ssh", "A", ib=ib)
+    if not ok:
+        phase.add(SubTest("udp-connect", Status.SKIP,
+                          "account A failed to bring up the ssh tunnel", clog))
+        log("-> udp-connect [skip] tunnel did not come up")
+        return
+
+    resolver = "8.8.8.8"
+
+    # --- functional: a UDP-only DNS lookup must resolve THROUGH the tunnel ---
+    # +notcp forbids the TCP fallback, so a valid answer can only have come over UDP via
+    # udpgw. The route to the resolver must egress dev tun0 (else it leaked off-tunnel).
+    fn = phase.add(SubTest("udp-dns"))
+    try:
+        _, rg = cA.sh(f"ip route get {resolver} 2>/dev/null | head -1")
+        via_tunnel = f"dev {iface}" in rg
+        _, dig = cA.sh(
+            f"dig +notcp +time=3 +tries=2 +short A example.com @{resolver} 2>&1")
+        ips = [ln.strip() for ln in dig.splitlines()
+               if ln.strip() and ln.strip()[0].isdigit()]
+        fn.log = (f"route get {resolver}: {rg.strip()}\n"
+                  f"dig +notcp @{resolver} example.com:\n{dig.strip()}")
+        if ips and via_tunnel:
+            fn.status = Status.PASS
+            fn.detail = (f"UDP DNS via udpgw resolved example.com -> {', '.join(ips[:3])} "
+                         f"(dev {iface}, +notcp)")
+        elif ips and not via_tunnel:
+            fn.status = Status.FAIL
+            fn.detail = f"UDP DNS resolved but NOT via the tunnel (route: {rg.strip()[:80]})"
+        else:
+            fn.status = Status.FAIL
+            fn.detail = f"UDP-only DNS (+notcp @{resolver}) did not resolve through the tunnel"
+    except Exception as e:  # noqa: BLE001
+        fn.status, fn.detail = Status.ERROR, str(e)[:150]
+    log(f"-> udp-dns [{fn.status.value}] {fn.detail}")
+
+    # --- accounting: a burst of UDP DNS must move the account's counted traffic ---
+    # Baseline is read AFTER the functional dig, and only UDP is driven between the two
+    # reads, so a rise can only be UDP bytes: if UDP were unaccounted the counter would
+    # not move (no TCP is driven here) and this FAILs.
+    us = phase.add(SubTest("udp-usage"))
+    if panel is None:
+        us.status, us.detail = Status.SKIP, "no panel handle"
+    else:
+        try:
+            before, _ = traffic._counted(panel, email)
+            # Drive many DISTINCT UDP queries (distinct names dodge caching, so each is a
+            # real round-trip). Parallelised so the burst is quick; NXDOMAIN answers still
+            # carry bytes, so the counter moves even without wildcard records.
+            _, drove = cA.sh(
+                "seq 1 400 | xargs -P 20 -I{} dig +notcp +time=2 +tries=1 +short "
+                f"A udp{{}}.example.com @{resolver} >/dev/null 2>&1; echo DONE",
+                timeout=120)
+            # The traffic job folds every 10s; give it >=2 ticks plus slack.
+            time.sleep(25)
+            after, row = traffic._counted(panel, email)
+            us.log = (f"drove 400 UDP DNS queries (parallel); counted {before} -> {after} "
+                      f"(up={row.get('up')} down={row.get('down')})\ndrive={drove.strip()[-120:]}")
+            if after > before:
+                us.status = Status.PASS
+                us.detail = (f"UDP traffic billed to the account: {before} -> {after} B "
+                             f"(delta {after - before})")
+            else:
+                us.status = Status.FAIL
+                us.detail = (f"UDP driven but the account usage did not rise "
+                             f"({before} -> {after}) - UDP not accounted")
+        except Exception as e:  # noqa: BLE001
+            us.status, us.detail = Status.ERROR, str(e)[:150]
+    log(f"-> udp-usage [{us.status.value}] {us.detail}")
+
+    ssh_mod.disconnect(cA)
+    cA.disconnect_all()
+
+
 def run(proto: str, cA: Client, cB: Client, cC: Client, sc, cfg: dict, result, panel=None, server_exec=None, mode=None) -> None:
     # MTProto is a relay, not a tunnel: none of the shared suite below applies to it
     # (see _run_mtproto), so it takes its own path rather than threading NA overrides
@@ -425,6 +982,15 @@ def run(proto: str, cA: Client, cB: Client, cC: Client, sc, cfg: dict, result, p
         return
     if proto == "mtproto-toggle":
         _run_mtproto_toggle(cA, sc, result, panel, server_exec)
+        return
+    if proto == "mtproto-termination":
+        _run_mtproto_termination(cA, sc, result, panel, server_exec)
+        return
+    if proto == "mtproto-adtag":
+        _run_mtproto_adtag(cA, sc, result, panel, server_exec)
+        return
+    if proto == "ssh-udp":
+        _run_ssh_udp(cA, sc, cfg, result, panel, server_exec)
         return
     # Resolve the target phase, inbound, and account model. ikev2 runs once per auth
     # mode: eap-mschapv2 = the primary 2-account inbound (RADIUS path); psk/eap-tls =
@@ -578,6 +1144,42 @@ def run(proto: str, cA: Client, cB: Client, cC: Client, sc, cfg: dict, result, p
                             ("cross-inbound", "single-account mode: no 2nd account")):
                 phase.add(SubTest(nm, Status.NA, why))
                 log(f"-> {nm} [na] {why}")
+        elif proto == "ssh":
+            # SSH runs the SAME suite as the tunnel protocols MINUS client-to-client and
+            # cross-inbound (the user's explicit instruction): a relay has no client
+            # tunnel address to ping between clients or across inbounds. Routing STILL
+            # runs, and is the meaningful per-client proof here: A (freedom) and B
+            # (blackhole) egress through Xray keyed on their socks username (= email), so
+            # A reaches the internet and B is cut off with no source IP involved at all.
+            log("-> routing (B blackhole alongside A freedom; c2c + cross-inbound N/A for a relay)...")
+            cB.disconnect_all()
+            time.sleep(2)
+            okB, ipB, logB = _connect(cB, sc, proto, "B")
+            rt = SubTest("routing")
+            if okB:
+                try:
+                    r = checks.routing(cA, cB)
+                    rt.status, rt.detail, rt.log = r.status, r.detail, r.log
+                except Exception as e:  # noqa: BLE001
+                    rt.status, rt.detail = Status.ERROR, str(e)[:150]
+            else:
+                rt.status = Status.SKIP
+                rt.detail = "peer B (blackhole client) failed to connect"
+                rt.log = logB
+            log(f"-> routing [{rt.status.value}] {rt.detail}")
+            phase.add(rt)
+            for nm, why in (
+                ("client-to-client",
+                 "SSH relay: clients get no tunnel address, so there is nothing to ping "
+                 "between them (excluded per spec)"),
+                ("cross-inbound",
+                 "SSH relay: no tunnel addresses to route between inbounds (excluded per spec)"),
+            ):
+                phase.add(SubTest(nm, Status.NA, why))
+                log(f"-> {nm} [na] {why}")
+            _disconnect(cB, proto)
+            cB.disconnect_all()
+            time.sleep(2)
         else:
             # ---- client-to-client (same inbound) ----------------------
             log(f"-> client-to-client (B on same inbound)...")
@@ -645,6 +1247,8 @@ def run(proto: str, cA: Client, cB: Client, cC: Client, sc, cfg: dict, result, p
                               "WireGuard: K device keypairs are structural — no dynamic "
                               "(K+1)th admission to reject/evict"))
             log(f"-> {nm} [na] structural K (no dynamic admission)")
+    elif proto == "ssh" and ib is not None and getattr(ib, "user_limit", 1) > 1 and panel is not None:
+        _ssh_strategy_check(cA, cB, cC, sc, ib, panel, log, phase)
     elif ib is not None and getattr(ib, "user_limit", 1) > 1 and panel is not None:
         _strategy_check(proto, cA, cB, cC, sc, ib, panel, log, phase, server_exec)
 
@@ -757,6 +1361,36 @@ def _user_limit_check(proto, cA, cB, sc, a_primary_ip, ib, log, phase) -> None:
     cB.disconnect_all()
     time.sleep(2)
     ok2, ip2, log2 = _connect(cB, sc, proto, "A", ib=ib)  # SAME account A -> device 2
+    if proto == "ssh":
+        # SSH is a relay: an account owns no IP block, so "2nd device gets a distinct
+        # block IP" does not apply. K counts DISTINCT client source IPs, so the proof is:
+        # a 2nd device (a different client VM = a different source IP) is admitted under
+        # K=2 and reaches the internet alongside device 1, both egressing as account A.
+        try:
+            c1 = checks.internet(cA)
+            c2 = checks.internet(cB) if (ok2 and ip2) else None
+            both = c2 is not None and c1.status == Status.PASS and c2.status == Status.PASS
+            ul.log = (f"device1 {a_primary_ip} net1={c1.status.value}\n"
+                      f"device2 conn={ok2} ip={ip2!r} net2={(c2.status.value if c2 else 'n/a')}\n"
+                      f"{log2[-300:]}")
+            if not ok2 or not ip2:
+                ul.status, ul.detail = Status.FAIL, "2nd device failed to connect"
+            elif both:
+                ul.status = Status.PASS
+                ul.detail = (f"2 devices (distinct source IPs) on 1 account under K="
+                             f"{ib.user_limit}, both online via per-client socks routing")
+            else:
+                ul.status = Status.FAIL
+                ul.detail = (f"2nd device up but not both online "
+                             f"(net1={c1.status.value} net2={(c2.status.value if c2 else 'n/a')})")
+        except Exception as e:  # noqa: BLE001
+            ul.status, ul.detail = Status.ERROR, str(e)[:150]
+        log(f"-> user-limit [{ul.status.value}] {ul.detail}")
+        phase.add(ul)
+        _disconnect(cB, proto)
+        cB.disconnect_all()
+        time.sleep(2)
+        return
     try:
         if not ok2 or not ip2:
             ul.status, ul.detail, ul.log = Status.FAIL, "2nd device failed to connect", log2
@@ -992,6 +1626,107 @@ def _strategy_check(proto, cA, cB, cC, sc, ib, panel, log, phase, server_exec=No
     all_down()
 
 
+def _ssh_strategy_check(cA, cB, cC, sc, ib, panel, log, phase) -> None:
+    """SSH User-Limit strategy on a K=2 account. A "device" is a distinct client source
+    IP, which here means a distinct client VM. With 2 devices up (cA=device1/oldest,
+    cB=device2), a 3rd device (cC) is:
+      - REJECTED under strategy="reject": the SSH server refuses cC's session, so it never
+        gets a working SOCKS tunnel and cannot reach the internet. Causative for a relay:
+        UNLIKE a tunnel protocol (where a 3rd device is unroutable even with NO cap because
+        the account's IP block is exhausted), an SSH 3rd device WOULD egress fine as
+        account A with no cap, so "refused / no internet" can only come from the cap.
+      - ADMITTED under strategy="accept", which EVICTS the oldest device (cA): the server
+        closes cA's SSH connection, so cA's `ssh -N` process exits and its tunnel dies.
+
+    The inbound's strategy is flipped in place via the panel between the two sub-tests
+    (the on-ssh-changed hook reconciles the listeners); each sub-test starts from an
+    all-down slate."""
+    def all_down():
+        for c in (cA, cB, cC):
+            c.disconnect_all()
+        time.sleep(2)
+
+    def ssh_alive(c) -> bool:
+        _, out = c.sh("kill -0 $(cat /run/ssh-vpn.pid 2>/dev/null) 2>/dev/null "
+                      "&& echo ALIVE || echo DEAD")
+        return "ALIVE" in out
+
+    # ---------- strategy = reject ----------
+    log(f"-> user-limit-strategy REJECT (ssh, K={ib.user_limit})...")
+    rj = phase.add(SubTest("strategy-reject"))
+    try:
+        all_down()
+        panel.set_user_limit_strategy(ib.inbound_id, "reject")
+        time.sleep(6)  # listener reconcile + apply
+        ok1, ip1, _ = _connect(cA, sc, "ssh", "A", ib=ib)   # device1
+        time.sleep(2)
+        ok2, ip2, _ = _connect(cB, sc, "ssh", "A", ib=ib)   # device2 (K reached)
+        time.sleep(2)
+        ok3, ip3, clog3 = _connect(cC, sc, "ssh", "A", ib=ib)  # device3 must be refused
+        # Guard: when the SSH session is refused, cC has NO tunnel, so a bare internet
+        # check would pass via its PHYSICAL route. Only probe when ok3 (a tunnel came up),
+        # so "no internet" means the tunnel is up but the server refuses to forward.
+        n3 = checks.internet(cC) if ok3 else None
+        admitted = ok3 and n3 is not None and n3.status == Status.PASS
+        rj.log = (f"dev1={ok1}/{ip1} dev2={ok2}/{ip2}\n"
+                  f"dev3 conn={ok3}/{ip3} net={(n3.status.value if n3 else 'no-tunnel')}\n{clog3[-400:]}")
+        if ok1 and ok2 and not admitted:
+            rj.status = Status.PASS
+            rj.detail = (f"2 devices up; 3rd refused (conn={ok3}, "
+                         f"net={(n3.status.value if n3 else 'no-tunnel')}) - K enforced")
+        else:
+            rj.status = Status.FAIL
+            rj.detail = f"expected 3rd refused; dev1={ok1} dev2={ok2} admitted={admitted}"
+    except Exception as e:  # noqa: BLE001
+        rj.status, rj.detail = Status.ERROR, str(e)[:150]
+    log(f"-> strategy-reject [{rj.status.value}] {rj.detail}")
+
+    # ---------- strategy = accept ----------
+    log(f"-> user-limit-strategy ACCEPT (ssh, K={ib.user_limit})...")
+    ac = phase.add(SubTest("strategy-accept"))
+    try:
+        all_down()
+        panel.set_user_limit_strategy(ib.inbound_id, "accept")
+        time.sleep(6)
+        ok1, ip1, _ = _connect(cA, sc, "ssh", "A", ib=ib)   # device1 = oldest
+        time.sleep(5)                                        # firmly establish (evictable)
+        ok2, ip2, _ = _connect(cB, sc, "ssh", "A", ib=ib)   # device2
+        time.sleep(4)
+        a_alive_before = ssh_alive(cA)
+        ok3, ip3, clog3 = _connect(cC, sc, "ssh", "A", ib=ib)  # device3: admitted, evicts oldest
+        # Eviction closes cA's SSH connection, so its `ssh -N` exits. Poll for that (up to
+        # ~20s) and corroborate with cA losing its tunnel internet (the SOCKS backend is
+        # gone, so curl through tun0 fails). A monotonic `ssh -N` never respawns, so this
+        # cannot flap back to "alive" and mask a non-eviction.
+        a_dead = False
+        for _ in range(10):
+            time.sleep(2)
+            if not ssh_alive(cA):
+                a_dead = True
+                break
+        a_net = checks.internet(cA)
+        a_internet_gone = a_net.status != Status.PASS
+        evicted = ok3 and a_alive_before and (a_dead or a_internet_gone)
+        ac.log = (f"dev1={ok1}/{ip1} dev2={ok2}/{ip2}\n"
+                  f"dev3 conn={ok3}/{ip3}\n"
+                  f"cA ssh alive_before={a_alive_before} dead_after={a_dead} "
+                  f"internet_after={a_net.status.value}\n{clog3[-400:]}")
+        if ok1 and ok2 and ok3 and evicted:
+            ac.status = Status.PASS
+            ac.detail = (f"3rd admitted ({ip3}); oldest device (cA) evicted "
+                         f"(ssh_dead={a_dead} internet_gone={a_internet_gone})")
+        else:
+            ac.status = Status.FAIL
+            ac.detail = (f"admitted(conn)={ok3} evicted={evicted} "
+                         f"(dev1={ok1} dev2={ok2} alive_before={a_alive_before}; "
+                         f"ssh_dead={a_dead} net_gone={a_internet_gone})")
+    except Exception as e:  # noqa: BLE001
+        ac.status, ac.detail = Status.ERROR, str(e)[:150]
+    log(f"-> strategy-accept [{ac.status.value}] {ac.detail}")
+
+    all_down()
+
+
 def _oc_same_nat_check(cA, sc, ib, log, phase, server_exec=None):
     """Two OpenConnect devices on ONE account from ONE source IP (same VM → same
     Calling-Station-Id; ocserv sends no NAS-Port). Each must get a DISTINCT block IP.
@@ -1172,21 +1907,32 @@ def _multi_inbound_check(proto, cA, cB, cC, sc, panel, log) -> SubTest:
         spare.disconnect_all()
         time.sleep(2)
 
-        # distinct tunnel IP AND distinct /24 pool (different inbounds own different
-        # /24s, so the third octet differs) -> proves separate pools, no clash.
-        distinct = bool(ip1 and ip2 and ip1 != ip2
-                        and ip1.split(".")[2] != ip2.split(".")[2])
         p1, p2 = sc.inbounds[proto].udp_port, second.udp_port
+        if proto == "ssh":
+            # SSH is a relay: no tunnel IP and no /24 pool to compare. The two SSH servers
+            # bind DISTINCT ports and each serves its own account; the proof is that the
+            # spare reached the internet through BOTH (2nd inbound's account, then the 1st
+            # inbound's account A), i.e. two SSH inbounds coexist on distinct ports.
+            distinct = p1 != p2
+            distinct_desc = f"distinct SSH listener ports ({p1} vs {p2}): {distinct}"
+            pool_word = "ports"
+        else:
+            # distinct tunnel IP AND distinct /24 pool (different inbounds own different
+            # /24s, so the third octet differs) -> proves separate pools, no clash.
+            distinct = bool(ip1 and ip2 and ip1 != ip2
+                            and ip1.split(".")[2] != ip2.split(".")[2])
+            distinct_desc = f"distinct tunnel IP + distinct /24 pool: {distinct}"
+            pool_word = "pools"
         st.log = (f"2nd inbound id={second.inbound_id} port={p2} variant={variant}: "
                   f"conn={ok2} ip={ip2!r} net={net2.status.value if net2 else 'n/a'}\n"
                   f"1st inbound id={sc.inbounds[proto].inbound_id} port={p1}: "
                   f"conn={ok1} ip={ip1!r} net={net1.status.value if net1 else 'n/a'}\n"
-                  f"distinct tunnel IP + distinct /24 pool: {distinct}\n"
+                  f"{distinct_desc}\n"
                   f"-- 2nd connect --\n{log2[-350:]}\n-- 1st connect --\n{log1[-350:]}")
         if second_ok and first_ok and distinct:
             st.status = Status.PASS
             st.detail = (f"two {proto} inbounds coexist: 2nd(:{p2},{ip2}) + "
-                         f"1st(:{p1},{ip1}) both online on distinct pools")
+                         f"1st(:{p1},{ip1}) both online on distinct {pool_word}")
         elif not second_ok:
             st.status = Status.FAIL
             st.detail = (f"2nd {proto} inbound not usable "

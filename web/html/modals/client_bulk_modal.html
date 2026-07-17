@@ -352,6 +352,8 @@
                     return new Inbound.WgcSettings.WgUser();
                 case Protocols.MTPROTO:
                     return new Inbound.MtprotoSettings.MtprotoUser();
+                case Protocols.SSH:
+                    return new Inbound.SshSettings.SshUser();
                 default:
                     return null;
             }

@@ -28,6 +28,7 @@ type InboundController struct {
 	ikev2Service   service.Ikev2Service
 	wgcService     service.WgcService
 	mtprotoService service.MtprotoService
+	sshService     service.SshService
 }
 
 // NewInboundController creates a new InboundController and sets up its routes.
@@ -77,6 +78,7 @@ func (a *InboundController) initRouter(g *gin.RouterGroup) {
 	g.POST("/check-ikev2-cert", a.checkIkev2Cert)
 	// WireGuard (C): render a client's per-device .conf(s) (keys are server-minted).
 	g.GET("/:id/wgc-configs", a.getWgcConfigs)
+	g.GET("/:id/ssh-configs", a.getSshConfigs)
 }
 
 // onL2tpChanged regenerates L2TP configs and restarts services when an L2TP inbound is modified.
@@ -259,6 +261,28 @@ func (a *InboundController) mtprotoChanged(clientOnly bool) {
 	a.xrayService.SetToNeedRestart()
 }
 
+// onSshChanged reconciles the SSH gateway when an inbound is modified. Like mtproto
+// there is no addressing to expand (a relay has no 10.x pool) and no nftables routing
+// (egress reaches Xray through the paired socks inbound). Client-only changes do NOT
+// rebind the listeners: the auth callback reads the DB live, so add/edit/disable takes
+// effect on the next connection. Inbound-level changes (port, host key) rebind.
+func (a *InboundController) onSshChanged()       { a.sshChanged(false) }
+func (a *InboundController) onSshClientChanged() { a.sshChanged(true) }
+func (a *InboundController) sshChanged(clientOnly bool) {
+	if err := a.sshService.ReconcileHostKeys(); err != nil {
+		logger.Warning("SSH: host key reconcile failed:", err)
+	}
+	if !clientOnly {
+		if err := a.sshService.RestartServices(); err != nil {
+			logger.Warning("SSH: service restart failed:", err)
+		}
+	}
+	a.sshService.KillDisabledSessions()
+	// The paired socks inbound (its account list and this inbound's routing tag) is
+	// built from the SSH settings, so Xray must pick the change up.
+	a.xrayService.SetToNeedRestart()
+}
+
 // onWgcChanged reconciles WireGuard (C) keys + the kernel interface peer set when a
 // wgc inbound is modified. Like IKEv2 it routes through Xray via dokodemo-door, but
 // there is NO daemon: each inbound is a kernel wgc<id> interface driven by wgctrl.
@@ -398,6 +422,8 @@ func (a *InboundController) addInbound(c *gin.Context) {
 		a.onWgcChanged()
 	} else if inbound.Protocol == model.MTPROTO {
 		a.onMtprotoChanged()
+	} else if inbound.Protocol == model.SSH {
+		a.onSshChanged()
 	} else if needRestart {
 		a.xrayService.SetToNeedRestart()
 	}
@@ -442,6 +468,8 @@ func (a *InboundController) delInbound(c *gin.Context) {
 		a.onWgcChanged()
 	} else if oldInbound != nil && oldInbound.Protocol == model.MTPROTO {
 		a.onMtprotoChanged()
+	} else if oldInbound != nil && oldInbound.Protocol == model.SSH {
+		a.onSshChanged()
 	} else if needRestart {
 		a.xrayService.SetToNeedRestart()
 	}
@@ -494,6 +522,8 @@ func (a *InboundController) updateInbound(c *gin.Context) {
 		a.onWgcChanged()
 	} else if inbound.Protocol == model.MTPROTO {
 		a.onMtprotoChanged()
+	} else if inbound.Protocol == model.SSH {
+		a.onSshChanged()
 	} else if needRestart {
 		a.xrayService.SetToNeedRestart()
 	}
@@ -598,6 +628,8 @@ func (a *InboundController) addInboundClient(c *gin.Context) {
 		a.onWgcClientChanged()
 	} else if data.Protocol == model.MTPROTO {
 		a.onMtprotoClientChanged()
+	} else if data.Protocol == model.SSH {
+		a.onSshClientChanged()
 	} else if needRestart {
 		a.xrayService.SetToNeedRestart()
 	}
@@ -665,6 +697,8 @@ func (a *InboundController) delInboundClient(c *gin.Context) {
 		a.onWgcChanged()
 	} else if oldInbound != nil && oldInbound.Protocol == model.MTPROTO {
 		a.onMtprotoChanged()
+	} else if oldInbound != nil && oldInbound.Protocol == model.SSH {
+		a.onSshChanged()
 	} else if needRestart {
 		a.xrayService.SetToNeedRestart()
 	}
@@ -711,6 +745,8 @@ func (a *InboundController) updateInboundClient(c *gin.Context) {
 		a.onWgcClientChanged()
 	} else if inbound.Protocol == model.MTPROTO {
 		a.onMtprotoClientChanged()
+	} else if inbound.Protocol == model.SSH {
+		a.onSshClientChanged()
 	} else if needRestart {
 		a.xrayService.SetToNeedRestart()
 	}
@@ -759,6 +795,8 @@ func (a *InboundController) bulkUpdateClients(c *gin.Context) {
 			a.onWgcClientChanged()
 		case string(model.MTPROTO):
 			a.onMtprotoClientChanged()
+		case string(model.SSH):
+			a.onSshClientChanged()
 		default:
 			xrayRestart = true
 		}
@@ -794,6 +832,7 @@ func (a *InboundController) resetClientTraffic(c *gin.Context) {
 	a.onIkev2ClientChanged()
 	a.onWgcClientChanged()
 	a.onMtprotoClientChanged()
+	a.onSshClientChanged()
 }
 
 // resetAllTraffics resets all traffic counters across all inbounds.
@@ -814,6 +853,7 @@ func (a *InboundController) resetAllTraffics(c *gin.Context) {
 	a.onIkev2ClientChanged()
 	a.onWgcClientChanged()
 	a.onMtprotoClientChanged()
+	a.onSshClientChanged()
 }
 
 // resetAllClientTraffics resets traffic counters for all clients in a specific inbound.
@@ -840,6 +880,7 @@ func (a *InboundController) resetAllClientTraffics(c *gin.Context) {
 	a.onIkev2ClientChanged()
 	a.onWgcClientChanged()
 	a.onMtprotoClientChanged()
+	a.onSshClientChanged()
 }
 
 // importInbound imports an inbound configuration from provided data.
@@ -1151,6 +1192,32 @@ func (a *InboundController) getWgcConfigs(c *gin.Context) {
 		return
 	}
 	configs, err := a.wgcService.RenderClientConfigs(inbound, c.Query("email"), browserHost(c))
+	if err != nil {
+		jsonMsg(c, I18nWeb(c, "somethingWentWrong"), err)
+		return
+	}
+	jsonObj(c, configs, nil)
+}
+
+// getSshConfigs renders the SSH client artifacts for one account (?email=) of an
+// inbound: a sing-box "ssh" outbound JSON plus a plaintext host/port/user/pass block,
+// one per endpoint (each external proxy, else the panel-access host). Ensures the
+// server host key exists first so the config is complete.
+func (a *InboundController) getSshConfigs(c *gin.Context) {
+	id, err := strconv.Atoi(c.Param("id"))
+	if err != nil {
+		jsonMsg(c, "Invalid inbound ID", err)
+		return
+	}
+	if err := a.sshService.ReconcileHostKeys(); err != nil {
+		logger.Warning("SSH: host key reconcile failed:", err)
+	}
+	inbound, err := a.inboundService.GetInbound(id)
+	if err != nil {
+		jsonMsg(c, "Inbound not found", err)
+		return
+	}
+	configs, err := a.sshService.RenderClientConfigs(inbound, c.Query("email"), browserHost(c))
 	if err != nil {
 		jsonMsg(c, I18nWeb(c, "somethingWentWrong"), err)
 		return

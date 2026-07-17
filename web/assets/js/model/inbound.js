@@ -17,6 +17,7 @@ const Protocols = {
     IKEV2: 'ikev2',
     WGC: 'wg-c',
     MTPROTO: 'mtproto',
+    SSH: 'ssh',
 };
 
 // Display labels for the protocol picker. The Add/Edit inbound dropdown shows
@@ -41,6 +42,7 @@ const ProtocolLabels = {
     ikev2: 'IKEv2',
     'wg-c': 'WireGuard (C)',
     mtproto: 'MTProto Proxy',
+    ssh: 'SSH',
 };
 
 const SSMethods = {
@@ -1673,6 +1675,7 @@ class Inbound extends XrayCommonClass {
             case Protocols.IKEV2: return this.settings.ikev2Users;
             case Protocols.WGC: return this.settings.wgcUsers;
             case Protocols.MTPROTO: return this.settings.mtprotoUsers;
+            case Protocols.SSH: return this.settings.sshUsers;
             default: return null;
         }
     }
@@ -2421,6 +2424,7 @@ Inbound.Settings = class extends XrayCommonClass {
             case Protocols.IKEV2: return new Inbound.Ikev2Settings(protocol);
             case Protocols.WGC: return new Inbound.WgcSettings(protocol);
             case Protocols.MTPROTO: return new Inbound.MtprotoSettings(protocol);
+            case Protocols.SSH: return new Inbound.SshSettings(protocol);
             default: return null;
         }
     }
@@ -2445,6 +2449,7 @@ Inbound.Settings = class extends XrayCommonClass {
             case Protocols.IKEV2: return Inbound.Ikev2Settings.fromJson(json);
             case Protocols.WGC: return Inbound.WgcSettings.fromJson(json);
             case Protocols.MTPROTO: return Inbound.MtprotoSettings.fromJson(json);
+            case Protocols.SSH: return Inbound.SshSettings.fromJson(json);
             default: return null;
         }
     }
@@ -4608,6 +4613,171 @@ Inbound.MtprotoSettings.MtprotoUser = class extends XrayCommonClass {
       adtag: this.adtag,
       userLimit: this.userLimit,
       externalProxy: this.externalProxy || [],
+      expiryTime: this.expiryTime,
+      tgId: this.tgId,
+      subId: this.subId,
+      comment: this.comment,
+      totalGB: this.totalGB,
+      limitIp: this.limitIp,
+      reset: this.reset,
+      created_at: this.created_at,
+      updated_at: this.updated_at,
+    };
+  }
+
+  get _expiryTime() {
+    if (this.expiryTime === 0) {
+      return null;
+    }
+    if (this.expiryTime < 0) {
+      return this.expiryTime / -86400000;
+    }
+    return moment(this.expiryTime);
+  }
+
+  set _expiryTime(t) {
+    if (t == null || t === "") {
+      this.expiryTime = 0;
+    } else {
+      this.expiryTime = t.valueOf();
+    }
+  }
+
+  get _totalGB() {
+    return NumberFormatter.toFixed(this.totalGB / SizeFormatter.ONE_GB, 2);
+  }
+
+  set _totalGB(gb) {
+    this.totalGB = NumberFormatter.toFixed(gb * SizeFormatter.ONE_GB, 0);
+  }
+};
+
+// SSH relay inbound settings. Like MTProto this is a userspace RELAY, so there is NO
+// addressing block (no ipRanges/dns/mtu): clients keep their own IP and the backend
+// assigns nothing. The inbound owns only its listen port, the account list, an
+// inbound-level device cap (User Limit K + strategy) and an optional External Proxy
+// endpoint list (alternate host:port written into the generated client config, like
+// wg-c). The ed25519 host key is server-managed: it round-trips through toJson/fromJson
+// so a backend-minted key survives edits and the client's host-key pin stays stable,
+// but it is never surfaced in the UI.
+Inbound.SshSettings = class extends Inbound.Settings {
+  constructor(
+    protocol,
+    userLimit = 0,
+    userLimitStrategy = "accept",
+    externalProxy = [],
+    sshUsers = [new Inbound.SshSettings.SshUser()],
+    hostKey = "",
+  ) {
+    super(protocol);
+    // Inbound-level device cap, same convention as every other protocol: 0 = no limit
+    // (the default), 1 = single device, up to 64. An ABSENT value (legacy) resolves to
+    // 1 in fromJson, matching the backend's effectiveSshK(nil).
+    this.userLimit = userLimit;
+    // At the cap: "accept" (default, evict the oldest device) or "reject" a new device.
+    this.userLimitStrategy = userLimitStrategy;
+    // Optional external-proxy endpoints: alternate host:port (relay/CDN) rendered into
+    // the generated client config instead of this server's own address.
+    this.externalProxy = externalProxy;
+    this.sshUsers = sshUsers;
+    // Backend-minted ed25519 host private key (PEM). Round-trips so it survives edits;
+    // never shown or edited in the browser.
+    this.hostKey = hostKey;
+  }
+
+  static fromJson(json = {}) {
+    return new Inbound.SshSettings(
+      Protocols.SSH,
+      // *int on the backend, so an absent value is NOT the same as 0: absent means a
+      // legacy single-device inbound (1), 0 means no limit. Mirrors every other protocol.
+      json.userLimit ?? 1,
+      json.userLimitStrategy ?? "accept",
+      Array.isArray(json.externalProxy) ? json.externalProxy : [],
+      Inbound.SshSettings.SshUser.fromJson(json.clients),
+      json.hostKey ?? "",
+    );
+  }
+
+  toJson() {
+    return {
+      userLimit: this.userLimit,
+      userLimitStrategy: this.userLimitStrategy,
+      externalProxy: this.externalProxy || [],
+      clients: Inbound.SshSettings.SshUser.toJsonArray(this.sshUsers),
+      hostKey: this.hostKey,
+    };
+  }
+};
+
+// An SSH account. Identity is the real `id` field (the SSH login username, auto-
+// generated and user-editable); the credential is `password`. This is NOT an
+// email-identity protocol, so there is deliberately no get id() getter (that is only
+// for wg-c/mtproto). The standard usage/quota/expiry fields ride along so the shared
+// client form and table work unchanged (mirrors the L2TP/IKEv2 user shape).
+Inbound.SshSettings.SshUser = class extends XrayCommonClass {
+  constructor(
+    id = RandomUtil.randomLowerAndNum(8),
+    password = RandomUtil.randomSeq(10),
+    email = RandomUtil.randomLowerAndNum(9),
+    enable = true,
+    expiryTime = 0,
+    tgId = "",
+    subId = "",
+    comment = "",
+    totalGB = 0,
+    limitIp = 0,
+    reset = 0,
+    created_at = undefined,
+    updated_at = undefined,
+  ) {
+    super();
+    this.id = id;
+    this.password = password;
+    this.email = email;
+    this.enable = enable;
+    this.expiryTime = expiryTime;
+    this.tgId = tgId;
+    this.subId = subId;
+    this.comment = comment;
+    this.totalGB = totalGB;
+    this.limitIp = limitIp;
+    this.reset = reset;
+    this.created_at = created_at;
+    this.updated_at = updated_at;
+  }
+
+  static fromJson(json = []) {
+    if (!Array.isArray(json)) return [new Inbound.SshSettings.SshUser()];
+    return json.map(
+      (j) =>
+        new Inbound.SshSettings.SshUser(
+          j.id,
+          j.password,
+          j.email,
+          j.enable ?? true,
+          j.expiryTime ?? 0,
+          j.tgId ?? "",
+          j.subId ?? "",
+          j.comment ?? "",
+          j.totalGB ?? 0,
+          j.limitIp ?? j.ipLimit ?? 0,
+          j.reset ?? 0,
+          j.created_at,
+          j.updated_at,
+        ),
+    );
+  }
+
+  static toJsonArray(users) {
+    return users.map((u) => u.toJson());
+  }
+
+  toJson() {
+    return {
+      id: this.id,
+      password: this.password,
+      email: this.email,
+      enable: this.enable,
       expiryTime: this.expiryTime,
       tgId: this.tgId,
       subId: this.subId,

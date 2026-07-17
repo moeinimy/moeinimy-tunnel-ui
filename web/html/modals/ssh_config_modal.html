@@ -1,0 +1,156 @@
+{{define "modals/sshConfigModal"}}
+<a-modal id="ssh-config-modal" v-model="sshConfigModal.visible" :title="sshConfigModal.title"
+  :closable="true" :mask-closable="true" :class="themeSwitcher.currentTheme" :footer="null" :width="640">
+  <a-spin :spinning="sshConfigModal.loading">
+    <div v-if="!sshConfigModal.loading && sshConfigModal.configs.length === 0"
+      :style="{ color: '#888', textAlign: 'center', padding: '24px' }">
+      No SSH configuration is available for this account yet.
+    </div>
+    <div v-for="(cfg, index) in sshConfigModal.configs" :key="index" class="ssh-cfg-item">
+      <div class="ssh-cfg-head">
+        <b>SSH Config</b>
+        <a-tag v-if="cfg.remark" color="blue" :style="{ marginInlineStart: '8px' }">[[ cfg.remark ]]</a-tag>
+      </div>
+      <div class="ssh-cfg-body">
+        <div class="ssh-cfg-text">
+          <div :style="{ color: '#888', fontSize: '12px', marginBottom: '4px' }">Connection details</div>
+          <a-textarea :value="cfg.plain" read-only :auto-size="{ minRows: 4, maxRows: 12 }"
+            :style="{ fontFamily: 'monospace', fontSize: '12px' }"></a-textarea>
+          <a-space :style="{ marginTop: '8px' }">
+            <a-button size="small" @click="copy(cfg.plain)">
+              <a-icon type="copy"></a-icon> Copy
+            </a-button>
+            <a-button size="small" @click="download(cfg, 'plain')">
+              <a-icon type="download"></a-icon> Download
+            </a-button>
+          </a-space>
+
+          <div :style="{ color: '#888', fontSize: '12px', margin: '12px 0 4px' }">sing-box outbound</div>
+          <a-textarea :value="cfg.singbox" read-only :auto-size="{ minRows: 6, maxRows: 20 }"
+            :style="{ fontFamily: 'monospace', fontSize: '12px' }"></a-textarea>
+          <a-space :style="{ marginTop: '8px' }">
+            <a-button size="small" @click="copy(cfg.singbox)">
+              <a-icon type="copy"></a-icon> Copy
+            </a-button>
+            <a-button size="small" @click="download(cfg, 'singbox')">
+              <a-icon type="download"></a-icon> Download
+            </a-button>
+          </a-space>
+        </div>
+        <div class="ssh-cfg-qr">
+          <canvas :id="'sshQr-' + index" @click="copy(cfg.plain)"></canvas>
+        </div>
+      </div>
+    </div>
+  </a-spin>
+</a-modal>
+
+<style>
+  .ssh-cfg-item { padding: 14px 0; border-bottom: 1px solid rgba(128, 128, 128, 0.2); }
+  .ssh-cfg-item:last-child { border-bottom: none; }
+  .ssh-cfg-head { margin-bottom: 8px; }
+  .ssh-cfg-body { display: flex; flex-wrap: wrap; gap: 16px; align-items: flex-start; }
+  .ssh-cfg-text { flex: 1 1 300px; min-width: 260px; }
+  .ssh-cfg-qr { flex: 0 0 auto; }
+  .ssh-cfg-qr canvas {
+    width: 172px; height: 172px; cursor: pointer;
+    background: #fff; border-radius: 8px; padding: 6px;
+  }
+</style>
+
+<script>
+  const sshConfigModal = {
+    visible: false,
+    loading: false,
+    title: 'SSH Config',
+    dbInboundId: 0,
+    email: '',
+    username: '',
+    configs: [],
+    show: function (dbInboundId, client) {
+      this.dbInboundId = dbInboundId;
+      this.email = client && client.email ? client.email : '';
+      // SSH identity is the login username (client.id); fall back to the email label.
+      this.username = client && client.id ? client.id : this.email;
+      this.title = 'SSH Config' + (this.email ? ' - ' + this.email : '');
+      this.configs = [];
+      this.loading = true;
+      this.visible = true;
+      sshConfigModalApp.fetchConfigs();
+    },
+    close: function () {
+      this.visible = false;
+    },
+  };
+
+  const sshConfigModalApp = new Vue({
+    delimiters: ['[[', ']]'],
+    el: '#ssh-config-modal',
+    data: {
+      sshConfigModal: sshConfigModal,
+    },
+    methods: {
+      async fetchConfigs() {
+        try {
+          // Respect the global axios baseURL: do NOT prefix with base_path here.
+          const msg = await HttpUtil.get(
+            '/panel/api/inbounds/' + sshConfigModal.dbInboundId + '/ssh-configs',
+            { email: sshConfigModal.email }
+          );
+          sshConfigModal.configs = (msg && msg.success && Array.isArray(msg.obj)) ? msg.obj : [];
+        } catch (e) {
+          console.error('Failed to load SSH configs:', e);
+          sshConfigModal.configs = [];
+        } finally {
+          sshConfigModal.loading = false;
+        }
+      },
+      copy(content) {
+        ClipboardManager.copyText(content).then(() => {
+          app.$message.success('{{ i18n "copied" }}');
+        });
+      },
+      download(cfg, kind) {
+        // Filename is the account username (fall back to the email label); the remark
+        // keeps several endpoints' downloads from colliding.
+        const base = sshConfigModal.username || sshConfigModal.email || 'client';
+        const suffix = cfg.remark ? '-' + String(cfg.remark).replace(/[^A-Za-z0-9_.-]/g, '_') : '';
+        const isSingbox = kind === 'singbox';
+        const content = isSingbox ? cfg.singbox : cfg.plain;
+        const ext = isSingbox ? '.json' : '.txt';
+        const name = base + suffix + (isSingbox ? '-singbox' : '') + ext;
+        const blob = new Blob([content || ''], { type: 'text/plain' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = name;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+      },
+      renderQrs() {
+        sshConfigModal.configs.forEach((cfg, index) => {
+          const el = document.querySelector('#sshQr-' + index);
+          if (!el) return;
+          new QRious({
+            element: el,
+            size: 360,
+            value: cfg.plain || '',
+            background: 'white',
+            backgroundAlpha: 1,
+            foreground: 'black',
+            padding: 8,
+            level: 'L',
+          });
+        });
+      },
+    },
+    updated() {
+      if (this.sshConfigModal.visible && !this.sshConfigModal.loading) {
+        this.$nextTick(() => this.renderQrs());
+      }
+    },
+  });
+</script>
+{{end}}

@@ -29,6 +29,12 @@ CLIENT_PKGS_APT = (
     # MTProto Proxy client: the prober speaks the protocol itself (no tunnel, no
     # client daemon), and needs AES-CTR for the obfuscated2/FakeTLS handshakes.
     "python3-cryptography "
+    # SSH relay client: openssh-client for `ssh -D` (dynamic SOCKS), sshpass for
+    # non-interactive password auth. badvpn-tun2socks (full TUN over SOCKS + udpgw for
+    # UDP) is NOT here: the `badvpn` package was dropped from recent Ubuntu (absent from
+    # 26.04 universe), so clients/ssh.py pushes a bundled static build instead
+    # (_ensure_badvpn). openssh-client + sshpass do live in universe (enabled by default).
+    "openssh-client sshpass "
     "curl iproute2 net-tools dnsutils"
 )
 
@@ -178,6 +184,18 @@ class Client:
         self.incus.exec(self.vm, (
             "pkill -f 'openvpn --config' 2>/dev/null; "
             "pkill sstpc 2>/dev/null; "
+            # SSH relay: kill the `ssh -D` session (via sshpass's child; sshpass does not
+            # forward signals) + tun2socks by saved PID, then drop the tun2socks tun0
+            # (openvpn/openconnect recreate their own tun0 on connect; removing a stale one
+            # here keeps a later phase from landing on tun1). Dropping tun0 also removes its
+            # split-default routes, restoring the physical default. The [x]-bracketed
+            # pkill -f orphan sweep cannot match this command's own shell (see clients/ssh.py).
+            "pkill -P $(cat /run/ssh-vpn.pid 2>/dev/null) 2>/dev/null; "
+            "kill $(cat /run/tun2socks.pid 2>/dev/null) 2>/dev/null; "
+            "kill $(cat /run/ssh-vpn.pid 2>/dev/null) 2>/dev/null; "
+            "pkill -f '[b]advpn-tun2socks' 2>/dev/null; "
+            "pkill -f '[s]sh -N -D 127.0.0.1:1080' 2>/dev/null; ip link del tun0 2>/dev/null; "
+            "rm -f /run/tun2socks.pid /run/ssh-vpn.pid 2>/dev/null; "
             # WireGuard (C): tear the wg-quick interface down (and force-remove a stray link).
             "wg-quick down wgc 2>/dev/null; ip link del wgc 2>/dev/null; "
             "poff -a 2>/dev/null; pkill pppd 2>/dev/null; "

@@ -17,6 +17,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/mhsanaei/3x-ui/v2/backend"
@@ -228,6 +229,105 @@ func (s *Ikev2Service) InitIkev2() {
 	}
 }
 
+// ikev2AdmitSig remembers the admission signature of the swanctl config last written by
+// GenerateAllConfigs, so ReconcileDisabled can skip the reload when nothing changed. It
+// is package-level because the traffic job drives a zero-value Ikev2Service copy (the
+// same reason procMgr and sshMgr are package-level), so per-struct state would be lost.
+var (
+	ikev2AdmitMu  sync.Mutex
+	ikev2AdmitSig string
+)
+
+// ikev2Admissible reports whether charon should hold a connection for this inbound at
+// all, given the current quota-disabled set.
+//
+// eap-mschapv2 always keeps its connection: charon forwards every re-auth to the panel's
+// in-process RADIUS, which reads client_traffics live and refuses a disabled account.
+//
+// psk and eap-tls have no such hook. They authenticate locally at charon against
+// account-independent criteria (a shared secret, or `eap_id = %any` plus a CA), so a
+// disabled account is re-admitted the instant it re-dials. Both are single-account modes
+// (Poll asserts this by taking Clients[0]), which makes "this account is disabled"
+// equivalent to "this connection must not exist" -- the same contract wg-c gets by
+// removing a disabled peer from the device. This is the psk/eap-tls analogue of
+// wgc.buildPeers, and it checks both flags for the same reasons: Enable is the operator
+// switching the account off, disabled[] is the quota/expiry verdict.
+func ikev2Admissible(settings *ikev2Settings, disabled map[string]bool) bool {
+	switch settings.authMode() {
+	case "psk", "eap-tls":
+	default:
+		return true
+	}
+	if len(settings.Clients) == 0 {
+		// No account owns the inbound, so there is no account state to enforce.
+		// Preserve the pre-existing behavior rather than silently killing the conn.
+		return true
+	}
+	c := settings.Clients[0]
+	return c.Enable && !disabled[c.Email]
+}
+
+// admissionSig renders the per-inbound admission decisions that GenerateAllConfigs will
+// act on. It must walk inbounds exactly as GenerateAllConfigs does, so that an unchanged
+// signature provably means an unchanged config.
+func (s *Ikev2Service) admissionSig(inbounds []*model.Inbound, disabled map[string]bool) string {
+	var b strings.Builder
+	for _, inbound := range inbounds {
+		b.WriteString(strconv.Itoa(inbound.Id))
+		switch {
+		case !inbound.Enable:
+			b.WriteString(":off;")
+		default:
+			settings, err := s.parseSettings(inbound)
+			switch {
+			case err != nil:
+				b.WriteString(":err;")
+			case ikev2Admissible(settings, disabled):
+				b.WriteString(":on;")
+			default:
+				b.WriteString(":off;")
+			}
+		}
+	}
+	return b.String()
+}
+
+// ReconcileDisabled re-derives charon's loaded connections from account state, so a
+// psk/eap-tls account that just tripped its quota cannot reconnect.
+//
+// The rbridge sweeper alone is not enough: its Evict only terminates the live IKE SA,
+// leaving the connection loaded, so the client re-dials into the next tick's gap and
+// keeps browsing. Dropping the connection is what makes the disable stick, and re-adding
+// it restores a re-enabled account within one tick.
+//
+// Reloads only when the admissible set actually changed. Unlike wg-c's netlink diff this
+// costs a swanctl --load-all, so a steady state must not pay it: the common tick is one
+// small query plus a string compare.
+func (s *Ikev2Service) ReconcileDisabled() {
+	inbounds, err := s.GetIkev2Inbounds()
+	if err != nil || len(inbounds) == 0 {
+		return
+	}
+	sig := s.admissionSig(inbounds, s.getDisabledEmails())
+	ikev2AdmitMu.Lock()
+	unchanged := sig == ikev2AdmitSig
+	ikev2AdmitMu.Unlock()
+	if unchanged {
+		return
+	}
+	if err := s.GenerateAllConfigs(); err != nil {
+		logger.Warning("IKEv2: admission reconcile failed:", err)
+		return
+	}
+	// Loads the new config AND unloads any connection no longer in it: swanctl
+	// --load-conns removes connections absent from the config files. Live SAs are not
+	// torn down by an unload, so the sweeper's Evict stays necessary and complementary:
+	// together they give "SA killed AND cannot re-establish".
+	if err := s.RestartServices(); err != nil {
+		logger.Warning("IKEv2: reload after admission reconcile failed:", err)
+	}
+}
+
 // GenerateAllConfigs regenerates strongswan.conf + every per-inbound swanctl connection
 // + cert files from DB state.
 func (s *Ikev2Service) GenerateAllConfigs() error {
@@ -253,6 +353,7 @@ func (s *Ikev2Service) GenerateAllConfigs() error {
 		}
 	}
 
+	disabled := s.getDisabledEmails()
 	for _, inbound := range inbounds {
 		if !inbound.Enable {
 			continue
@@ -262,13 +363,26 @@ func (s *Ikev2Service) GenerateAllConfigs() error {
 			logger.Warning("IKEv2: skipping inbound", inbound.Id, err)
 			continue
 		}
+		// Certs are written either way: they are inert without a connection to use them,
+		// and keeping them current means a re-enabled account comes back on the next
+		// reload with no cert churn (and no chance of re-minting a cert clients pin).
 		if err := s.writeCertFiles(inbound, settings); err != nil {
 			logger.Warning("IKEv2: cert write failed for inbound", inbound.Id, err)
+		}
+		// The connection is the admission decision for psk/eap-tls: omitting it here (so
+		// --load-conns unloads it) is what stops a disabled account from reconnecting.
+		if !ikev2Admissible(settings, disabled) {
+			logger.Debug("IKEv2: inbound", inbound.Id,
+				"account disabled or over quota, leaving its connection unloaded")
+			continue
 		}
 		if err := s.writeConnConf(inbound, settings); err != nil {
 			logger.Warning("IKEv2: conn config write failed for inbound", inbound.Id, err)
 		}
 	}
+	ikev2AdmitMu.Lock()
+	ikev2AdmitSig = s.admissionSig(inbounds, disabled)
+	ikev2AdmitMu.Unlock()
 	return nil
 }
 

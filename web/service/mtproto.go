@@ -399,7 +399,8 @@ func (s *MtprotoService) ReconcileSecrets() error {
 	return nil
 }
 
-// GenerateAllConfigs writes every enabled inbound's config.toml.
+// GenerateAllConfigs writes every enabled inbound's config.toml, restarting only those
+// whose egress changed (see generateServerConfig).
 func (s *MtprotoService) GenerateAllConfigs() error {
 	if err := s.ReconcileSecrets(); err != nil {
 		logger.Warning("MTProto: secret reconcile failed:", err)
@@ -412,21 +413,69 @@ func (s *MtprotoService) GenerateAllConfigs() error {
 		if !inbound.Enable {
 			continue
 		}
-		if err := s.generateServerConfig(inbound); err != nil {
+		needRestart, err := s.generateServerConfig(inbound)
+		if err != nil {
 			logger.Warning("MTProto: config for inbound", inbound.Id, "failed:", err)
+			continue
+		}
+		if needRestart {
+			logger.Info("MTProto: inbound", inbound.Id,
+				"egress changed (ad tag toggled); restarting telemt so it stops using the old upstream")
+			s.restartServer(inbound)
 		}
 	}
 	return nil
 }
 
-func (s *MtprotoService) generateServerConfig(inbound *model.Inbound) error {
+// egressConfig extracts the parts of a rendered config.toml that telemt CANNOT
+// hot-reload: use_middle_proxy and the [[upstreams]] block. Both re-bind the egress
+// path, so telemt's watcher skips them (with only a warning) and keeps serving over
+// whatever it started with.
+//
+// This matters because those two fields flip together with an ad tag, which is a
+// per-CLIENT field: setting one used to take the hot-reload path and leave telemt on a
+// stale egress. Both directions broke silently, and neither looked like a failure:
+//
+//   - tag ON: the panel drops the inbound's Xray socks inbound (tagged traffic must
+//     egress directly or the ME key cannot derive), but telemt kept dialing that now
+//     deleted socks port and refused every client with "Connection refused".
+//   - tag OFF: the panel restores the socks inbound, but telemt kept egressing DIRECT,
+//     so the operator's Xray routing silently did not apply to any of it. A blackhole
+//     outbound did not block the proxy, which is the dangerous half: it looks like it
+//     works, and it is bypassing the rules.
+func egressConfig(content string) string {
+	var b strings.Builder
+	inUpstreams := false
+	for _, line := range strings.Split(content, "\n") {
+		t := strings.TrimSpace(line)
+		switch {
+		case strings.HasPrefix(t, "use_middle_proxy"):
+			b.WriteString(t + "\n")
+		case strings.HasPrefix(t, "[[upstreams]]"):
+			inUpstreams = true
+			b.WriteString(t + "\n")
+		case strings.HasPrefix(t, "["):
+			// Any other section header closes the upstream block.
+			inUpstreams = false
+		case inUpstreams && t != "" && !strings.HasPrefix(t, "#"):
+			b.WriteString(t + "\n")
+		}
+	}
+	return b.String()
+}
+
+// generateServerConfig renders one inbound's config.toml. It reports whether the change
+// needs a telemt restart, which is true only when the egress (see egressConfig) moved:
+// everything else telemt applies itself, and restarting for those would drop every live
+// connection on the inbound (the whole point of the hot-reload path).
+func (s *MtprotoService) generateServerConfig(inbound *model.Inbound) (bool, error) {
 	settings, err := s.parseSettings(inbound)
 	if err != nil {
-		return err
+		return false, err
 	}
 	dir := s.configDir(inbound.Id)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return err
+		return false, err
 	}
 	content := s.buildServerConfig(inbound, settings)
 	path := dir + "/config.toml"
@@ -437,10 +486,35 @@ func (s *MtprotoService) generateServerConfig(inbound *model.Inbound) error {
 	// KillDisabledSessions -> GenerateAllConfigs on each tick. It also defeated the
 	// point of activeClients' stable sort, which exists to make the output
 	// byte-identical precisely so the watcher stays quiet.
-	if old, err := os.ReadFile(path); err == nil && bytes.Equal(old, []byte(content)) {
-		return nil
+	old, readErr := os.ReadFile(path)
+	if readErr == nil && bytes.Equal(old, []byte(content)) {
+		return false, nil
 	}
-	return os.WriteFile(path, []byte(content), 0o600)
+	// No previous config means no running instance to be stale: RestartServices starts
+	// it fresh, so this is only ever about an EXISTING telemt holding an old egress.
+	needRestart := readErr == nil && egressConfig(string(old)) != egressConfig(content)
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		return false, err
+	}
+	return needRestart, nil
+}
+
+// restartServer (re)starts a single inbound's telemt. procMgr.Start supersedes any
+// running instance, so this restarts one inbound without touching the others.
+func (s *MtprotoService) restartServer(inbound *model.Inbound) {
+	settings, err := s.parseSettings(inbound)
+	if err != nil {
+		return
+	}
+	if len(s.activeClients(settings)) == 0 {
+		return
+	}
+	dir := s.configDir(inbound.Id)
+	name := mtprotoProcName(inbound.Id)
+	args := []string{"--data-path", dir, dir + "/config.toml"}
+	if err := procMgr.Start(name, s.telemtBinaryPath(), args, nil, dir); err != nil {
+		logger.Warning("MTProto: restart of", name, "failed:", err)
+	}
 }
 
 // tomlEscape quotes a value for a TOML basic string.

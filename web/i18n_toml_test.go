@@ -113,7 +113,7 @@ var knownMissing = keySet(
 	"pages.tunnel.node.remoteIp", "pages.tunnel.node.lastSeen", "pages.tunnel.node.never",
 	"pages.tunnel.node.viewTunnels", "pages.tunnel.node.remove", "pages.tunnel.node.removeConfirm",
 	"pages.tunnel.node.empty", "pages.tunnel.node.execFailed",
-	"pages.tunnel.node.setupTunnel", "pages.tunnel.node.setupHint",
+	"pages.tunnel.node.setupTitle", "pages.tunnel.node.setupHint", "pages.tunnel.node.setupNone",
 )
 
 // flattenKeys collapses nested TOML tables into dotted keys (e.g. "pages.core.title").

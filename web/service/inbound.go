@@ -442,7 +442,7 @@ func (s *InboundService) AddInbound(inbound *model.Inbound) (*model.Inbound, boo
 	}
 
 	// Check for duplicate L2TP/PPTP/OpenVPN/SSTP usernames
-	if inbound.Protocol == "l2tp" || inbound.Protocol == "pptp" || inbound.Protocol == "openvpn" || inbound.Protocol == "sstp" || inbound.Protocol == "ikev2" || inbound.Protocol == "wg-c" {
+	if inbound.Protocol == "l2tp" || inbound.Protocol == "pptp" || inbound.Protocol == "openvpn" || inbound.Protocol == "sstp" || inbound.Protocol == "ikev2" || inbound.Protocol == "wg-c" || inbound.Protocol == "ssh" {
 		dupUser, err := s.checkPPPUsernamesForDuplicates(string(inbound.Protocol), clients)
 		if err != nil {
 			return inbound, false, err
@@ -884,7 +884,7 @@ func (s *InboundService) AddInboundClient(data *model.Inbound) (bool, error) {
 	}
 
 	// Check for duplicate L2TP/PPTP/OpenVPN/SSTP usernames
-	if oldInbound.Protocol == "l2tp" || oldInbound.Protocol == "pptp" || oldInbound.Protocol == "openvpn" || oldInbound.Protocol == "sstp" || oldInbound.Protocol == "ikev2" || oldInbound.Protocol == "wg-c" {
+	if oldInbound.Protocol == "l2tp" || oldInbound.Protocol == "pptp" || oldInbound.Protocol == "openvpn" || oldInbound.Protocol == "sstp" || oldInbound.Protocol == "ikev2" || oldInbound.Protocol == "wg-c" || oldInbound.Protocol == "ssh" {
 		dupUser, err := s.checkPPPUsernamesForDuplicates(string(oldInbound.Protocol), clients)
 		if err != nil {
 			return false, err
@@ -1311,7 +1311,7 @@ func (s *InboundService) UpdateInboundClient(data *model.Inbound, clientId strin
 	}
 
 	// Check for duplicate L2TP/PPTP/OpenVPN/SSTP usernames (allow keeping the same username)
-	if oldInbound.Protocol == "l2tp" || oldInbound.Protocol == "pptp" || oldInbound.Protocol == "openvpn" || oldInbound.Protocol == "sstp" || oldInbound.Protocol == "ikev2" || oldInbound.Protocol == "wg-c" {
+	if oldInbound.Protocol == "l2tp" || oldInbound.Protocol == "pptp" || oldInbound.Protocol == "openvpn" || oldInbound.Protocol == "sstp" || oldInbound.Protocol == "ikev2" || oldInbound.Protocol == "wg-c" || oldInbound.Protocol == "ssh" {
 		oldUsername := oldClients[clientIndex].ID
 		newUsername := clients[0].ID
 		if newUsername != oldUsername {

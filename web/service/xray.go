@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/mhsanaei/3x-ui/v2/logger"
 	"github.com/mhsanaei/3x-ui/v2/xray"
@@ -19,8 +20,21 @@ var (
 	p                 *xray.Process
 	lock              sync.Mutex
 	isNeedXrayRestart atomic.Bool // Indicates that restart was requested for Xray
-	isManuallyStopped atomic.Bool // Indicates that Xray was stopped manually from the panel
-	result            string
+	// UnixNano of the most recent restart request, and of the one that opened the
+	// current burst. Both feed the debounce in IsRestartDueAndSetFalse.
+	xrayRestartReqAt   atomic.Int64
+	xrayRestartFirstAt atomic.Int64
+	isManuallyStopped  atomic.Bool // Indicates that Xray was stopped manually from the panel
+	result             string
+)
+
+const (
+	// How long the restart flag must go untouched before the restart fires. Long enough
+	// that adding several clients in a row is one restart, short enough that a single
+	// add is usable almost immediately.
+	xrayRestartDebounce = 2 * time.Second
+	// Ceiling on the debounce, so an unending stream of edits still gets a restart.
+	xrayRestartMaxWait = 30 * time.Second
 )
 
 // XrayService provides business logic for Xray process management.
@@ -36,6 +50,7 @@ type XrayService struct {
 	ikev2Service   Ikev2Service
 	wgcService     WgcService
 	mtprotoService MtprotoService
+	sshService     SshService
 	xrayAPI        xray.XrayAPI
 }
 
@@ -120,7 +135,7 @@ func (s *XrayService) GetXrayConfig() (*xray.Config, error) {
 		// Omitting a protocol here is not a no-op: its raw settings would be handed to
 		// Xray as a native inbound, Xray would reject the unknown protocol, and the
 		// WHOLE core would fail to start, taking every other inbound down with it.
-		if inbound.Protocol == "l2tp" || inbound.Protocol == "pptp" || inbound.Protocol == "openvpn" || inbound.Protocol == "openconnect" || inbound.Protocol == "sstp" || inbound.Protocol == "ikev2" || inbound.Protocol == "wg-c" || inbound.Protocol == "mtproto" {
+		if inbound.Protocol == "l2tp" || inbound.Protocol == "pptp" || inbound.Protocol == "openvpn" || inbound.Protocol == "openconnect" || inbound.Protocol == "sstp" || inbound.Protocol == "ikev2" || inbound.Protocol == "wg-c" || inbound.Protocol == "mtproto" || inbound.Protocol == "ssh" {
 			continue
 		}
 		// get settings clients
@@ -291,6 +306,21 @@ func (s *XrayService) GetXrayConfig() (*xray.Config, error) {
 			continue
 		}
 		if socksConfig := s.mtprotoService.GetSocksConfig(mtInbound); socksConfig != nil {
+			xrayConfig.InboundConfigs = append(xrayConfig.InboundConfigs, *socksConfig)
+		}
+	}
+
+	// Inject the loopback socks inbound each SSH inbound egresses through. Like the
+	// mtproto block above, but with UDP enabled (settings.udp): SSH forwards TCP via
+	// direct-tcpip channels and UDP via its in-process udpgw bridge, and the UDP path
+	// needs the socks inbound to accept UDP ASSOCIATE so Xray routes+accounts UDP per
+	// client too. Per-client identity rides the socks username (the account email).
+	sshInbounds, _ := s.sshService.GetSshInbounds()
+	for _, sshInbound := range sshInbounds {
+		if !sshInbound.Enable {
+			continue
+		}
+		if socksConfig := s.sshService.GetSocksConfig(sshInbound); socksConfig != nil {
 			xrayConfig.InboundConfigs = append(xrayConfig.InboundConfigs, *socksConfig)
 		}
 	}
@@ -566,7 +596,41 @@ func (s *XrayService) ReapOrphanXray() {
 
 // SetToNeedRestart marks that Xray needs to be restarted.
 func (s *XrayService) SetToNeedRestart() {
-	isNeedXrayRestart.Store(true)
+	now := time.Now().UnixNano()
+	// Remember when this burst of changes started, so a continuous stream of edits can
+	// never starve the restart (see IsRestartDueAndSetFalse).
+	if isNeedXrayRestart.CompareAndSwap(false, true) {
+		xrayRestartFirstAt.Store(now)
+	}
+	xrayRestartReqAt.Store(now)
+}
+
+// IsRestartDueAndSetFalse reports whether a requested restart should happen NOW, and
+// clears the flag if so.
+//
+// Why a debounce rather than a plain flag on a slow tick: the relay protocols (mtproto,
+// ssh) egress through a paired Xray socks inbound and authenticate as the account's
+// email. Xray's socks inbound has no AddUser API, so that account list is fixed at
+// config time and only a restart applies it. That makes the delay here the exact window
+// in which a NEWLY ADDED relay client cannot use the proxy at all: it is not a
+// background optimization, it is user-visible as "the proxy does not work", which is
+// what a 30s tick was doing.
+//
+// Restarting on every request instead would drop live connections once per edit, so the
+// flag is allowed to settle first: a burst of edits (adding several clients in a row)
+// still collapses into ONE restart shortly after the last one, and maxWait bounds the
+// worst case at the old tick's latency even if edits never stop arriving.
+func (s *XrayService) IsRestartDueAndSetFalse() bool {
+	if !isNeedXrayRestart.Load() {
+		return false
+	}
+	now := time.Now().UnixNano()
+	settled := now-xrayRestartReqAt.Load() >= int64(xrayRestartDebounce)
+	waitedTooLong := now-xrayRestartFirstAt.Load() >= int64(xrayRestartMaxWait)
+	if !settled && !waitedTooLong {
+		return false
+	}
+	return isNeedXrayRestart.CompareAndSwap(true, false)
 }
 
 // IsNeedRestartAndSetFalse checks if restart is needed and resets the flag to false.

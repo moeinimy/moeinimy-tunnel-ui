@@ -27,7 +27,8 @@ from .model import (JobResult, SubTest, Status, ALL_PHASES, PHASE_CORE, PHASE_SE
                     PHASE_SYSTEMD, PHASE_UNINSTALL,
                     IKEV2_MODE_PHASES, IKEV2_PHASE_BY_MODE,
                     MTPROTO_MODE_PHASES, MTPROTO_PHASE_BY_MODE,
-                    PHASE_MTPROTO_TOGGLE)
+                    PHASE_MTPROTO_TOGGLE, PHASE_MTPROTO_TERMINATION,
+                    PHASE_MTPROTO_ADTAG, PHASE_SSH, PHASE_SSH_UDP)
 from .panel import Panel
 from ..report.report import write_reports
 
@@ -48,7 +49,9 @@ _PHASE_TAG = {
     "wg-c": "WGC",
     "mtproto": "MTPROTO",
     "mtproto-classic": "MT-CLAS", "mtproto-secure": "MT-DD", "mtproto-tls": "MT-TLS",
-    "mtproto-toggle": "MT-TOGL",
+    "mtproto-toggle": "MT-TOGL", "mtproto-termination": "MT-TERM",
+    "mtproto-adtag": "MT-ADTAG",
+    "ssh": "SSH", "ssh-udp": "SSH-UDP",
     "bulk-ops": "BULK",
     "backup-restore": "BACKUP", "warp-socks": "WARP", "random-cfg": "RANDOM",
     "systemd": "SYSTEMD", "uninstall": "UNINSTALL",
@@ -87,6 +90,11 @@ class _JobLogger:
         body = msg.lstrip()[2:].strip()
         token = (body.split("—", 1)[0] if "—" in body else body).strip()
         token = token.split()[0] if token else ""
+        # A ":: <phase>, <description>" header separates the two with a comma rather than
+        # a dash, which leaves the comma glued to the phase name: the tag lookup then
+        # misses and the column renders as a raw upper-cased "MTPROTO-CLASSIC," instead
+        # of "MT-CLAS".
+        token = token.rstrip(",")
         new = "VM" if token == self.distro else _PHASE_TAG.get(token, token.upper())
         if new and new != self.phase:
             self.phase = new
@@ -143,7 +151,7 @@ def run_job(spec: dict, index: int, cfg: dict,
 
     need_clients = any(_sel(p) for p in ("openvpn", "l2tp", "pptp", "openconnect", "sstp", "ikev2", "wg-c",
                                          "mtproto", "mtproto-classic", "mtproto-secure", "mtproto-tls",
-                                         "mtproto-toggle"))
+                                         "mtproto-toggle", "ssh", "ssh-udp"))
     need_setup = (need_clients or _sel(PHASE_SETUP)
                   or _sel(PHASE_BULK) or _sel(PHASE_BACKUP))
 
@@ -248,7 +256,7 @@ def run_job(spec: dict, index: int, cfg: dict,
             return incus.exec(server_vm, cmd, timeout=timeout)
 
         # --- protocol suites (filtered by the --tests selection) ---
-        for proto in [p for p in ("openvpn", "l2tp", "pptp", "openconnect", "sstp", "wg-c") if _sel(p)]:
+        for proto in [p for p in ("openvpn", "l2tp", "pptp", "openconnect", "sstp", "wg-c", "ssh") if _sel(p)]:
             if _aborting():
                 break
             log(f":: {proto} — connect variants + checks + peer reachability")
@@ -323,6 +331,54 @@ def run_job(spec: dict, index: int, cfg: dict,
             except Exception as e:  # noqa: BLE001
                 result.phase(PHASE_MTPROTO_TOGGLE).add(
                     SubTest("mtproto-toggle-driver", Status.ERROR,
+                            str(e)[:200], traceback.format_exc()[-1500:]))
+            finally:
+                cA.disconnect_all()
+
+        # --- mtproto: quota -> auto-disable -> the proxy stops serving ------
+        # After the toggle phase (which needs account A serving every mode) because this
+        # one deliberately disables account A. It restores the account in a finally, but
+        # order it last among the account-A phases anyway so a mid-way failure cannot
+        # decide another phase's result.
+        if _sel(PHASE_MTPROTO_TERMINATION) and not _aborting():
+            log(f":: {PHASE_MTPROTO_TERMINATION}, quota disables the account AND stops the relay")
+            try:
+                protocols.run("mtproto-termination", cA, cB, cC, sc, cfg, result,
+                              panel=panel, server_exec=server_exec)
+            except Exception as e:  # noqa: BLE001
+                result.phase(PHASE_MTPROTO_TERMINATION).add(
+                    SubTest("mtproto-termination-driver", Status.ERROR,
+                            str(e)[:200], traceback.format_exc()[-1500:]))
+            finally:
+                cA.disconnect_all()
+
+        # --- mtproto: the ad tag / Xray-routing XOR -------------------------
+        # Last of the mtproto phases: it restarts the core twice and turns the inbound's
+        # Xray routing off and back on, so anything sharing this inbound must have run.
+        if _sel(PHASE_MTPROTO_ADTAG) and not _aborting():
+            log(f":: {PHASE_MTPROTO_ADTAG}, an ad tag forces middle-proxy and drops Xray routing")
+            try:
+                protocols.run("mtproto-adtag", cA, cB, cC, sc, cfg, result,
+                              panel=panel, server_exec=server_exec)
+            except Exception as e:  # noqa: BLE001
+                result.phase(PHASE_MTPROTO_ADTAG).add(
+                    SubTest("mtproto-adtag-driver", Status.ERROR,
+                            str(e)[:200], traceback.format_exc()[-1500:]))
+            finally:
+                cA.disconnect_all()
+
+        # --- ssh-udp: UDP over the badvpn-udpgw path through the SSH relay ------
+        # A dedicated phase (separate report column) that FORCES the UDP path the standard
+        # ssh suite does not isolate: a +notcp DNS lookup through udpgw + UDP accounting.
+        # Runs after the main ssh phase (which disables account A); the driver re-enables it.
+        if _sel(PHASE_SSH_UDP) and not _aborting():
+            log(f":: {PHASE_SSH_UDP}, UDP over udpgw through the SSH tunnel (functional + accounting)")
+            try:
+                protocols.run("ssh-udp", cA, cB, cC, sc, cfg, result,
+                              panel=panel, server_exec=server_exec)
+            except Exception as e:  # noqa: BLE001
+                result.phase(PHASE_SSH_UDP).add(
+                    SubTest("ssh-udp-driver", Status.ERROR,
                             str(e)[:200], traceback.format_exc()[-1500:]))
             finally:
                 cA.disconnect_all()
@@ -481,12 +537,17 @@ def main(argv=None):
         selected = {t for t in tests if t in ALL_PHASES}
         if "ikev2" in tests:                      # alias -> every ikev2 auth-mode phase
             selected.update(IKEV2_MODE_PHASES)
-        if "mtproto" in tests:                    # alias -> every mtproto mode phase
+        if "mtproto" in tests:                    # alias -> every mtproto phase
             selected.update(MTPROTO_MODE_PHASES)
-            selected.add(PHASE_MTPROTO_TOGGLE)
+            selected.update({PHASE_MTPROTO_TOGGLE, PHASE_MTPROTO_TERMINATION,
+                             PHASE_MTPROTO_ADTAG})
+        if "ssh" in tests:                        # ssh -> its main phase + the udp phase
+            selected.add(PHASE_SSH_UDP)
     if selected & set(IKEV2_MODE_PHASES):         # marker: any ikev2 mode active
         selected.add("ikev2")
-    if selected & (set(MTPROTO_MODE_PHASES) | {PHASE_MTPROTO_TOGGLE}):
+    if selected & (set(MTPROTO_MODE_PHASES) | {PHASE_MTPROTO_TOGGLE,
+                                               PHASE_MTPROTO_TERMINATION,
+                                               PHASE_MTPROTO_ADTAG}):
         selected.add("mtproto")                   # marker: any mtproto phase active
     cfg["_selected"] = selected
 

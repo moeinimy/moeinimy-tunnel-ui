@@ -114,6 +114,7 @@ type Server struct {
 	ikev2Service     service.Ikev2Service
 	wgcService       service.WgcService
 	mtprotoService   service.MtprotoService
+	sshService       service.SshService
 	tgbotService     service.Tgbot
 	customGeoService *service.CustomGeoService
 
@@ -337,6 +338,7 @@ func (s *Server) startTask() {
 	s.ikev2Service.InitIkev2()
 	s.wgcService.InitWgc()
 	s.mtprotoService.InitMtproto()
+	s.sshService.InitSsh()
 
 	s.customGeoService.EnsureOnStartup()
 	// Reap an orphaned Xray from a previous instance BEFORE starting ours — a panel
@@ -351,9 +353,13 @@ func (s *Server) startTask() {
 	// Check whether xray is running every second
 	s.cron.AddJob("@every 1s", job.NewCheckXrayRunningJob())
 
-	// Check if xray needs to be restarted every 30 seconds
-	s.cron.AddFunc("@every 30s", func() {
-		if s.xrayService.IsNeedRestartAndSetFalse() {
+	// Apply a requested Xray restart once the change that asked for it has settled.
+	// Ticks every second because the wait is user-visible: mtproto/ssh clients cannot
+	// use the proxy until their account reaches Xray's socks inbound, which only a
+	// restart applies. IsRestartDueAndSetFalse holds the actual debounce, so a burst of
+	// edits is still one restart.
+	s.cron.AddFunc("@every 1s", func() {
+		if s.xrayService.IsRestartDueAndSetFalse() {
 			err := s.xrayService.RestartXray(false)
 			if err != nil {
 				logger.Error("restart xray failed:", err)
@@ -534,6 +540,8 @@ func (s *Server) Stop() error {
 	// Terminate the supervised VPN daemons (openvpn/xl2tpd/pptpd) so they die
 	// with the panel rather than orphaning.
 	service.GetProcManager().StopAll()
+	// SSH is an in-binary listener, not a supervised child, so StopAll does not cover it.
+	s.sshService.StopServices()
 	s.radiusService.Stop()
 	s.xrayService.StopXray()
 	if s.cron != nil {

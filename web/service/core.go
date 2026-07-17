@@ -117,6 +117,7 @@ type CoreService struct {
 	ikev2Service   Ikev2Service
 	wgcService     WgcService
 	mtprotoService MtprotoService
+	sshService     SshService
 	xrayService    XrayService
 }
 
@@ -315,6 +316,7 @@ func (s *CoreService) GetCoresStatus() []CoreStatus {
 		s.ikev2Status(),
 		s.wgcStatus(),
 		s.mtprotoStatus(),
+		s.sshStatus(),
 		s.radiusStatus(),
 	}
 }
@@ -574,6 +576,25 @@ func (s *CoreService) radiusStatus() CoreStatus {
 	return cs
 }
 
+// sshStatus reports the SSH core. Like radius/wgc it is an in-binary Go server, so it
+// is always "installed" (no bundled binary, no host dependency); "running" means at
+// least one SSH listener is bound.
+func (s *CoreService) sshStatus() CoreStatus {
+	cs := CoreStatus{Name: "ssh"}
+	cs.Version = config.GetVersion()
+	inbounds, _ := s.sshService.GetSshInbounds()
+	cs.Inbounds = len(inbounds)
+	switch {
+	case cs.Inbounds == 0:
+		cs.State = CoreIdle
+	case s.sshService.AnyRunning():
+		cs.State = CoreRunning
+	default:
+		cs.State = CoreStopped
+	}
+	return cs
+}
+
 // --------------------------------------------------------------------------- //
 //  System / kernel status
 // --------------------------------------------------------------------------- //
@@ -708,6 +729,8 @@ func (s *CoreService) RestartCore(name string) error {
 		return s.wgcService.RestartServices()
 	case "mtproto":
 		return s.mtprotoService.RestartServices()
+	case "ssh":
+		return s.sshService.RestartServices()
 	case "radius":
 		return RestartRadius()
 	case "ipsec":
@@ -722,7 +745,7 @@ func (s *CoreService) RestartCore(name string) error {
 // one failing core doesn't abort the rest.
 func (s *CoreService) RestartAll() error {
 	var errs []string
-	for _, name := range []string{"xray", "l2tp", "pptp", "openvpn", "openconnect", "sstp", "ikev2", "wgc", "mtproto", "radius"} {
+	for _, name := range []string{"xray", "l2tp", "pptp", "openvpn", "openconnect", "sstp", "ikev2", "wgc", "mtproto", "ssh", "radius"} {
 		if err := s.RestartCore(name); err != nil {
 			errs = append(errs, fmt.Sprintf("%s: %v", name, err))
 		}
@@ -759,6 +782,8 @@ func (s *CoreService) StopCore(name string) error {
 		return s.wgcService.StopServices()
 	case "mtproto":
 		return s.mtprotoService.StopServices()
+	case "ssh":
+		return s.sshService.StopServices()
 	case "radius":
 		return StopRadius()
 	case "ipsec":
@@ -796,6 +821,12 @@ func (s *CoreService) CoreLogs(name string) string {
 		return fmt.Sprintf("WireGuard (C) runs in-kernel via wgctrl (no daemon log).\nModule version: %s\nInterface(s) up: %s", wireguardModuleVersion(), up)
 	case "mtproto":
 		return procMgr.LogsByPrefix("mtproto-server-")
+	case "ssh":
+		running := "no"
+		if s.sshService.AnyRunning() {
+			running = "yes"
+		}
+		return fmt.Sprintf("SSH gateway runs in-binary (no daemon log).\nListener(s) bound: %s\n\n%s", running, filterLogs("SSH:"))
 	case "xray":
 		out := filterLogs("xray")
 		if out == "" {

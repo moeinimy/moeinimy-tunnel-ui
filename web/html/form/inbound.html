@@ -374,6 +374,11 @@
     {{template "form/mtproto"}}
 </template>
 
+<!-- ssh (SSH relay) -->
+<template v-if="inbound.protocol === Protocols.SSH">
+    {{template "form/ssh"}}
+</template>
+
 <!-- hysteria -->
 <template v-if="inbound.protocol === Protocols.HYSTERIA">
     {{template "form/hysteria"}}

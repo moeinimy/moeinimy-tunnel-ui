@@ -144,6 +144,29 @@ MTPROTO_PHASE_BY_MODE = {"classic": PHASE_MTPROTO_CLASSIC,
 # had. Miss the hot-reload on either and the toggle silently does nothing until the
 # next restart, which is exactly what a user sees as "the backend ignores my toggle".
 PHASE_MTPROTO_TOGGLE = "mtproto-toggle"
+# Quota -> auto-disable -> the account can no longer relay. The per-mode `usage` subtest
+# only proves bytes are COUNTED; nothing proved they are ENFORCED, and mtproto's
+# enforcement path is its own (no RADIUS, no nft): the panel re-renders
+# [access.user_enabled] and telemt's config watcher cancels the account's live sessions.
+# Deliberately KiB-scale: the prober's ceiling is ~1.6 KiB/s per connection because each
+# req_pq is a full round-trip to a DC, so an MB-scale quota can never be driven over.
+PHASE_MTPROTO_TERMINATION = "mtproto-termination"
+# Ad Tag, and the XOR it forces. A tagged account needs telemt's middle-proxy path, whose
+# RPC session key is derived from the proxy's own egress IP AND port, so ANY re-originating
+# proxy (Xray socks included) breaks the handshake. The panel therefore drops the whole
+# inbound's Xray socks inbound the moment any account carries a tag. That trade is the
+# product rule worth testing; whether Telegram then CREDITS the tag is account-gated and
+# out of scope. Note the tag rides the proxy->Telegram leg (RPC_PROXY_REQ), so the client
+# handshake is byte-identical either way: every assertion here is server-side.
+PHASE_MTPROTO_ADTAG = "mtproto-adtag"
+# SSH (10th protocol): an in-binary Go x/crypto/ssh RELAY. The client turns it into a
+# full system tunnel with `ssh -D` (dynamic SOCKS) + badvpn-tun2socks (+ udpgw for UDP),
+# so PHASE_SSH runs the SAME shared suite as the tunnel protocols MINUS client-to-client
+# and cross-inbound (a relay has no client tunnel address to ping between). PHASE_SSH_UDP
+# is a dedicated phase proving UDP survives the udpgw path end-to-end (functional +
+# billed to the account). `--tests ssh` selects both (see orchestrator.main).
+PHASE_SSH = "ssh"
+PHASE_SSH_UDP = "ssh-udp"
 PHASE_BULK = "bulk-ops"
 PHASE_BACKUP = "backup-restore"
 PHASE_WARP = "warp-socks"
@@ -156,6 +179,7 @@ ALL_PHASES = [PHASE_CORE, PHASE_SETUP, PHASE_OPENVPN, PHASE_L2TP, PHASE_PPTP,
               PHASE_IKEV2_EAPMSCHAP, PHASE_IKEV2_PSK, PHASE_IKEV2_EAPTLS,
               PHASE_WGC,
               PHASE_MTPROTO_CLASSIC, PHASE_MTPROTO_SECURE, PHASE_MTPROTO_TLS,
-              PHASE_MTPROTO_TOGGLE,
+              PHASE_MTPROTO_TOGGLE, PHASE_MTPROTO_TERMINATION, PHASE_MTPROTO_ADTAG,
+              PHASE_SSH, PHASE_SSH_UDP,
               PHASE_BULK, PHASE_BACKUP,
               PHASE_WARP, PHASE_RANDOM, PHASE_SYSTEMD, PHASE_UNINSTALL]

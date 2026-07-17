@@ -44,6 +44,14 @@ PPTP_USER_LIMIT = 2
 OC_USER_LIMIT = 2
 SSTP_USER_LIMIT = 2
 IKEV2_USER_LIMIT = 2
+# SSH relay: "device" = distinct client source IP per account, enforced in the in-binary
+# Go SSH server. K=2 keeps the same User-Limit / strategy / multi-user-total / termination
+# suite the tunnel protocols run (the 3rd client VM drives the past-cap strategy test).
+SSH_USER_LIMIT = 2
+# The in-binary SSH server binds this TCP port on 0.0.0.0. 2222 avoids the VM's own sshd
+# on 22. Stored in the Inbound.udp_port field (a port label, so multi-inbound's per-proto
+# `.udp_port` reads work) even though the SSH listener is TCP.
+SSH_PORT = 2222
 # WireGuard (C): gateway model. ONE keypair per account; the User Limit sizes the account's
 # aligned IP block (rounded up to a power of two), and the single config's Address is that
 # whole block (e.g. 6 -> a /29 of 8 addresses) which a router hands out to its LAN. 6 -> /29.
@@ -110,7 +118,10 @@ SECOND_PORTS = {
     "l2tp":        {"udp": 1799},
     "pptp":        {"udp": 1798},
     "openconnect": {"udp": 4444},
-    "sstp":        {"udp": 8443},
+    # 8444, not 8443: MTProto's primary listener holds 8443 (MTPROTO_PORT), so an
+    # all-protocols run (both present) would fail the sstp 2nd-inbound create with
+    # "Port already exists: 8443". A distinct TLS-ish port avoids the collision.
+    "sstp":        {"udp": 8444},
     # IKEv2 shares ONE strongSwan charon bound to UDP 500/4500 for EVERY inbound, so
     # this port is only a unique DB label (like l2tp/pptp above); the 2nd inbound is
     # distinguished by its own /16-block accounts via RADIUS, not by a distinct port.
@@ -118,6 +129,9 @@ SECOND_PORTS = {
     # WireGuard listens on its OWN per-inbound UDP port (a kernel wgc<id> interface),
     # so this really binds a distinct listener (like openvpn/sstp, unlike l2tp/pptp).
     "wg-c":       {"udp": 51821},
+    # The SSH server binds its OWN per-inbound TCP listener, so this 2nd inbound really
+    # binds a distinct port (like openvpn/wg-c). Distinct from the primary 2222.
+    "ssh":        {"udp": 2223},
 }
 
 # Nominal DB port labels for the EXTRA ikev2 auth-mode inbounds (psk / eap-tls).
@@ -243,6 +257,19 @@ def build_second_inbound(panel: Panel, proto: str) -> Inbound:
             tcp_port=0, accounts={"A": acct}, user_limit=1)
         _fetch_wg_configs(panel, second)
         return second
+    if proto == "ssh":
+        # A distinct in-binary SSH listener on its own TCP port with a single account
+        # (K=1). No addressing/certs: password auth only. externalProxy omitted (the
+        # client dials the server IP:port directly). Strategy is pinned to reject so the
+        # second inbound's K=1 cap is asserted deterministically (the default is accept).
+        settings = {
+            "userLimit": 1, "userLimitStrategy": "reject",
+            "clients": [_dict_client(acct)],
+        }
+        inb = panel.add_inbound("test-ssh-2", ports["udp"], "ssh", settings)
+        return Inbound(
+            protocol="ssh", inbound_id=inb["id"], udp_port=ports["udp"],
+            tcp_port=0, accounts={"A": acct}, user_limit=1)
     raise ValueError(proto)
 
 
@@ -347,12 +374,13 @@ class Inbound:
         """Tunnel IP for account A/B on this inbound. With user_limit K>1 each
         account owns an aligned K-block: host base = (index+1)*K, device d = base+d
         (mirrors Go vpnAccountDeviceIP). K==1 keeps the legacy 2+index host."""
-        if self.protocol == "mtproto":
-            # MTProto is a relay: the panel assigns no address, and the client keeps
-            # its own IP. Returning a plausible-looking 10.x here would be a lie the
-            # routing/dns-leak checks would then act on, so fail loudly instead.
+        if self.protocol in ("mtproto", "ssh"):
+            # Relays: the panel assigns no tunnel address (mtproto keeps the client's own
+            # IP; ssh routes per-client by the socks username=email, not a source IP).
+            # Returning a plausible-looking 10.x here would be a lie the routing/dns-leak
+            # checks would then act on, so fail loudly instead.
             raise AssertionError(
-                "mtproto has no tunnel IP: client_ip() must not be called for it")
+                f"{self.protocol} has no tunnel IP: client_ip() must not be called for it")
         acct = self.accounts[which]
         if self.protocol == "openvpn":
             base = BASE["ovpn-tcp"] if transport == "tcp" else BASE["ovpn-udp"]
@@ -702,6 +730,35 @@ def run(panel: Panel, server_ip: str, cfg: dict, result: JobResult,
 
     log(f"-> mtproto-inbound [{mts.status.value}] {mts.detail}")
 
+    # ---- SSH inbound ----------------------------------------------------
+    # In-binary Go x/crypto/ssh RELAY (protocol id `ssh`). Like mtproto it is a relay:
+    # NO tunnel, NO 10.x block, NO BASE entry and NO RADIUS. Per-client routing is by the
+    # account EMAIL presented as the Xray socks username (below, ssh joins the email->
+    # outbound rules), so account A egresses freedom and B is blackholed even though
+    # neither owns a source IP. User Limit K + strategy are INBOUND-level (in sshSettings),
+    # like wg-c/mtproto. The server auto-mints + persists the ed25519 host key.
+    log("-> creating ssh inbound (in-binary SSH server, 2 accounts, user-limit 2)...")
+    shs = phase.add(SubTest("ssh-inbound"))
+    try:
+        settings = {
+            "userLimit": SSH_USER_LIMIT, "userLimitStrategy": "reject",
+            "clients": [_dict_client(_acct("ssh", 0)),
+                        _dict_client(_acct("ssh", 1))],
+        }
+        inb = panel.add_inbound("test-ssh", SSH_PORT, "ssh", settings)
+        iid = inb["id"]
+        sc.inbounds["ssh"] = Inbound(
+            protocol="ssh", inbound_id=iid, udp_port=SSH_PORT, tcp_port=0,
+            accounts={"A": _acct("ssh", 0), "B": _acct("ssh", 1)},
+            user_limit=SSH_USER_LIMIT)
+        shs.status = Status.PASS
+        shs.detail = f"inbound {iid}, tcp {SSH_PORT} (SSH relay), 2 accounts, K={SSH_USER_LIMIT}"
+    except Exception as e:  # noqa: BLE001
+        shs.status = Status.ERROR
+        shs.detail = str(e)[:300]
+
+    log(f"-> ssh-inbound [{shs.status.value}] {shs.detail}")
+
     # ---- source-IP routing rules (built-in outbounds, no external link) ----
     # Prove Xray routes by source IP using the two outbounds every config already
     # ships: `direct` (freedom) and `blocked` (blackhole). Author by email (the
@@ -721,6 +778,10 @@ def run(panel: Panel, server_ip: str, cfg: dict, result: JobResult,
         # panel can only translate an email whose account owns a tunnel IP. MTProto
         # assigns none (it is a relay), so its emails would stay as un-matchable
         # `user` rules: routing for it is per-INBOUND, via its socks inbound's tag.
+        # SSH is a relay too but is deliberately KEPT: its per-client egress IS the socks
+        # username (= email), so the untranslated `user` rule matches the SSH socks account
+        # directly (A->freedom, B->blackhole), which is exactly the per-client routing the
+        # ssh phase asserts. So ssh joins these rules while mtproto does not.
         _routable = [ib for p, ib in sc.inbounds.items() if p != "mtproto"]
         a_emails = [ib.accounts["A"].email for ib in _routable]
         b_emails = [ib.accounts["B"].email for ib in _routable]
@@ -747,8 +808,11 @@ def run(panel: Panel, server_ip: str, cfg: dict, result: JobResult,
     try:
         want_ips = set()
         for ib in sc.inbounds.values():
-            if ib.protocol == "mtproto":
-                continue  # no tunnel IP to translate: excluded from these rules above
+            if ib.protocol in ("mtproto", "ssh"):
+                # Relays own no tunnel IP: mtproto is excluded from the rules entirely,
+                # and ssh matches by an untranslated socks-username `user` rule (not a
+                # `source` one), so neither contributes a source-IP to assert here.
+                continue
             if ib.protocol == "openvpn":
                 want_ips.add(ib.client_ip("B", "udp"))
                 want_ips.add(ib.client_ip("B", "tcp"))
@@ -809,7 +873,7 @@ def run(panel: Panel, server_ip: str, cfg: dict, result: JobResult,
     # succeeded would still be declared a total failure and throw the good inbound
     # away. ("wg-c" was missing until now: mtproto would have hit the same trap.)
     if all(p not in sc.inbounds for p in ("openvpn", "l2tp", "pptp", "openconnect",
-                                          "sstp", "ikev2", "wg-c", "mtproto")):
+                                          "sstp", "ikev2", "wg-c", "mtproto", "ssh")):
         return None
     return sc
 

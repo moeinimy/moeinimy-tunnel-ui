@@ -45,7 +45,8 @@ const AccountExport = {
         const proto = (dbInbound.protocol || '').toLowerCase();
         const vpnUserPass = (proto === Protocols.L2TP || proto === Protocols.PPTP
           || proto === Protocols.OPENVPN || proto === Protocols.OPENCONNECT
-          || proto === Protocols.SSTP || proto === Protocols.IKEV2);
+          || proto === Protocols.SSTP || proto === Protocols.IKEV2
+          || proto === Protocols.SSH);
         const isWgc = (proto === Protocols.WGC);
         const isMtproto = (proto === Protocols.MTPROTO);
         // MTProto has no username (identity = email, the wg-c model) and no UUID; its

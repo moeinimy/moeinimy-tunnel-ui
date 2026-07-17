@@ -78,6 +78,15 @@ global.SizeFormatter = {
   sizeFormat: (b) => (b >= 1048576 ? (b / 1048576).toFixed(1) + " MB" : b + " B"),
 };
 global.IntlUtil = { formatDate: (ms) => new Date(ms).toISOString().slice(0, 10) };
+// export.js compares the inbound protocol against the Protocols enum (a browser global
+// defined in model/inbound.js). buildCards runs in this Node context, so stub it here
+// alongside the other browser globals, or every account is skipped with
+// "Protocols is not defined". Values mirror model.Protocol (lowercase wire strings).
+global.Protocols = {
+  VMESS: 'vmess', VLESS: 'vless', TROJAN: 'trojan', SHADOWSOCKS: 'shadowsocks',
+  L2TP: 'l2tp', PPTP: 'pptp', OPENVPN: 'openvpn', OPENCONNECT: 'openconnect',
+  SSTP: 'sstp', IKEV2: 'ikev2', WGC: 'wg-c', MTPROTO: 'mtproto', SSH: 'ssh',
+};
 
 // ---- load the real export.js and expose AccountExport ------------------
 const src = fs.readFileSync(EXPORT_JS, "utf8");
@@ -94,14 +103,14 @@ function ok(cond, msg) { if (cond) console.log("  ✓ " + msg); else { failures.
 const cards = [
   {
     remark: "xray-inbound", protocol: "VLESS", network: "tcp/TLS",
-    server: "1.2.3.4", port: "443", email: "alice@t", password: "",
+    server: "1.2.3.4", port: "443", email: "alice@t", username: "alice@t", password: "",
     uuid: "11111111-2222-3333-4444-555555555555", psk: "",
     expiry: "2026-08-01", used: "20.0 MB", total: "∞", enable: true,
     link: "vless://11111111-2222-3333-4444-555555555555@1.2.3.4:443?type=tcp#alice",
   },
   {
     remark: "l2tp-inbound", protocol: "L2TP", network: "IPsec/PSK",
-    server: "1.2.3.4", port: "1701", email: "bob@t", password: "s3cret",
+    server: "1.2.3.4", port: "1701", email: "bob@t", username: "bob@t", password: "s3cret",
     uuid: "", psk: "TestPSK-9182",
     expiry: "∞", used: "5.0 MB", total: "1.0 GB", enable: false,
     link: "",

@@ -295,6 +295,44 @@ class Panel:
         })
         return target
 
+    def set_mtproto_adtag(self, inbound_id: int, email: str, tag: str) -> dict:
+        """Set (tag non-empty) or clear (tag "") one mtproto account's Ad Tag via
+        updateClient, exactly as the UI's client modal does.
+
+        The tag MUST be exactly 32 hex chars: telemt rejects any other length
+        ("access.user_ad_tags[..] must be exactly 32 hex characters") and then simply
+        runs without it, which would make an adtag test pass for the wrong reason.
+
+        Turning the FIRST tag on an inbound on/off is not a hot-reloadable change:
+        it flips telemt's use_middle_proxy, which needs a socket re-bind, and telemt's
+        hot-reload path skips those fields with a warning. Callers must restart_core
+        ("mtproto") after this, unlike set_mtproto_modes.
+        """
+        ib = self.get_inbound(inbound_id)
+        settings = json.loads(ib.get("settings") or "{}")
+        target = None
+        for c in settings.get("clients", []):
+            if c.get("email") == email:
+                target = dict(c)
+                break
+        if target is None:
+            raise PanelError(f"client {email} not found on inbound {inbound_id}")
+        target["adtagEnable"] = bool(tag)
+        target["adtag"] = tag
+        client_id = target.get("id", "") or target.get("email", "")
+        self._post(f"/panel/api/inbounds/updateClient/{client_id}", {
+            "id": str(inbound_id),
+            "remark": ib.get("remark", ""),
+            "enable": "true",
+            "listen": ib.get("listen", "") or "",
+            "port": str(ib.get("port", 0)),
+            "protocol": ib.get("protocol", ""),
+            "settings": json.dumps({"clients": [target]}),
+            "streamSettings": "{}",
+            "sniffing": "{}",
+        })
+        return target
+
     def bulk_update_clients(self, payload: dict) -> dict:
         """POST the bulk client op (form field data=JSON string, matching the panel
         axios convention). Returns {applied, skipped}."""

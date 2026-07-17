@@ -6,51 +6,32 @@ This repository merges two projects so tunnels can be managed **from the web UI
 instead of SSH**:
 
 - **Base panel:** [vpn-ui](https://github.com/Sir-MmD/vpn-ui) — an enhanced Go
-  fork of [3X-UI](https://github.com/MHSanaei/3x-ui) 2.9.3 (all credit to the
-  upstream authors). Provides the whole panel, Xray/VPN cores, DB, auth, i18n.
+  fork of [3X-UI](https://github.com/MHSanaei/3x-ui) (all credit to the upstream
+  authors). Tracks upstream **v1.7**.
 - **Tunnel backend:** [tunnel-manager](https://github.com/moeinimy/tunnel-manager)
   (`tunnelctl`), vendored under [`tunnel/`](tunnel/) — GRE, Paqet, BackPack,
   GOST, Backhaul, Rathole, FRP, Hysteria tunnels.
 
 ### What's added
-- A **Tunnels** section in the panel (sidebar → *Tunnels*): list, live traffic
-  stats, start/stop/restart, auto-start, create wizard, per-field edit, logs,
-  and one-click network optimization — everything the CLI does, from the browser.
-- A **one-command installer** (`scripts/install.sh`) that sets up the panel and
-  the tunnel backend together.
-- An **Iran-node one-liner** (same installer, `--iran`) so a second server joins
-  and is driven from the foreign panel.
-- **Combined backup/restore** (`tunnelctl backup-full` / `restore-full`) that
-  bundles the panel DB **and** the tunnel config.
+- A **Tunnels** section in the panel: list, live traffic stats, start/stop/restart,
+  auto-start, create wizard, per-field edit, logs, one-click network optimization.
+- **Nodes**: add an Iran server from the panel, get a ready-to-run one-liner, and
+  drive it remotely — the node dials out over HTTPS (DPI-resistant, NAT-friendly)
+  and needs no extra binary.
+- A **one-command installer** (`scripts/install.sh`) for both roles.
+- **Combined backup/restore** (`tunnelctl backup-full` / `restore-full`).
 
-### Install
+### 3x-ui backup compatibility
+Tunnel operations **never touch the panel database** — tunnel config lives in
+`/etc/tunnel-manager`. A **stock 3x-ui / vpn-ui `.db` backup restores here
+unchanged**, and `restore-full` auto-detects a raw DB vs. a combined archive.
 
-**Foreign server** (control panel + tunnel backend), one command:
-
+Install:
 ```bash
 bash <(curl -fsSL https://raw.githubusercontent.com/moeinimy/moeinimy-tunnel-ui/main/scripts/install.sh)
 ```
 
-Then open the panel, go to **Tunnels → Nodes → Add Node**, optionally configure the
-tunnel you want, and the panel hands you a one-liner for the Iran server.
-
-**Iran server** — just run the one-liner the panel shows (nothing to set up first):
-
-```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/moeinimy/moeinimy-tunnel-ui/main/scripts/install.sh) \
-     --iran --panel https://PANEL_HOST:PORT/PATH --token NODE_TOKEN
-```
-
-The node dials out to the panel over HTTPS (works behind NAT, DPI-resistant) and the
-tunnel comes up automatically — no further SSH on the Iran box.
-
-### 3x-ui backup compatibility
-Tunnel operations **never touch the panel database** — tunnel config lives in
-`/etc/tunnel-manager`. So a **stock 3x-ui / vpn-ui `.db` backup restores here
-unchanged**, and `restore-full` auto-detects a raw DB vs. a combined archive.
-
-See **[INTEGRATION.md](INTEGRATION.md)** for architecture, the API surface, build
-instructions, and the roadmap.
+See **[INTEGRATION.md](INTEGRATION.md)** for architecture and the API surface.
 
 ---
 
@@ -73,6 +54,7 @@ The panel below is an enhanced version of the **[3X-UI](https://github.com/MHSan
 - IKEv2
 - WireGuard (C)
 - MTProto Proxy (Telegram)
+- SSH
 
 ## New Features
 
@@ -136,6 +118,7 @@ sudo /opt/vpn-ui/vpn-ui-amd64 --uninstall
 flowchart TB
   Client["VPN Client<br/>(L2TP/IPsec · PPTP · OpenVPN · OpenConnect · SSTP · IKEv2 · WireGuard (C))"]
   TGC["Telegram Client<br/>(MTProto Proxy)"]
+  SSHC["SSH Client<br/>(ssh -D dynamic SOCKS · badvpn-udpgw for UDP)"]
 
   subgraph PANEL["vpn-ui panel — root process"]
     PROC["procmgr<br/>supervises the daemons"]
@@ -143,6 +126,7 @@ flowchart TB
     HOOK["OpenVPN hooks<br/>auth / connect / disconnect / evict"]
     CONF["writes Xray config:<br/>dokodemo-door inbound +<br/>per-account source-IP routing"]
     STAT["reads Xray stats (gRPC)<br/>enforces traffic / device limits"]
+    SSHSRV["in-binary SSH gateway (x/crypto/ssh)<br/>no daemon, no bundle: direct-tcpip + udpgw"]
   end
 
   subgraph DAEMON["Bundled VPN daemons (panel children)"]
@@ -158,7 +142,7 @@ flowchart TB
 
   subgraph XRAY["Xray-core (bundled, panel-managed)"]
     DOKO["dokodemo-door inbound<br/>sockopt tproxy, mark 255"]
-    SOCKS["socks inbound (loopback)<br/>tag = MTProto inbound<br/>username = account"]
+    SOCKS["socks inbound (loopback)<br/>tag = MTProto / SSH inbound<br/>username = account"]
     ROUTE{"routing:<br/>match source IP → account<br/>or socks username → account"}
     OUT["outbound<br/>freedom / proxy / WARP"]
   end
@@ -169,6 +153,7 @@ flowchart TB
   Client -->|"tunnel + credentials"| D
   Client -.->|"WireGuard (C): in-kernel wgc, no daemon"| IFACE
   TGC -->|"obfuscated2 / dd / FakeTLS secret"| MT
+  SSHC -->|"username + password (checked in-process, no RADIUS)"| SSHSRV
   D -.->|"MS-CHAPv2 Access-Request"| RAD
   RAD -.->|"Accept + pool IP"| D
   D -.->|"user-pass / client-connect"| HOOK
@@ -182,11 +167,13 @@ flowchart TB
   IFACE --> NFT --> RULE --> DOKO
   DOKO --> ROUTE --> OUT --> NET
   MT -->|"relayed TCP, socks user = account"| SOCKS
+  SSHSRV -->|"direct-tcpip → socks CONNECT · udpgw → socks UDP ASSOCIATE<br/>socks user = account"| SOCKS
   SOCKS --> ROUTE
 
   %% accounting + return
   OUT -.->|"per-account counters"| STAT
   MT -.->|"per-account octets (Prometheus scrape)"| STAT
+  SSHSRV -.->|"per-account octets (in-process counters)"| STAT
   STAT -.->|"disconnect over-limit"| RAD
   NET -.->|"replies (symmetric path back)"| OUT
 ```
@@ -269,6 +256,10 @@ A complete **E2E** test written in Python has been designed for this project ins
 | `mtproto-secure` | same, "dd" random-padding secret |
 | `mtproto-tls` | same + FakeTLS ServerHello HMAC verified, "ee" secret |
 | `mtproto-toggle` | editing an account's modes takes effect on the RUNNING daemon (no restart) |
+| `mtproto-termination` | quota auto-disables the account AND the proxy stops relaying for it |
+| `mtproto-adtag` | an ad tag forces middle-proxy egress and drops the inbound's Xray routing, and clearing it restores both |
+| `ssh` | connect + checks + routing + user-limit + both strategies + per-account usage/termination (SSH relay, in-binary Go gateway) |
+| `ssh-udp` | UDP through the relay: udpgw terminated in-process and bridged to Xray via SOCKS5 UDP ASSOCIATE, plus accounting |
 | `bulk-ops` | bulk client add/sub/enable/disable + TXT/PDF export via API |
 | `backup-restore` | DB export + import round-trip |
 | `warp-socks` | Cloudflare warp-cli SOCKS install + egress |

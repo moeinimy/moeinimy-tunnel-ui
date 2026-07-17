@@ -26,6 +26,7 @@ type XrayTrafficJob struct {
 	ikev2Service    service.Ikev2Service
 	wgcService      service.WgcService
 	mtprotoService  service.MtprotoService
+	sshService      service.SshService
 	nftService      service.NftService
 	radiusService   *service.RadiusService
 	sweeper         *rbridge.Sweeper
@@ -87,6 +88,14 @@ func (j *XrayTrafficJob) Run() {
 	if err := j.wgcService.GenerateAllConfigs(); err != nil {
 		logger.Debug("wgc: peer reconcile failed:", err)
 	}
+	// IKEv2 psk/eap-tls: same hard-enforcement contract, for the same reason. Those two
+	// modes authenticate locally at charon (no RADIUS round-trip that could re-check the
+	// account), so the sweep below only terminates the SA and the client re-dials into the
+	// next tick's gap -- disabled, but still browsing. This drops the disabled account's
+	// swanctl connection so the eviction sticks, and restores it within a tick when the
+	// account comes back. Cheap in the steady state: it reloads only when the admissible
+	// set changed. eap-mschapv2 is untouched (its RADIUS re-auth already enforces).
+	j.ikev2Service.ReconcileDisabled()
 
 	if j.sweeper != nil {
 		j.sweeper.Tick()
@@ -110,6 +119,11 @@ func (j *XrayTrafficJob) Run() {
 	// returns nil), leaving mtproto accounts permanently online and billing zero.
 	clientTraffics = append(clientTraffics, j.mtprotoService.CollectTraffic()...)
 
+	// SSH bills from the in-process byte counters its gateway keeps on every io.Copy
+	// (TCP and the UDP bridge alike). Like mtproto it is a relay with no per-client IP,
+	// so it does not and cannot use the nft per-IP path above.
+	clientTraffics = append(clientTraffics, j.sshService.CollectTraffic()...)
+
 	// Level-triggered enforcement: disconnect any STILL-connected client that is no
 	// longer allowed (quota/expiry hit, or disabled in settings). The edge-triggered
 	// DisableClients calls below only fire on the exact tick a quota is first crossed;
@@ -128,6 +142,9 @@ func (j *XrayTrafficJob) Run() {
 	// watcher applies it and cancels the disabled accounts' live sessions itself, so
 	// there is no separate kill path and no daemon restart.
 	j.mtprotoService.KillDisabledSessions()
+	// SSH: close the live sessions of any disabled account and trim every account to
+	// its User Limit. The server owns every net.Conn, so this is an in-process close.
+	j.sshService.KillDisabledSessions()
 
 	// Skip DB update if no traffic to process
 	if len(traffics) == 0 && len(clientTraffics) == 0 {

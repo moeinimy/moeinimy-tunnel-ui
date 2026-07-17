@@ -71,6 +71,9 @@ Tests (ids mirror harness/model.py:ALL_PHASES; always run in this fixed order):
   mtproto-secure    same, "dd" random-padding secret - MTProto Proxy (secure)
   mtproto-tls       same + FakeTLS ServerHello HMAC verified, "ee" secret - MTProto Proxy (FakeTLS)
   mtproto-toggle    editing an account's modes takes effect on the RUNNING daemon (no restart)
+  ssh             full tunnel suite MINUS client-to-client + cross-inbound (SSH relay via
+                  ssh -D dynamic SOCKS + badvpn-tun2socks); also selects ssh-udp below
+  ssh-udp         UDP over the badvpn-udpgw path through the SSH tunnel (+notcp DNS + accounting)
   bulk-ops        bulk client add/sub/enable/disable + TXT/PDF export via API
   backup-restore  DB export + import round-trip
   warp-socks      Cloudflare warp-cli SOCKS install + egress

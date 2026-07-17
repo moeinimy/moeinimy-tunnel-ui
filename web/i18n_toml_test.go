@@ -110,6 +110,7 @@ var knownMissing = keySet(
 	"pages.tunnel.update", "pages.tunnel.updateConfirm",
 	"pages.tunnel.updateDone", "pages.tunnel.updateNone",
 	"pages.tunnel.autoGen", "pages.tunnel.mtuHint", "pages.tunnel.node.setupTunnel",
+	"pages.tunnel.addPort",
 	"pages.tunnel.node.title", "pages.tunnel.node.subtitle", "pages.tunnel.node.add",
 	"pages.tunnel.node.name", "pages.tunnel.node.created", "pages.tunnel.node.oneliner",
 	"pages.tunnel.node.onelinerHint", "pages.tunnel.node.online", "pages.tunnel.node.offline",

@@ -1046,6 +1046,7 @@
 "mtuHint" = "1400 suits most links; Paqet defaults to 1350."
 "advanced" = "Advanced fields"
 "advancedHint" = "Protocol-specific settings. Empty secrets are generated automatically."
+"addPort" = "Add port"
 "addField" = "Add field"
 "save" = "Save"
 "noEditable" = "No editable fields."

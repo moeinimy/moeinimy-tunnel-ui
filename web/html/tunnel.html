@@ -278,6 +278,37 @@
             <a-select v-if="f.type === 'select'" v-model="form[f.key]">
               <a-select-option v-for="o in f.options" :key="o" :value="o">[[ o ]]</a-select-option>
             </a-select>
+
+            <!-- Client port map: two numbers per row instead of a "443=443" string -->
+            <template v-else-if="f.type === 'portmap'">
+              <div v-for="(r, i) in rowsFor(f.key)" :key="i" class="portmap-row">
+                <a-input-number v-model="r.listen" :min="1" :max="65535" :style="{ width: '110px' }"></a-input-number>
+                <a-icon type="arrow-right" :style="{ opacity: .5 }"></a-icon>
+                <a-input-number v-model="r.target" :min="1" :max="65535" :style="{ width: '110px' }"></a-input-number>
+                <a-button icon="minus" size="small" @click="rowsFor(f.key).splice(i,1)"></a-button>
+              </div>
+              <a-button type="dashed" size="small" @click="addRow(f.key,'portmap')">
+                <a-icon type="plus"></a-icon>{{ i18n "pages.tunnel.addPort" }}
+              </a-button>
+            </template>
+
+            <!-- Forwards: protocol + two ports per row -->
+            <template v-else-if="f.type === 'forwards'">
+              <div v-for="(r, i) in rowsFor(f.key)" :key="i" class="portmap-row">
+                <a-select v-model="r.proto" :style="{ width: '84px' }">
+                  <a-select-option value="tcp">tcp</a-select-option>
+                  <a-select-option value="udp">udp</a-select-option>
+                </a-select>
+                <a-input-number v-model="r.local" :min="1" :max="65535" :style="{ width: '100px' }"></a-input-number>
+                <a-icon type="arrow-right" :style="{ opacity: .5 }"></a-icon>
+                <a-input-number v-model="r.dest" :min="1" :max="65535" :style="{ width: '100px' }"></a-input-number>
+                <a-button icon="minus" size="small" @click="rowsFor(f.key).splice(i,1)"></a-button>
+              </div>
+              <a-button type="dashed" size="small" @click="addRow(f.key,'forwards')">
+                <a-icon type="plus"></a-icon>{{ i18n "pages.tunnel.addPort" }}
+              </a-button>
+            </template>
+
             <a-input-number v-else-if="f.type === 'number' || f.type === 'port'" v-model="form[f.key]"
               :min="1" :max="f.type === 'port' ? 65535 : 1000000" :style="{ width: '180px' }"></a-input-number>
             <a-input-password v-else-if="f.type === 'password'" v-model="form[f.key]"
@@ -351,6 +382,8 @@
   .tunnel-hero-cmd { display: inline-block; padding: 8px 16px; border-radius: 6px; background: rgba(0,0,0,.06); }
   .tunnel-logs { max-height: 480px; overflow: auto; font-size: 12px; white-space: pre-wrap; word-break: break-all; }
 
+  .portmap-row { display: flex; gap: 8px; align-items: center; margin-bottom: 6px; flex-wrap: wrap; }
+
   /* ---- Mobile optimization ---- */
   @media (max-width: 768px) {
     /* Fixed-width modals would overflow a phone; cap and re-center them. */
@@ -393,6 +426,9 @@
       createLoading: false,
       form: {},
       extraFields: [],
+      // Structured rows for portmap/forwards fields, keyed by field key. Only one
+      // modal is open at a time, so create + node share this and reset on open.
+      rows: {},
       // edit
       editVisible: false,
       editLoading: false,
@@ -484,11 +520,7 @@
         const body = { name: (this.nodeForm.name || '').trim() };
         if (this.nodeSetupEnabled && this.nodeForm.protocol) {
           body.protocol = this.nodeForm.protocol;
-          const fields = {};
-          for (const f of this.nodeVisibleFields) {
-            const v = this.nodeForm[f.key];
-            if (v !== undefined && v !== null && String(v) !== '') fields[f.key] = String(v);
-          }
+          const fields = this.collectFields(this.nodeForm, this.nodeVisibleFields);
           for (const row of this.nodeExtraFields) {
             const k = (row.key || '').trim();
             if (k) fields[k] = (row.value || '').trim();
@@ -564,9 +596,58 @@
       // Vue 2 can't see properties added to an object after creation, so every
       // schema key must go through $set to stay reactive.
       applySchemaDefaults(target, proto, role) {
+        this.rows = {};
         for (const f of this.fieldsFor(proto, role)) {
           this.$set(target, f.key, f.default || '');
+          if (f.type === 'portmap' || f.type === 'forwards') {
+            this.$set(this.rows, f.key, this.parseRows(f.default, f.type));
+          }
         }
+      },
+      // ---- portmap / forwards rows ----
+      // The backend stores these as compact strings ("443=443", "tcp:443:443");
+      // the UI edits them as rows of numbers so nobody has to remember the syntax.
+      rowsFor(key) {
+        if (!this.rows[key]) this.$set(this.rows, key, []);
+        return this.rows[key];
+      },
+      addRow(key, type) {
+        this.rowsFor(key).push(type === 'forwards'
+          ? { proto: 'tcp', local: 443, dest: 443 }
+          : { listen: 443, target: 443 });
+      },
+      parseRows(val, type) {
+        return (val || '').split(';').filter(Boolean).map(x => {
+          if (type === 'forwards') {
+            const [p, l, d] = x.split(':');
+            return { proto: p || 'tcp', local: Number(l) || 443, dest: Number(d) || Number(l) || 443 };
+          }
+          const [l, t] = x.split('=');
+          return { listen: Number(l) || 443, target: Number(t) || Number(l) || 443 };
+        });
+      },
+      serializeRows(key, type) {
+        const rows = this.rows[key] || [];
+        if (type === 'forwards') {
+          return rows.filter(r => r.local).map(r => (r.proto || 'tcp') + ':' + r.local + ':' + (r.dest || r.local)).join(';');
+        }
+        return rows.filter(r => r.listen).map(r => r.listen + '=' + (r.target || r.listen)).join(';');
+      },
+      // Collect a schema-driven form into the KEY=VALUE map tunnelctl expects.
+      collectFields(src, fields) {
+        const out = {};
+        for (const f of fields) {
+          let v;
+          if (f.type === 'portmap' || f.type === 'forwards') {
+            v = this.serializeRows(f.key, f.type);
+          } else {
+            v = src[f.key];
+          }
+          // Empty => omit, so the backend's <p>_prepare applies its own default
+          // (and auto-generates secrets) rather than us forcing a blank.
+          if (v !== undefined && v !== null && String(v) !== '') out[f.key] = String(v);
+        }
+        return out;
       },
       openCreate() {
         this.form = { NAME: '', PROTOCOL: this.protocols[0] || '', ROLE: 'foreign', REMOTE_IP: '', MTU: 1400 };
@@ -593,12 +674,7 @@
           REMOTE_IP: (this.form.REMOTE_IP || '').trim(),
           MTU: String(this.form.MTU || 1400),
         };
-        // Protocol-specific fields from the schema. Empty values are omitted so
-        // the backend's <p>_prepare fills its own default (and generates secrets).
-        for (const f of this.visibleFields) {
-          const v = this.form[f.key];
-          if (v !== undefined && v !== null && String(v) !== '') fields[f.key] = String(v);
-        }
+        Object.assign(fields, this.collectFields(this.form, this.visibleFields));
         for (const row of this.extraFields) {
           const k = (row.key || '').trim();
           if (k) fields[k] = (row.value || '').trim();

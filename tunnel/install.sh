@@ -80,7 +80,10 @@ ln -sf "$INSTALL_DIR/tunnelctl" "$BIN_LINK"
 # extraction dir and break on the next restart.
 TM_HOME="$INSTALL_DIR"; export TM_HOME
 unset TM_BIN_DIR
-for _lib in lib/common.sh lib/validate.sh lib/config.sh lib/ipam.sh \
+# lib/ui.sh is needed even though the installer prints no menus: optimize_apply
+# (run below) calls ui_title/ui_kv, which otherwise fail with
+# "ui_title: command not found" mid-install.
+for _lib in lib/common.sh lib/validate.sh lib/ui.sh lib/config.sh lib/ipam.sh \
             lib/systemd.sh drivers/driver.sh drivers/gre.sh drivers/paqet.sh \
             drivers/backhaul.sh drivers/backpack.sh drivers/rathole.sh drivers/gost.sh drivers/frp.sh drivers/hysteria.sh \
             modules/peer.sh; do

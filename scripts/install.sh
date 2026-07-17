@@ -122,9 +122,17 @@ if [[ "$ROLE" == "iran" ]]; then
             /etc/systemd/system/tm-node-agent.service
         systemctl daemon-reload
         if [[ -n "$PANEL_URL" && -n "$NODE_TOKEN" ]]; then
-            systemctl enable --now tm-node-agent.service \
-                && echo "==> Node agent started — connecting to the panel." \
-                || echo "warning: could not start tm-node-agent (check: journalctl -u tm-node-agent -e)" >&2
+            # enable --now is a NO-OP when the agent is already running, so a
+            # re-install would leave the old process alive holding the PREVIOUS
+            # token — which the panel has since deleted. It then 404s forever while
+            # systemd still reports "active". Always restart so the token we just
+            # wrote is the one actually in use.
+            systemctl enable tm-node-agent.service >/dev/null 2>&1 || true
+            if systemctl restart tm-node-agent.service; then
+                echo "==> Node agent (re)started — connecting to the panel."
+            else
+                echo "warning: could not start tm-node-agent (check: journalctl -u tm-node-agent -e)" >&2
+            fi
         fi
     fi
 

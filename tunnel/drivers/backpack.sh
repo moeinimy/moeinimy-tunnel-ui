@@ -18,6 +18,19 @@
 #           LOCAL_IP BP_PORTS(server; ';'-separated "listen=dest") BP_MUX(flag)
 #           BP_EDGE(client ws only; CDN edge IP, optional)
 
+# --- Throughput tuning for long, lossy links (override in settings.conf) -----
+# These matter far more than they look. smux gives every multiplexed stream a
+# receive window (mux_streambuffer); a stream can never exceed window / RTT. The
+# upstream default of 64 KiB caps ONE stream at 64K/0.09s ~= 5.8 Mbit on a 90 ms
+# Iran<->EU path, no matter how much bandwidth exists. Size the window from the
+# bandwidth-delay product instead: 2 MiB / 0.09 s ~= 186 Mbit per stream.
+# A bigger connection_pool also helps on a lossy path — each TCP connection backs
+# off independently, so spreading traffic over more of them keeps the aggregate
+# up (measured here: 5 Mbit on one stream vs 32 Mbit over eight).
+: "${TM_BP_POOL:=16}"                  # parallel tunnel connections
+: "${TM_BP_STREAM_BUF:=2097152}"       # 2 MiB per-stream window
+: "${TM_BP_RECV_BUF:=8388608}"         # 8 MiB per-connection window
+
 : "${BACKPACK_REPO:=AminMGMT/BackPack}"
 : "${BACKPACK_DEFAULT_VERSION:=v1.3.0}"
 : "${TM_BACKPACK_DIR:=$TM_CONFIG_DIR/backpack}"
@@ -180,8 +193,8 @@ backpack_generate_config() {
                 printf 'mux_con = %s\n'          "${TUN[BP_MUX]:-8}"
                 printf 'mux_version = 2\n'
                 printf 'mux_framesize = 32768\n'
-                printf 'mux_recievebuffer = 4194304\n'
-                printf 'mux_streambuffer = 65536\n'
+                printf 'mux_recievebuffer = %s\n' "$TM_BP_RECV_BUF"
+                printf 'mux_streambuffer = %s\n'  "$TM_BP_STREAM_BUF"
             fi
             printf 'sniffer = false\n'
             printf 'web_port = 0\n'
@@ -200,7 +213,7 @@ backpack_generate_config() {
             printf 'remote_addr = "%s:%s"\n' "${TUN[REMOTE_IP]}" "${TUN[BP_PORT]}"
             printf 'transport = "%s"\n' "$transport"
             printf 'token = "%s"\n' "${TUN[BP_TOKEN]}"
-            printf 'connection_pool = 8\n'
+            printf 'connection_pool = %s\n' "$TM_BP_POOL"
             printf 'aggressive_pool = false\n'
             printf 'nodelay = true\n'
             printf 'keepalive_period = 75\n'
@@ -213,8 +226,8 @@ backpack_generate_config() {
                 printf 'mux_session = 1\n'
                 printf 'mux_version = 2\n'
                 printf 'mux_framesize = 32768\n'
-                printf 'mux_recievebuffer = 4194304\n'
-                printf 'mux_streambuffer = 65536\n'
+                printf 'mux_recievebuffer = %s\n' "$TM_BP_RECV_BUF"
+                printf 'mux_streambuffer = %s\n'  "$TM_BP_STREAM_BUF"
             fi
             printf 'sniffer = false\n'
             printf 'web_port = 0\n'

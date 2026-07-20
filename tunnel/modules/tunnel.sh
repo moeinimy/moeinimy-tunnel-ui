@@ -248,7 +248,8 @@ tunnel_start() {
     tunnel_exists "$name" || { log_error "No such tunnel: $name"; return 1; }
     log_info "Starting '$name'…"
     if svc_start "$name"; then
-        state_set "$name" STATUS up STARTED_AT "$(date +%s)" FAIL_COUNT 0
+        # Clear the manual-stop flag: the user wants this one running again.
+        state_set "$name" STATUS up STARTED_AT "$(date +%s)" FAIL_COUNT 0 MANUAL_STOP 0
         log_ok "Tunnel '$name' started."
         tg_notify "🟢 Tunnel <b>$name</b> is UP on $(hostname)"
     else
@@ -264,8 +265,11 @@ tunnel_stop() {
     local name="${1:-}"; [[ -n "$name" ]] || { pick_tunnel name || return 0; }
     tunnel_exists "$name" || { log_error "No such tunnel: $name"; return 1; }
     svc_stop "$name" || true
-    state_set "$name" STATUS down
-    log_ok "Tunnel '$name' stopped."
+    # MANUAL_STOP tells the monitor this is deliberate. Without it the monitor
+    # sees an enabled-but-inactive tunnel, calls it unhealthy, and restarts it on
+    # the next tick — so a stopped tunnel would not stay stopped.
+    state_set "$name" STATUS down MANUAL_STOP 1
+    log_ok "Tunnel '$name' stopped (stays down until you start it)."
     tg_notify "⏹️ Tunnel <b>$name</b> stopped on $(hostname)"
 }
 
@@ -274,7 +278,7 @@ tunnel_restart() {
     local name="${1:-}"; [[ -n "$name" ]] || { pick_tunnel name || return 0; }
     tunnel_exists "$name" || { log_error "No such tunnel: $name"; return 1; }
     if svc_restart "$name"; then
-        state_set "$name" STATUS up
+        state_set "$name" STATUS up MANUAL_STOP 0
         log_ok "Tunnel '$name' restarted."
     else
         state_set "$name" STATUS down
@@ -330,7 +334,7 @@ tunnel_status() {
 
     ui_title "Tunnel: $name"
     local active="down"; svc_is_active "$name" && active="up"
-    ui_kv "Service"    "$(status_dot "$active") $(svc_state "$name")  (autostart: $(svc_is_enabled "$name" && echo yes || echo no))"
+    ui_kv "Service"    "$(status_dot "$active") $(svc_state "$name")  (autostart: $(svc_is_enabled "$name" && echo yes || echo no))$([[ "${ST[MANUAL_STOP]:-0}" == 1 ]] && printf '  [stopped by you — monitor will not restart it]')"
     ui_kv "Protocol"   "${TUN[PROTOCOL]}   role: ${TUN[ROLE]}"
     driver_status
     # Live stats gathered by the monitor.

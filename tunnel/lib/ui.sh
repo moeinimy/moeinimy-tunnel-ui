@@ -2,17 +2,40 @@
 # lib/ui.sh — terminal UI helpers: banners, boxes, prompts with validation.
 
 # ui_banner — colorful program header (name + version).
+# The protocol line and count are derived from TM_SUPPORTED_PROTOCOLS so they can
+# never drift out of date when a driver is added or removed.
 ui_banner() {
     local ver; ver="$(cat "$TM_HOME/VERSION" 2>/dev/null | tr -d '[:space:]')"
+    local -a names=()
+    local p
+    for p in "${TM_SUPPORTED_PROTOCOLS[@]}"; do
+        case "$p" in
+            gre)      names+=("GRE") ;;
+            paqet)    names+=("Paqet") ;;
+            backhaul) names+=("Backhaul") ;;
+            backpack) names+=("BackPack") ;;
+            rathole)  names+=("Rathole") ;;
+            gost)     names+=("GOST") ;;
+            frp)      names+=("FRP") ;;
+            hysteria) names+=("Hysteria") ;;
+            *)        names+=("${p^}") ;;
+        esac
+    done
+    local count="${#names[@]}"
+    local list; list="$(printf '%s · ' "${names[@]}")"; list="${list% · }"
+
+    # The box holds only the ASCII title, so its alignment is locale-proof; the
+    # protocol list (which uses multi-byte separators) is printed under it, where
+    # no padding maths is needed and it can grow freely.
     printf '%b' "${C_CYAN}${C_BOLD}"
     cat <<'EOF'
   ╔════════════════════════════════════════════════════════╗
   ║          m o e i n i m y   tunnel manager              ║
-  ║   GRE · Paqet · Backhaul · Rathole · GOST · FRP        ║
   ╚════════════════════════════════════════════════════════╝
 EOF
     printf '%b' "$C_RESET"
-    printf '  %sv%s · 6 protocols · Iran ↔ foreign%s\n' "$C_DIM" "${ver:-?}" "$C_RESET"
+    printf '  %s%s%s\n' "$C_CYAN" "$list" "$C_RESET"
+    printf '  %sv%s · %s protocols · Iran ↔ foreign%s\n' "$C_DIM" "${ver:-?}" "$count" "$C_RESET"
 }
 
 # ui_title TEXT — section header line.

@@ -14,6 +14,13 @@
 # TUN keys: BH_ROLE(server|client) BH_TRANSPORT BH_PORT BH_TOKEN REMOTE_IP
 #           LOCAL_IP BH_PORTS(server; ';'-separated "listen=dest") BH_MUX
 
+# Same bandwidth-delay-product sizing as the BackPack driver: smux caps a stream
+# at window/RTT, and the upstream 64 KiB default means ~5.8 Mbit per stream on a
+# 90 ms path no matter how much bandwidth exists. Override in settings.conf.
+: "${TM_BH_POOL:=16}"
+: "${TM_BH_STREAM_BUF:=2097152}"       # 2 MiB per-stream window
+: "${TM_BH_RECV_BUF:=8388608}"         # 8 MiB per-connection window
+
 : "${BACKHAUL_REPO:=Musixal/Backhaul}"
 : "${BACKHAUL_DEFAULT_VERSION:=v0.7.2}"
 
@@ -122,7 +129,11 @@ backhaul_generate_config() {
             printf 'nodelay = true\n'
             printf 'heartbeat = 40\n'
             printf 'channel_size = 2048\n'
-            [[ -n "${TUN[BH_MUX]:-}" ]] && printf 'mux_con = %s\n' "${TUN[BH_MUX]}"
+            if [[ -n "${TUN[BH_MUX]:-}" ]]; then
+                printf 'mux_con = %s\n'           "${TUN[BH_MUX]}"
+                printf 'mux_recievebuffer = %s\n' "$TM_BH_RECV_BUF"
+                printf 'mux_streambuffer = %s\n'  "$TM_BH_STREAM_BUF"
+            fi
             printf 'sniffer = false\n'
             printf 'web_port = 0\n'
             printf 'log_level = "info"\n'
@@ -140,13 +151,17 @@ backhaul_generate_config() {
             printf 'remote_addr = "%s:%s"\n' "${TUN[REMOTE_IP]}" "${TUN[BH_PORT]}"
             printf 'transport = "%s"\n' "${TUN[BH_TRANSPORT]}"
             printf 'token = "%s"\n' "${TUN[BH_TOKEN]}"
-            printf 'connection_pool = 8\n'
+            printf 'connection_pool = %s\n' "$TM_BH_POOL"
             printf 'aggressive_pool = false\n'
             printf 'keepalive_period = 75\n'
             printf 'nodelay = true\n'
             printf 'retry_interval = 3\n'
             printf 'dial_timeout = 10\n'
-            [[ -n "${TUN[BH_MUX]:-}" ]] && printf 'mux_version = 1\n'
+            if [[ -n "${TUN[BH_MUX]:-}" ]]; then
+                printf 'mux_version = 1\n'
+                printf 'mux_recievebuffer = %s\n' "$TM_BH_RECV_BUF"
+                printf 'mux_streambuffer = %s\n'  "$TM_BH_STREAM_BUF"
+            fi
             printf 'sniffer = false\n'
             printf 'web_port = 0\n'
             printf 'log_level = "info"\n'

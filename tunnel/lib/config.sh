@@ -75,31 +75,33 @@ tget() { local k="$1"; printf '%s' "${TUN[$k]:-${2:-}}"; }
 # returns 1 if any conflict is found. The candidate NAME is skipped (for edit).
 profile_conflicts() {
     local cand="$1" proto="$2" local_ip="$3" remote_ip="$4" port="$5" gkey="$6"
-    local other bad=0 k
-    # load_tunnel below overwrites the global TUN, which still holds the profile
-    # the caller is about to save. Snapshot and restore it, or a create/edit that
-    # scans past an existing tunnel would write THAT profile back out under the
-    # wrong name.
-    local -A _saved=(); for k in "${!TUN[@]}"; do _saved["$k"]="${TUN[$k]}"; done
-    while read -r other; do
-        [[ -z "$other" || "$other" == "$cand" ]] && continue
-        load_tunnel "$other" || continue
-        # Same GRE endpoint pair with same key = duplicate tunnel.
-        if [[ "$proto" == gre && "${TUN[PROTOCOL]}" == gre ]]; then
-            if [[ "${TUN[LOCAL_IP]}" == "$local_ip" && "${TUN[REMOTE_IP]}" == "$remote_ip" \
-                  && "${TUN[GRE_KEY]:-}" == "$gkey" ]]; then
-                log_error "conflict: GRE endpoint $local_ip->$remote_ip key='$gkey' already used by '$other'"
-                bad=1
+    # The scan runs in a SUBSHELL: load_tunnel() clobbers the global TUN array,
+    # and the caller (tunnel_add) still needs TUN holding the in-progress profile
+    # for the save_tunnel that follows. A subshell keeps that clobbering local, so
+    # the fix can't corrupt the new tunnel. log_error still reaches the terminal
+    # and log file from here; only the array state is isolated. (Without this,
+    # adding a SECOND tunnel silently saved under the wrong name.)
+    (
+        local other bad=0
+        while read -r other; do
+            [[ -z "$other" || "$other" == "$cand" ]] && continue
+            load_tunnel "$other" || continue
+            # Same GRE endpoint pair with same key = duplicate tunnel.
+            if [[ "$proto" == gre && "${TUN[PROTOCOL]}" == gre ]]; then
+                if [[ "${TUN[LOCAL_IP]}" == "$local_ip" && "${TUN[REMOTE_IP]}" == "$remote_ip" \
+                      && "${TUN[GRE_KEY]:-}" == "$gkey" ]]; then
+                    log_error "conflict: GRE endpoint $local_ip->$remote_ip key='$gkey' already used by '$other'"
+                    bad=1
+                fi
             fi
-        fi
-        # Same Paqet listen port on this host = collision.
-        if [[ "$proto" == paqet && "${TUN[PROTOCOL]}" == paqet && -n "$port" ]]; then
-            if [[ "${TUN[PAQET_PORT]:-}" == "$port" ]]; then
-                log_error "conflict: Paqet port $port already used by '$other'"
-                bad=1
+            # Same Paqet listen port on this host = collision.
+            if [[ "$proto" == paqet && "${TUN[PROTOCOL]}" == paqet && -n "$port" ]]; then
+                if [[ "${TUN[PAQET_PORT]:-}" == "$port" ]]; then
+                    log_error "conflict: Paqet port $port already used by '$other'"
+                    bad=1
+                fi
             fi
-        fi
-    done < <(list_tunnels)
-    TUN=(); for k in "${!_saved[@]}"; do TUN["$k"]="${_saved[$k]}"; done
-    return "$bad"
+        done < <(list_tunnels)
+        exit "$bad"
+    )
 }

@@ -15,11 +15,44 @@ gre_ifname() { printf 'tm%s' "$1" | tr -cd 'a-z0-9' | cut -c1-15; }
 # ---------------------------------------------------------------------------
 # Interactive wizard (protocol-specific part of "add")
 # ---------------------------------------------------------------------------
+# gre_detect_path_mtu REMOTE — largest packet that reaches REMOTE unfragmented,
+# found by binary search with the Don't-Fragment bit set. Prints the path MTU, or
+# nothing if ICMP is filtered (then the caller keeps its default).
+# ICMP payload + 8 (ICMP header) + 20 (IP header) = on-the-wire packet size.
+gre_detect_path_mtu() {
+    local remote="$1" lo=1000 hi=1500 mid best=0
+    # If even a minimum-size DF ping fails, ICMP is filtered — don't guess from it.
+    ping -M do -s $(( lo - 28 )) -c1 -W2 "$remote" >/dev/null 2>&1 || return 1
+    while (( lo <= hi )); do
+        mid=$(( (lo + hi) / 2 ))
+        if ping -M do -s $(( mid - 28 )) -c1 -W2 "$remote" >/dev/null 2>&1; then
+            best="$mid"; lo=$(( mid + 1 ))
+        else
+            hi=$(( mid - 1 ))
+        fi
+    done
+    (( best > 0 )) || return 1
+    printf '%s' "$best"
+}
+
 gre_wizard() {
     local def_local; def_local="$(detect_local_ip)"
     ask_valid TUN[LOCAL_IP]  "This server's public IP" is_ipv4 "$def_local"
     ask_valid TUN[REMOTE_IP] "Peer (remote) public IP"  is_ipv4
-    ask_valid TUN[MTU]       "Tunnel MTU"               is_mtu 1400
+    # Measure the path instead of guessing. Too HIGH an MTU is the worse failure:
+    # if the path silently drops oversized packets (a PMTU black hole, common on
+    # Iran transit where the "fragmentation needed" ICMP is filtered), big packets
+    # vanish and TCP stalls — which looks like wild latency swings rather than a
+    # clean error. Too low merely costs a few percent more packets.
+    local def_mtu=1476 pmtu
+    log_info "Probing path MTU to ${TUN[REMOTE_IP]}…"
+    if pmtu="$(gre_detect_path_mtu "${TUN[REMOTE_IP]}")" && [[ -n "$pmtu" ]]; then
+        def_mtu=$(( pmtu - 24 ))     # GRE header
+        log_ok "Path MTU ${pmtu} → suggested tunnel MTU ${def_mtu}"
+    else
+        log_warn "Could not probe path MTU (ICMP may be filtered) — defaulting to ${def_mtu}."
+    fi
+    ask_valid TUN[MTU]       "Tunnel MTU (path MTU minus 24 for the GRE header)" is_mtu "$def_mtu"
 
     local idx; idx="$(ipam_alloc "${TUN[NAME]}")"
     TUN[IPAM_INDEX]="$idx"

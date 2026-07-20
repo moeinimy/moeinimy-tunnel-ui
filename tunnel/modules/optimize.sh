@@ -30,6 +30,7 @@ net.ipv4.udp_rmem_min
 net.ipv4.udp_wmem_min
 net.core.netdev_max_backlog
 net.core.netdev_budget
+net.core.rps_sock_flow_entries
 net.core.somaxconn
 net.ipv4.tcp_max_syn_backlog
 net.ipv4.tcp_mtu_probing
@@ -71,6 +72,68 @@ _opt_qdisc_ok() {
     return 0
 }
 
+# ---------------------------------------------------------------------------
+# RPS / RFS — spread packet processing across every core.
+#
+# Most VPS NICs expose a SINGLE rx queue, so all softirq packet work lands on one
+# core. On a busy relay that core saturates while the others sit idle, and packets
+# queue behind the CPU rather than behind a qdisc — latency explodes (seen here:
+# one core at 74% softirq + 26% steal = 0% idle, ping 90ms -> 800ms, while the
+# interface backlog stayed at 0). RPS hashes incoming flows across cores in
+# software, which is exactly the fix for a single-queue NIC.
+# ---------------------------------------------------------------------------
+
+# _opt_cpu_mask — hex bitmask with one bit per online CPU.
+_opt_cpu_mask() {
+    local n; n="$(nproc 2>/dev/null || echo 1)"
+    printf '%x' $(( (1 << n) - 1 ))
+}
+
+optimize_rps_apply() {
+    local n mask dev q qcount
+    n="$(nproc 2>/dev/null || echo 1)"
+    if (( n < 2 )); then
+        log_info "Single CPU — RPS not applicable."
+        return 0
+    fi
+    mask="$(_opt_cpu_mask)"
+    # Global flow table for RFS (keeps a flow on the core its socket lives on).
+    sysctl -qw net.core.rps_sock_flow_entries=32768 2>/dev/null || true
+    while read -r dev; do
+        [[ -n "$dev" ]] || continue
+        qcount=0
+        for q in /sys/class/net/"$dev"/queues/rx-*; do [[ -d "$q" ]] && qcount=$((qcount+1)); done
+        (( qcount > 0 )) || continue
+        for q in /sys/class/net/"$dev"/queues/rx-*; do
+            [[ -d "$q" ]] || continue
+            printf '%s' "$mask"              >"$q/rps_cpus"     2>/dev/null || true
+            printf '%s' "$(( 32768 / qcount ))" >"$q/rps_flow_cnt" 2>/dev/null || true
+        done
+        # XPS: pick the transmit queue based on the sending core.
+        for q in /sys/class/net/"$dev"/queues/tx-*; do
+            [[ -d "$q" ]] || continue
+            printf '%s' "$mask" >"$q/xps_cpus" 2>/dev/null || true
+        done
+        log_info "  $dev: RPS/RFS across ${n} cores (mask 0x${mask}, ${qcount} rx queue(s))"
+    done < <(_opt_managed_ifaces)
+}
+
+optimize_rps_revert() {
+    local dev q
+    while read -r dev; do
+        [[ -n "$dev" ]] || continue
+        for q in /sys/class/net/"$dev"/queues/rx-*; do
+            [[ -d "$q" ]] || continue
+            printf '0' >"$q/rps_cpus"     2>/dev/null || true
+            printf '0' >"$q/rps_flow_cnt" 2>/dev/null || true
+        done
+        for q in /sys/class/net/"$dev"/queues/tx-*; do
+            [[ -d "$q" ]] || continue
+            printf '0' >"$q/xps_cpus" 2>/dev/null || true
+        done
+    done < <(_opt_managed_ifaces)
+}
+
 # _opt_best_qdisc — the best AQM available for FORWARDED traffic.
 #
 # Why not plain `fq`: fq is a *pacing* qdisc for locally-generated TCP (it pairs
@@ -80,11 +143,28 @@ _opt_qdisc_ok() {
 # That is textbook bufferbloat: fine while idle, but latency explodes under load
 # (e.g. 120ms → 1800ms with many users). cake and fq_codel run CoDel on every
 # flow, forwarded ones included, keeping queue delay bounded under full load.
+#
+# cake vs fq_codel: cake manages queues better, but costs noticeably more CPU per
+# packet (per-flow hashing + shaping maths). On a CPU-starved forwarder that extra
+# cost lands on the very core that is already saturated and makes latency WORSE.
+# So prefer cake only on boxes with cores to spare (>=4), and fq_codel — which is
+# much cheaper and still proper AQM — on small VPSes. Override with TM_QDISC.
 _opt_best_qdisc() {
     local q
-    for q in cake fq_codel; do
-        _opt_qdisc_ok "$q" && { printf '%s' "$q"; return 0; }
-    done
+    if [[ -n "${TM_QDISC:-}" ]]; then
+        _opt_qdisc_ok "$TM_QDISC" && { printf '%s' "$TM_QDISC"; return 0; }
+        log_warn "TM_QDISC='$TM_QDISC' not usable on this kernel — auto-selecting."
+    fi
+    local cores; cores="$(nproc 2>/dev/null || echo 1)"
+    if (( cores >= 4 )); then
+        for q in cake fq_codel; do
+            _opt_qdisc_ok "$q" && { printf '%s' "$q"; return 0; }
+        done
+    else
+        for q in fq_codel cake; do
+            _opt_qdisc_ok "$q" && { printf '%s' "$q"; return 0; }
+        done
+    fi
     printf 'fq_codel'
 }
 
@@ -267,13 +347,29 @@ EOF
         log_warn "Some sysctl keys were rejected by this kernel (applied the rest)."
     fi
 
+    # Shaping is a HARD CEILING on throughput — worth saying out loud, because it
+    # is easy to set it low while chasing latency and then wonder where the speed
+    # went. Only useful when the bottleneck queue is upstream of this box.
+    if [[ -n "${TM_TUNNEL_SHAPE_MBIT:-}${TM_SHAPE_MBIT:-}" ]]; then
+        log_warn "Shaping is ON — throughput is capped at ${TM_TUNNEL_SHAPE_MBIT:-${TM_SHAPE_MBIT}} mbit."
+        log_warn "  Remove TM_TUNNEL_SHAPE_MBIT / TM_SHAPE_MBIT from $TM_SETTINGS_FILE to uncap."
+    fi
+    if [[ "$cc" == bbr ]]; then
+        log_ok "Congestion control: BBR — the right choice on a lossy path (it does"
+        log_ok "  not treat packet loss as congestion the way CUBIC does)."
+    fi
+
     optimize_nic_apply "$qdisc"
+    # Spread packet processing across cores — on a single-queue NIC this is often
+    # the single biggest latency win, far bigger than any sysctl.
+    optimize_rps_apply
     touch "$TM_OPT_MARKER"
     log_ok "Optimization applied. Reversible with: tunnelctl optimize revert"
 }
 
 optimize_revert() {
     require_root
+    optimize_rps_revert
     optimize_nic_revert
     if [[ ! -f "$TM_OPT_BACKUP" ]]; then
         log_warn "No optimization backup found; nothing to revert."
@@ -305,13 +401,16 @@ optimize_status() {
     ui_kv "rmem_max"   "$(sysctl -n net.core.rmem_max 2>/dev/null)"
     ui_kv "backlog"    "$(sysctl -n net.core.netdev_max_backlog 2>/dev/null)"
     ui_kv "conntrack"  "$(sysctl -n net.netfilter.nf_conntrack_max 2>/dev/null || echo n/a)"
-    [[ -n "${TM_SHAPE_MBIT:-}" ]]        && ui_kv "Shaping (WAN)"    "${TM_SHAPE_MBIT} mbit (cake)"
-    [[ -n "${TM_TUNNEL_SHAPE_MBIT:-}" ]] && ui_kv "Shaping (tunnel)" "${TM_TUNNEL_SHAPE_MBIT} mbit (cake)"
-    # The live per-interface qdisc is what actually controls latency under load.
-    local dev q
+    [[ -n "${TM_SHAPE_MBIT:-}" ]]        && ui_kv "Shaping (WAN)"    "${TM_SHAPE_MBIT} mbit  ⚠ CAPS THROUGHPUT"
+    [[ -n "${TM_TUNNEL_SHAPE_MBIT:-}" ]] && ui_kv "Shaping (tunnel)" "${TM_TUNNEL_SHAPE_MBIT} mbit  ⚠ CAPS THROUGHPUT"
+    [[ -z "${TM_SHAPE_MBIT:-}${TM_TUNNEL_SHAPE_MBIT:-}" ]] && ui_kv "Shaping" "off (uncapped)"
+    ui_kv "CPU cores" "$(nproc 2>/dev/null || echo '?')"
+    # The live per-interface qdisc + RPS mask are what actually control latency.
+    local dev q rps
     while read -r dev; do
         [[ -n "$dev" ]] || continue
         q="$(tc qdisc show dev "$dev" 2>/dev/null | head -1 | awk '{print $2}')"
-        ui_kv "  $dev" "qdisc ${q:-?}   txqueuelen $(cat "/sys/class/net/$dev/tx_queue_len" 2>/dev/null)"
+        rps="$(cat "/sys/class/net/$dev/queues/rx-0/rps_cpus" 2>/dev/null || echo -)"
+        ui_kv "  $dev" "qdisc ${q:-?}   rps 0x${rps}   txqueuelen $(cat "/sys/class/net/$dev/tx_queue_len" 2>/dev/null)"
     done < <(_opt_managed_ifaces)
 }

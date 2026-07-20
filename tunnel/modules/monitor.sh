@@ -71,6 +71,12 @@ monitor_tunnel() {
     monitor_probe_latency "$name"
 
     # --- health & recovery ------------------------------------------------
+    # Never resurrect a tunnel the operator deliberately stopped. `tunnelctl stop`
+    # leaves the unit ENABLED (so it still comes back on boot), so "enabled but
+    # inactive" is not enough to infer intent — MANUAL_STOP carries it explicitly.
+    if [[ "${ST[MANUAL_STOP]:-0}" == 1 && "$active" == no ]]; then
+        ST[STATUS]="down"; state_save "$name"; return 0   # stopped on purpose
+    fi
     if [[ "$enabled" == no && "$active" == no ]]; then
         ST[STATUS]="down"; state_save "$name"; return 0   # intentionally off
     fi
@@ -81,7 +87,9 @@ monitor_tunnel() {
             log_ok "Tunnel '$name' recovered."
             tg_notify "🟢 Tunnel <b>$name</b> recovered on $(hostname)"
         fi
-        ST[STATUS]="up"; ST[FAIL_COUNT]=0; ST[ALERTED]=0
+        # Running again (manual start, or systemd brought the enabled unit up after
+        # a reboot) — drop the manual-stop intent so auto-recovery works from here.
+        ST[STATUS]="up"; ST[FAIL_COUNT]=0; ST[ALERTED]=0; ST[MANUAL_STOP]=0
         [[ -z "${ST[STARTED_AT]:-}" ]] && ST[STARTED_AT]="$now"
         state_save "$name"
         return 0

@@ -71,6 +71,15 @@ func (s *TunnelService) run(args ...string) ([]byte, error) {
 
 // runTimeout is run() with an explicit deadline, for slow commands like update.
 func (s *TunnelService) runTimeout(timeout time.Duration, args ...string) ([]byte, error) {
+	out, _, err := s.runCapture(timeout, args...)
+	return out, err
+}
+
+// runCapture is runTimeout that also hands back stderr on SUCCESS. Only `update`
+// needs it: tunnelctl prints its entire progress log to stderr and nothing to
+// stdout, so a successful update returned an empty string and the UI showed a
+// blank modal — indistinguishable from "the button does nothing".
+func (s *TunnelService) runCapture(timeout time.Duration, args ...string) ([]byte, string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
@@ -93,9 +102,9 @@ func (s *TunnelService) runTimeout(timeout time.Duration, args ...string) ([]byt
 			msg = err.Error()
 		}
 		logger.Warning("tunnelctl ", strings.Join(args, " "), " failed: ", msg)
-		return stdout.Bytes(), errors.New(msg)
+		return stdout.Bytes(), msg, errors.New(msg)
 	}
-	return stdout.Bytes(), nil
+	return stdout.Bytes(), strings.TrimSpace(stderr.String()), nil
 }
 
 // runJSON runs `tunnelctl json <sub> [args]` and returns the raw JSON payload,
@@ -204,12 +213,14 @@ func (s *TunnelService) Create(fields map[string]string) error {
 // the log (tunnelctl reports progress on stderr). Generous timeout: it downloads
 // a tarball and re-installs systemd units.
 func (s *TunnelService) Update() (string, error) {
-	out, err := s.runTimeout(5*time.Minute, "update")
+	out, log, err := s.runCapture(5*time.Minute, "update")
 	if err != nil {
-		// tunnelctl logs progress + failures to stderr, which run() folds into err.
-		return err.Error(), err
+		// tunnelctl logs progress + failures to stderr, which runCapture returns.
+		return log, err
 	}
-	return string(out), nil
+	// stderr carries the progress log, stdout is normally empty — show both so a
+	// successful update is visibly distinguishable from a no-op.
+	return strings.TrimSpace(log + "\n" + string(out)), nil
 }
 
 // Version reports the installed tunnel backend version.

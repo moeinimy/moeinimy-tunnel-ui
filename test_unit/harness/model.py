@@ -126,6 +126,7 @@ IKEV2_MODE_PHASES = [PHASE_IKEV2_EAPMSCHAP, PHASE_IKEV2_PSK, PHASE_IKEV2_EAPTLS]
 IKEV2_PHASE_BY_MODE = {"eap-mschapv2": PHASE_IKEV2_EAPMSCHAP,
                        "psk": PHASE_IKEV2_PSK, "eap-tls": PHASE_IKEV2_EAPTLS}
 PHASE_WGC = "wg-c"                        # WireGuard (C) — kernel wireguard via wgctrl
+PHASE_AWG = "awg"                         # AmneziaWG — obfuscated kernel wireguard (same gateway model as wg-c)
 PHASE_MTPROTO = "mtproto"                 # selection alias -> the per-mode phases below
 PHASE_MTPROTO_CLASSIC = "mtproto-classic"
 PHASE_MTPROTO_SECURE = "mtproto-secure"
@@ -178,6 +179,7 @@ ALL_PHASES = [PHASE_CORE, PHASE_SETUP, PHASE_OPENVPN, PHASE_L2TP, PHASE_PPTP,
               PHASE_OPENCONNECT, PHASE_SSTP,
               PHASE_IKEV2_EAPMSCHAP, PHASE_IKEV2_PSK, PHASE_IKEV2_EAPTLS,
               PHASE_WGC,
+              PHASE_AWG,
               PHASE_MTPROTO_CLASSIC, PHASE_MTPROTO_SECURE, PHASE_MTPROTO_TLS,
               PHASE_MTPROTO_TOGGLE, PHASE_MTPROTO_TERMINATION, PHASE_MTPROTO_ADTAG,
               PHASE_SSH, PHASE_SSH_UDP,

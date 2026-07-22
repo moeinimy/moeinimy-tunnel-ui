@@ -16,10 +16,13 @@ const nftConfigFile = "/etc/vpn-ui/vpn.nft"
 
 // vpnAddrSpace is the covering /13 (10.0.0.0-10.7.255.255) for the protocol /16s
 // VPN clients live in (10.0 L2TP, 10.1 PPTP, 10.2/10.3 OpenVPN, 10.4 OpenConnect —
-// see vpnrange.go). Trusting the whole /13 in firewalld + using it as the routing
+// see vpnrange.go). Trusting the whole /12 in firewalld + using it as the routing
 // blackhole backstop covers every current and future auto-expanded /24. It must
 // stay a superset of every protocolBase /16, so widen it when adding protocols.
-const vpnAddrSpace = "10.0.0.0/13"
+// Widened /13 -> /12 for AmneziaWG (base 8 -> 10.8/16): base 7 (wg-c) was the last
+// /16 inside the old /13, so 10.8.x fell outside firewalld trust + the routing
+// blackhole backstop until this widening.
+const vpnAddrSpace = "10.0.0.0/12"
 
 // NftService manages nftables rules for L2TP, PPTP, and OpenVPN traffic accounting, TPROXY, and NAT.
 type NftService struct{}
@@ -146,6 +149,7 @@ func (s *NftService) ApplyNftRules() error {
 	sstp := SstpService{}
 	ikev2 := Ikev2Service{}
 	wg := WgcService{}
+	awg := AwgService{}
 
 	l2tpInbounds, err := l2tp.GetL2tpInbounds()
 	if err != nil {
@@ -175,9 +179,13 @@ func (s *NftService) ApplyNftRules() error {
 	if err != nil {
 		return err
 	}
+	awgInbounds, err := awg.GetAwgInbounds()
+	if err != nil {
+		return err
+	}
 
 	// If no VPN inbounds, remove the table entirely
-	if len(l2tpInbounds) == 0 && len(pptpInbounds) == 0 && len(ovpnInbounds) == 0 && len(ocservInbounds) == 0 && len(sstpInbounds) == 0 && len(ikev2Inbounds) == 0 && len(wgcInbounds) == 0 {
+	if len(l2tpInbounds) == 0 && len(pptpInbounds) == 0 && len(ovpnInbounds) == 0 && len(ocservInbounds) == 0 && len(sstpInbounds) == 0 && len(ikev2Inbounds) == 0 && len(wgcInbounds) == 0 && len(awgInbounds) == 0 {
 		s.runCmd("nft", "delete", "table", "ip", "vpn")
 		os.Remove(nftConfigFile)
 		return nil
@@ -199,6 +207,7 @@ func (s *NftService) ApplyNftRules() error {
 	b.WriteString("add chain ip vpn sstp_acct\n")
 	b.WriteString("add chain ip vpn ikev2_acct\n")
 	b.WriteString("add chain ip vpn wgc_acct\n")
+	b.WriteString("add chain ip vpn awg_acct\n")
 	b.WriteString("add chain ip vpn prerouting { type filter hook prerouting priority mangle; policy accept; }\n")
 	b.WriteString("add chain ip vpn postrouting { type filter hook postrouting priority mangle; policy accept; }\n")
 	b.WriteString("add chain ip vpn input { type filter hook input priority filter; policy accept; }\n")
@@ -216,6 +225,7 @@ func (s *NftService) ApplyNftRules() error {
 	b.WriteString("add rule ip vpn prerouting jump sstp_acct\n")
 	b.WriteString("add rule ip vpn prerouting jump ikev2_acct\n")
 	b.WriteString("add rule ip vpn prerouting jump wgc_acct\n")
+	b.WriteString("add rule ip vpn prerouting jump awg_acct\n")
 	b.WriteString("add rule ip vpn postrouting jump l2tp_acct\n")
 	b.WriteString("add rule ip vpn postrouting jump pptp_acct\n")
 	b.WriteString("add rule ip vpn postrouting jump openvpn_acct\n")
@@ -223,6 +233,7 @@ func (s *NftService) ApplyNftRules() error {
 	b.WriteString("add rule ip vpn postrouting jump sstp_acct\n")
 	b.WriteString("add rule ip vpn postrouting jump ikev2_acct\n")
 	b.WriteString("add rule ip vpn postrouting jump wgc_acct\n")
+	b.WriteString("add rule ip vpn postrouting jump awg_acct\n")
 
 	// --- Cross-inbound pass (mutual opt-in) --------------------------------
 	// Gather every enabled VPN inbound's client subnet(s) plus its Client-to-
@@ -298,6 +309,16 @@ func (s *NftService) ApplyNftRules() error {
 			continue
 		}
 		allNets = append(allNets, vpnNet{subnets: wgcCIDRs(inbound, st), c2c: st.ClientToClient, cross: st.CrossInbound})
+	}
+	for _, inbound := range awgInbounds {
+		if !inbound.Enable {
+			continue
+		}
+		st, err := awg.parseSettings(inbound)
+		if err != nil {
+			continue
+		}
+		allNets = append(allNets, vpnNet{subnets: awgCIDRs(inbound, st), c2c: st.ClientToClient, cross: st.CrossInbound})
 	}
 	writeCrossInboundRules(&b, allNets)
 
@@ -457,6 +478,24 @@ func (s *NftService) ApplyNftRules() error {
 		}
 		port := wg.GetTproxyPort(inbound)
 		srcs := wgcCIDRs(inbound, settings)
+		writeClientToClientRules(&b, srcs, settings.ClientToClient)
+		for _, src := range srcs {
+			b.WriteString(fmt.Sprintf("add rule ip vpn prerouting ip saddr %s meta mark != 0xff ip protocol tcp tproxy to :%d meta mark set mark or 0x1 accept\n", src, port))
+			b.WriteString(fmt.Sprintf("add rule ip vpn prerouting ip saddr %s meta mark != 0xff ip protocol udp tproxy to :%d meta mark set mark or 0x1 accept\n", src, port))
+		}
+	}
+
+	// AmneziaWG TPROXY rules — same single-block model as WireGuard (C), in 10.8.{id}.
+	for _, inbound := range awgInbounds {
+		if !inbound.Enable {
+			continue
+		}
+		settings, err := awg.parseSettings(inbound)
+		if err != nil {
+			continue
+		}
+		port := awg.GetTproxyPort(inbound)
+		srcs := awgCIDRs(inbound, settings)
 		writeClientToClientRules(&b, srcs, settings.ClientToClient)
 		for _, src := range srcs {
 			b.WriteString(fmt.Sprintf("add rule ip vpn prerouting ip saddr %s meta mark != 0xff ip protocol tcp tproxy to :%d meta mark set mark or 0x1 accept\n", src, port))
@@ -775,6 +814,12 @@ func ikev2CIDRs(inbound *model.Inbound, settings *ikev2Settings) []string {
 // wgcCIDRs returns the single block CIDR for a WireGuard (C) inbound (10.7.x).
 func wgcCIDRs(inbound *model.Inbound, settings *wgcSettings) []string {
 	n, p := wgcBlockFor(inbound, settings)
+	return []string{fmt.Sprintf("%s/%d", n.String(), p)}
+}
+
+// awgCIDRs returns the single block CIDR for an AmneziaWG inbound (10.8.x).
+func awgCIDRs(inbound *model.Inbound, settings *awgSettings) []string {
+	n, p := awgBlockFor(inbound, settings)
 	return []string{fmt.Sprintf("%s/%d", n.String(), p)}
 }
 

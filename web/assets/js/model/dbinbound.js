@@ -15,6 +15,17 @@ class DBInbound {
         this.trafficMultiplierEnable = false;
         this.trafficMultiplierAfter = 0;
         this.trafficMultiplier = 1;
+        this.speedLimitEnable = false;
+        this.speedLimitSeparate = false;
+        this.speedLimitDown = 0;
+        this.speedLimitUp = 0;
+        this.speedLimitAfter = 0;
+        // Declared here or they do not exist: cloneProps below skips any key the
+        // destination does not already own, so an undeclared field would be dropped on
+        // every load from the server and posted back as undefined. Defaulted to the
+        // columns' own defaults so an Add form starts on the same values a fresh row gets.
+        this.ipLimit = 0;
+        this.ipLimitStrategy = "reject";
 
         this.listen = "";
         this.port = 0;
@@ -46,6 +57,16 @@ class DBInbound {
 
     set trafficMultiplierAfterGB(gb) {
         this.trafficMultiplierAfter = NumberFormatter.toFixed(gb * SizeFormatter.ONE_GB, 0);
+    }
+
+    // The speed-limit threshold is stored in bytes, like the multiplier's, so the
+    // resolver can compare it to up+down directly. The form binds these GB accessors.
+    get speedLimitAfterGB() {
+        return NumberFormatter.toFixed(this.speedLimitAfter / SizeFormatter.ONE_GB, 2);
+    }
+
+    set speedLimitAfterGB(gb) {
+        this.speedLimitAfter = NumberFormatter.toFixed(gb * SizeFormatter.ONE_GB, 0);
     }
 
     get isVMess() {
@@ -186,6 +207,10 @@ class DBInbound {
                 return true;
             case Protocols.WGC:
                 // WireGuard (C) is account-based (email identity, one keypair per account).
+                return true;
+            case Protocols.AWG:
+                // AmneziaWG is account-based (email identity, one keypair per account),
+                // the same gateway model as WireGuard (C) plus DPI obfuscation.
                 return true;
             case Protocols.MTPROTO:
                 // MTProto Proxy is account-based: one secret per account, many

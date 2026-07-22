@@ -112,11 +112,69 @@ func (o *wgcSettings) mtu() int {
 // Email (no username/password — the public key is the credential). A dedicated struct
 // (like ikev2Client) so the UI's extra string fields don't break json.Unmarshal.
 type wgcClient struct {
-	Email   string `json:"email"`
-	Enable  bool   `json:"enable"`
+	Email   string      `json:"email"`
+	Enable  bool        `json:"enable"`
+	PrivKey string      `json:"privKey"`
+	PubKey  string      `json:"pubKey"`
+	Psk     string      `json:"psk"`
+	Devices []wgcDevice `json:"devices"`
+}
+
+// wgcDevice is ONE device slot of an account: its own keypair (and optional preshared key)
+// and, from its index, its own /32 out of the account's block.
+//
+// WireGuard identifies a peer by its public key and keeps a SINGLE endpoint per peer, so two
+// devices sharing one keypair cannot both be online: whichever handshakes last takes the
+// tunnel and the other goes dark. The protocol also has no address assignment (the client
+// self-assigns from its config's Address line), so one config handed to two devices gives
+// both the same tunnel IP. K devices therefore require K keypairs and K configs - the same
+// model Mullvad/Windscribe use, where the "device limit" is a cap on registered keys.
+type wgcDevice struct {
 	PrivKey string `json:"privKey"`
 	PubKey  string `json:"pubKey"`
 	Psk     string `json:"psk"`
+}
+
+// deviceList returns the account's device slots, seeding device 0 from the legacy
+// single-keypair fields so accounts created before per-device keys keep their working key.
+func (c *wgcClient) deviceList() []wgcDevice {
+	if len(c.Devices) > 0 {
+		return c.Devices
+	}
+	if strings.TrimSpace(c.PubKey) != "" {
+		return []wgcDevice{{PrivKey: c.PrivKey, PubKey: c.PubKey, Psk: c.Psk}}
+	}
+	return nil
+}
+
+// wgcDeviceIPs returns the account's K per-device tunnel IPs in slot order; device d takes
+// the d-th address of the account's block, so the block CIDR still covers every device.
+func (s *WgcService) wgcDeviceIPs(inbound *model.Inbound, settings *wgcSettings, accountIdx int) []string {
+	ranges := settings.effectiveRanges()
+	k := wgcEffectiveK(settings.UserLimit)
+	if k <= 1 {
+		if ip := computeVpnClientIP(ranges, inbound.Id, accountIdx, "wg-c"); ip != nil {
+			return []string{ip.String()}
+		}
+		return nil
+	}
+	base, _ := s.wgcAccountBlock(inbound, settings, accountIdx)
+	if base == "" {
+		return nil
+	}
+	baseIP := net.ParseIP(base).To4()
+	if baseIP == nil {
+		return nil
+	}
+	start, ok := ipToU32(baseIP)
+	if !ok {
+		return nil
+	}
+	out := make([]string, 0, k)
+	for d := 0; d < k; d++ {
+		out = append(out, u32ToIP(start+uint32(d)).String())
+	}
+	return out
 }
 
 // wgIfaceName returns the kernel interface name for an inbound.
@@ -329,32 +387,36 @@ func (s *WgcService) buildPeers(inbound *model.Inbound, settings *wgcSettings, d
 		if client.Email == "" || !client.Enable || disabled[client.Email] {
 			continue
 		}
-		if strings.TrimSpace(client.PubKey) == "" {
-			continue
-		}
-		pub, err := wgtypes.ParseKey(client.PubKey)
-		if err != nil {
-			continue
-		}
-		blockIP, prefix := s.wgcAccountBlock(inbound, settings, i)
-		if blockIP == "" {
-			continue
-		}
-		_, ipNet, err := net.ParseCIDR(fmt.Sprintf("%s/%d", blockIP, prefix))
-		if err != nil {
-			continue
-		}
-		pc := wgtypes.PeerConfig{
-			PublicKey:         pub,
-			ReplaceAllowedIPs: true,
-			AllowedIPs:        []net.IPNet{*ipNet},
-		}
-		if settings.PskEnable && strings.TrimSpace(client.Psk) != "" {
-			if psk, err := wgtypes.ParseKey(client.Psk); err == nil {
-				pc.PresharedKey = &psk
+		ips := s.wgcDeviceIPs(inbound, settings, i)
+		// One peer PER DEVICE, each cryptokey-routed to its own /32 so a device cannot
+		// source another's address and every device is separable on the data plane.
+		for d, dev := range client.deviceList() {
+			if d >= len(ips) {
+				break // more stored keypairs than the current User Limit allows
 			}
+			if strings.TrimSpace(dev.PubKey) == "" {
+				continue
+			}
+			pub, err := wgtypes.ParseKey(dev.PubKey)
+			if err != nil {
+				continue
+			}
+			_, ipNet, err := net.ParseCIDR(ips[d] + "/32")
+			if err != nil {
+				continue
+			}
+			pc := wgtypes.PeerConfig{
+				PublicKey:         pub,
+				ReplaceAllowedIPs: true,
+				AllowedIPs:        []net.IPNet{*ipNet},
+			}
+			if settings.PskEnable && strings.TrimSpace(dev.Psk) != "" {
+				if psk, err := wgtypes.ParseKey(dev.Psk); err == nil {
+					pc.PresharedKey = &psk
+				}
+			}
+			peers = append(peers, pc)
 		}
-		peers = append(peers, pc)
 	}
 	return peers
 }
@@ -595,7 +657,13 @@ func (s *WgcService) RenderClientConfigs(inbound *model.Inbound, email, endpoint
 		targets = append(targets, endpointTarget{host: dest, port: port, remark: strings.TrimSpace(ep.Remark)})
 	}
 	if len(targets) == 0 {
-		targets = append(targets, endpointTarget{host: endpointHost, port: inbound.Port})
+		// Parity with OpenVPN: an explicit non-wildcard Listen address wins over the
+		// panel host, so an operator who pins the inbound to a public IP gets it.
+		host := endpointHost
+		if l := strings.TrimSpace(inbound.Listen); l != "" && l != "0.0.0.0" {
+			host = l
+		}
+		targets = append(targets, endpointTarget{host: host, port: inbound.Port})
 	}
 
 	var out []WgcClientConfig
@@ -603,27 +671,52 @@ func (s *WgcService) RenderClientConfigs(inbound *model.Inbound, email, endpoint
 		if client.Email != email {
 			continue
 		}
-		blockIP, prefix := s.wgcAccountBlock(inbound, settings, i)
-		if blockIP == "" || strings.TrimSpace(client.PrivKey) == "" {
+		ips := s.wgcDeviceIPs(inbound, settings, i)
+		devices := client.deviceList()
+		if len(ips) == 0 || len(devices) == 0 {
 			break
 		}
-		cidr := fmt.Sprintf("%s/%d", blockIP, prefix)
-		for ti, t := range targets {
-			var b strings.Builder
-			b.WriteString("[Interface]\n")
-			b.WriteString("PrivateKey = " + client.PrivKey + "\n")
-			b.WriteString("Address = " + cidr + "\n")
-			b.WriteString("DNS = " + settings.dnsList() + "\n")
-			b.WriteString(fmt.Sprintf("MTU = %d\n", settings.mtu()))
-			b.WriteString("\n[Peer]\n")
-			b.WriteString("PublicKey = " + settings.ServerPubKey + "\n")
-			if settings.PskEnable && strings.TrimSpace(client.Psk) != "" {
-				b.WriteString("PresharedKey = " + client.Psk + "\n")
+		// ONE CONFIG PER DEVICE, each with its own key and /32. Two devices cannot share one
+		// config: they would share a keypair (only one could stay connected) and self-assign
+		// the same Address, since WireGuard has no server-side address assignment.
+		for d, dev := range devices {
+			if d >= len(ips) || strings.TrimSpace(dev.PrivKey) == "" {
+				continue
 			}
-			b.WriteString(fmt.Sprintf("Endpoint = %s:%d\n", t.host, t.port))
-			b.WriteString("AllowedIPs = 0.0.0.0/0\n")
-			b.WriteString("PersistentKeepalive = 25\n")
-			out = append(out, WgcClientConfig{DeviceIndex: ti, IP: cidr, Remark: t.remark, PublicKey: client.PubKey, Config: b.String()})
+			cidr := ips[d] + "/32"
+			for ti, t := range targets {
+				var b strings.Builder
+				b.WriteString("[Interface]\n")
+				b.WriteString("PrivateKey = " + dev.PrivKey + "\n")
+				b.WriteString("Address = " + cidr + "\n")
+				b.WriteString("DNS = " + settings.dnsList() + "\n")
+				b.WriteString(fmt.Sprintf("MTU = %d\n", settings.mtu()))
+				b.WriteString("\n[Peer]\n")
+				b.WriteString("PublicKey = " + settings.ServerPubKey + "\n")
+				if settings.PskEnable && strings.TrimSpace(dev.Psk) != "" {
+					b.WriteString("PresharedKey = " + dev.Psk + "\n")
+				}
+				b.WriteString(fmt.Sprintf("Endpoint = %s:%d\n", t.host, t.port))
+				b.WriteString("AllowedIPs = 0.0.0.0/0\n")
+				b.WriteString("PersistentKeepalive = 25\n")
+				remark := ""
+				if len(devices) > 1 {
+					remark = fmt.Sprintf("Device %d", d+1)
+				}
+				if t.remark != "" {
+					if remark != "" {
+						remark += " - "
+					}
+					remark += t.remark
+				}
+				out = append(out, WgcClientConfig{
+					DeviceIndex: d*len(targets) + ti,
+					IP:          cidr,
+					Remark:      remark,
+					PublicKey:   dev.PubKey,
+					Config:      b.String(),
+				})
+			}
 		}
 		break
 	}
@@ -668,35 +761,67 @@ func (s *WgcService) ReconcileKeys(inbound *model.Inbound) (bool, error) {
 	if cb, ok := raw["clients"]; ok {
 		_ = json.Unmarshal(cb, &clients)
 	}
+	// One keypair PER DEVICE SLOT, sized to the User Limit. Device 0 adopts the account's
+	// pre-existing key so accounts created before per-device keys keep their working config.
+	k := wgcEffectiveK(userLimitPtrFromRaw(raw))
 	for _, c := range clients {
-		// One keypair per account (gateway model).
-		if strings.TrimSpace(jsonString(c["privKey"])) == "" {
+		var devices []map[string]json.RawMessage
+		if db, ok := c["devices"]; ok {
+			_ = json.Unmarshal(db, &devices)
+		}
+		if len(devices) == 0 && strings.TrimSpace(jsonString(c["privKey"])) != "" {
+			d0 := map[string]json.RawMessage{}
+			setRawString(d0, "privKey", jsonString(c["privKey"]))
+			setRawString(d0, "pubKey", jsonString(c["pubKey"]))
+			setRawString(d0, "psk", jsonString(c["psk"]))
+			devices = append(devices, d0)
+			changed = true
+		}
+		// Grow to K, then trim past it: lowering the User Limit must revoke the surplus
+		// devices' keys or the limit would not be enforceable.
+		for len(devices) < k {
 			key, err := wgtypes.GeneratePrivateKey()
 			if err != nil {
 				return changed, err
 			}
-			setRawString(c, "privKey", key.String())
-			setRawString(c, "pubKey", key.PublicKey().String())
+			d := map[string]json.RawMessage{}
+			setRawString(d, "privKey", key.String())
+			setRawString(d, "pubKey", key.PublicKey().String())
+			devices = append(devices, d)
 			changed = true
-		} else if key, err := wgtypes.ParseKey(jsonString(c["privKey"])); err == nil {
-			if jsonString(c["pubKey"]) != key.PublicKey().String() {
-				setRawString(c, "pubKey", key.PublicKey().String())
+		}
+		if len(devices) > k {
+			devices = devices[:k]
+			changed = true
+		}
+		for _, d := range devices {
+			if key, err := wgtypes.ParseKey(jsonString(d["privKey"])); err == nil {
+				if jsonString(d["pubKey"]) != key.PublicKey().String() {
+					setRawString(d, "pubKey", key.PublicKey().String())
+					changed = true
+				}
+			}
+			if pskEnable {
+				if strings.TrimSpace(jsonString(d["psk"])) == "" {
+					psk, err := wgtypes.GenerateKey()
+					if err != nil {
+						return changed, err
+					}
+					setRawString(d, "psk", psk.String())
+					changed = true
+				}
+			} else if jsonString(d["psk"]) != "" {
+				setRawString(d, "psk", "")
 				changed = true
 			}
 		}
-		// Optional per-account preshared key.
-		if pskEnable {
-			if strings.TrimSpace(jsonString(c["psk"])) == "" {
-				psk, err := wgtypes.GenerateKey()
-				if err != nil {
-					return changed, err
-				}
-				setRawString(c, "psk", psk.String())
-				changed = true
-			}
-		} else if jsonString(c["psk"]) != "" {
-			setRawString(c, "psk", "")
-			changed = true
+		db, _ := json.Marshal(devices)
+		c["devices"] = db
+		// Keep the legacy fields mirroring device 0 for anything still reading them.
+		if len(devices) > 0 {
+			setRawString(c, "privKey", jsonString(devices[0]["privKey"]))
+			setRawString(c, "pubKey", jsonString(devices[0]["pubKey"]))
+			setRawString(c, "psk", jsonString(devices[0]["psk"]))
 		}
 	}
 
@@ -793,15 +918,21 @@ func (s *WgcService) Poll() ([]rbridge.Live, error) {
 			cidr   string
 			enable bool
 		}
+		// EVERY device key maps back to its account, so all K devices are seen as live
+		// tunnels of the one account and bill against the account's block CIDR (usage and
+		// quota stay per-account, not per-device).
 		byPub := make(map[string]acctInfo)
 		for i, client := range settings.Clients {
-			if strings.TrimSpace(client.PubKey) == "" {
-				continue
-			}
-			byPub[client.PubKey] = acctInfo{
-				email:  client.Email,
-				cidr:   s.wgcAccountCIDR(inbound, settings, i),
-				enable: client.Enable,
+			cidr := s.wgcAccountCIDR(inbound, settings, i)
+			for _, d := range client.deviceList() {
+				if strings.TrimSpace(d.PubKey) == "" {
+					continue
+				}
+				byPub[d.PubKey] = acctInfo{
+					email:  client.Email,
+					cidr:   cidr,
+					enable: client.Enable,
+				}
 			}
 		}
 		for _, peer := range dev.Peers {

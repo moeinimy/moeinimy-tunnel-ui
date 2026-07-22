@@ -7,10 +7,10 @@ instead of SSH**:
 
 - **Base panel:** [vpn-ui](https://github.com/Sir-MmD/vpn-ui) — an enhanced Go
   fork of [3X-UI](https://github.com/MHSanaei/3x-ui) (all credit to the upstream
-  authors). Tracks upstream **v1.7**.
+  authors). Tracks upstream **v1.8.0**.
 - **Tunnel backend:** [tunnel-manager](https://github.com/moeinimy/tunnel-manager)
   (`tunnelctl`), vendored under [`tunnel/`](tunnel/) — GRE, Paqet, BackPack,
-  GOST, Backhaul, Rathole, FRP, Hysteria tunnels.
+  GOST, Backhaul, Rathole, FRP, Hysteria tunnels. Tracks **v3.5.1**.
 
 ### What's added
 - A **Tunnels** section in the panel: list, live traffic stats, start/stop/restart,
@@ -53,6 +53,7 @@ The panel below is an enhanced version of the **[3X-UI](https://github.com/MHSan
 - SSTP
 - IKEv2
 - WireGuard (C)
+- AmneziaWG (obfuscated WireGuard)
 - MTProto Proxy (Telegram)
 - SSH
 
@@ -78,18 +79,24 @@ The panel below is an enhanced version of the **[3X-UI](https://github.com/MHSan
 ## Tested Operating Systems
 
 
-| | Distribution |Version |Version |Version |
-|:---:|:---|:---:|:---:|:---:|
-| <img src="https://cdn.simpleicons.org/ubuntu" width="32" height="32" alt="Ubuntu"> | **Ubuntu** | `22.04` | `24.04` | `26.04` |
-| <img src="https://cdn.simpleicons.org/debian" width="32" height="32" alt="Debian"> | **Debian** | `12` | `13` | |
-| <img src="https://cdn.simpleicons.org/fedora" width="32" height="32" alt="Fedora"> | **Fedora** | `43` | `44` | |
-| <img src="https://cdn.simpleicons.org/almalinux/2F80ED" width="32" height="32" alt="AlmaLinux"> | **AlmaLinux** | `9` | `10` | |
-| <img src="https://cdn.simpleicons.org/rockylinux" width="32" height="32" alt="Rocky Linux"> | **Rocky Linux** | `9` | `10` | |
-| <img src="https://cdn.simpleicons.org/archlinux" width="32" height="32" alt="Arch Linux"> | **Arch Linux** | `Rolling` | | |
+| | Distribution |Version |Version |
+|:---:|:---|:---:|:---:|
+| <img src="https://cdn.simpleicons.org/ubuntu" width="32" height="32" alt="Ubuntu"> | **Ubuntu** | `24.04` | `26.04` |
+| <img src="https://cdn.simpleicons.org/debian" width="32" height="32" alt="Debian"> | **Debian** | `12` | `13` |
+| <img src="https://cdn.simpleicons.org/fedora" width="32" height="32" alt="Fedora"> | **Fedora** | `43` | `44` |
+| <img src="https://cdn.simpleicons.org/almalinux/2F80ED" width="32" height="32" alt="AlmaLinux"> | **AlmaLinux** | `9` | `10` |
+| <img src="https://cdn.simpleicons.org/rockylinux" width="32" height="32" alt="Rocky Linux"> | **Rocky Linux** | `9` | `10` |
+| <img src="https://cdn.simpleicons.org/centos" width="32" height="32" alt="CentOS Stream"> | **CentOS Stream** | `9` | `10` |
+| <img src="https://cdn.simpleicons.org/archlinux" width="32" height="32" alt="Arch Linux"> | **Arch Linux** | `Rolling` | |
 
 
 > [!IMPORTANT]
 > It is strongly recommended that you install the panel on one of the tested operating systems, because there is a high chance that the new cores will not work correctly on other operating systems!
+
+> [!NOTE]
+> **AmneziaWG runs on Debian 12/13 and Ubuntu 24.04/26.04 only.**
+> Unlike every other protocol, AmneziaWG is not in any distribution's kernel: the panel compiles its kernel module on your server during setup. That module currently fails to build in two cases. On **kernel 7.1 or newer** (Fedora 43/44, Arch) the kernel removed the `ipv6_stub` symbol the module still uses. On **AlmaLinux, Rocky Linux and CentOS Stream** the backported RHEL kernels collide with the module's compatibility layer, and EL10 is not recognised by it at all. Both are limitations of the upstream AmneziaWG module, with fixes still open upstream, so they are not something the panel can configure around.
+> Setup detects this and tells you, rather than failing silently. **Every other protocol works normally on all tested operating systems.**
 
 ## Installing the Panel
 
@@ -109,14 +116,13 @@ sudo /opt/vpn-ui/vpn-ui-amd64 --uninstall
 ## Screenshots
 
 ![Overview](https://raw.githubusercontent.com/Sir-MmD/vpn-ui/refs/heads/main/media/overview.png)
-![Core Settings](https://raw.githubusercontent.com/Sir-MmD/vpn-ui/refs/heads/main/media/core_Settings.png)
 
 
 ## How the New Protocols Interact with Xray-core
 
 ```mermaid
 flowchart TB
-  Client["VPN Client<br/>(L2TP/IPsec · PPTP · OpenVPN · OpenConnect · SSTP · IKEv2 · WireGuard (C))"]
+  Client["VPN Client<br/>(L2TP/IPsec · PPTP · OpenVPN · OpenConnect · SSTP · IKEv2 · WireGuard (C) · AmneziaWG)"]
   TGC["Telegram Client<br/>(MTProto Proxy)"]
   SSHC["SSH Client<br/>(ssh -D dynamic SOCKS · badvpn-udpgw for UDP)"]
 
@@ -135,7 +141,7 @@ flowchart TB
   end
 
   subgraph KERNEL["Linux kernel data plane"]
-    IFACE["ppp0 / tun0 / wgc0<br/>client is assigned a pool IP"]
+    IFACE["ppp0 / tun0 / wgc0 / awg0<br/>client is assigned a pool IP"]
     NFT["nftables mark:<br/>UDP → TPROXY · TCP → REDIRECT"]
     RULE["ip rule fwmark 1 → table 100"]
   end
@@ -152,6 +158,7 @@ flowchart TB
   %% control plane
   Client -->|"tunnel + credentials"| D
   Client -.->|"WireGuard (C): in-kernel wgc, no daemon"| IFACE
+  Client -.->|"AmneziaWG: in-kernel awg (DKMS module), no daemon<br/>obfuscated handshake: Jc/Jmin/Jmax · S1/S2 · H1-H4"| IFACE
   TGC -->|"obfuscated2 / dd / FakeTLS secret"| MT
   SSHC -->|"username + password (checked in-process, no RADIUS)"| SSHSRV
   D -.->|"MS-CHAPv2 Access-Request"| RAD
@@ -180,12 +187,15 @@ flowchart TB
 
 ## How RBridge Handles Non-RADIUS Protocols
 
-WireGuard (C) and the IKEv2 **PSK** / **EAP-TLS** modes authenticate with a public key or a certificate, so they never make a RADIUS round-trip. On their own they would get no session record, no traffic accounting, and no **User Limit** enforcement. **RBridge** (Radius Bridge) closes that gap: once per traffic tick its **Sweeper** polls each protocol's live tunnels, enforces quota, disable, and the per-account **User Limit** K (evicting the losers), then reconciles the survivors into the very same in-binary **RADIUS** session registry and **nftables** accounting the RADIUS protocols already use. A key-based protocol therefore behaves identically for usage, quota, and device limits, and egresses through the same Xray **dokodemo-door** data plane.
+WireGuard (C), AmneziaWG and the IKEv2 **PSK** / **EAP-TLS** modes authenticate with a public key or a certificate, so they never make a RADIUS round-trip. On their own they would get no session record, no traffic accounting, and no **User Limit** enforcement. **RBridge** (Radius Bridge) closes that gap: once per traffic tick its **Sweeper** polls each protocol's live tunnels, enforces quota, disable, and the per-account **User Limit** K (evicting the losers), then reconciles the survivors into the very same in-binary **RADIUS** session registry and **nftables** accounting the RADIUS protocols already use. A key-based protocol therefore behaves identically for usage, quota, and device limits, and egresses through the same Xray **dokodemo-door** data plane.
+
+For the two key-based tunnel protocols, **WireGuard (C)** and **AmneziaWG**, a **User Limit** of K provisions K device slots per account: K keypairs, K configs and K distinct tunnel IPs, one config per device. That is the same model the commercial providers use, and it is what makes a single account usable on a phone, a laptop and a router at once without the devices fighting over one key.
 
 ```mermaid
 flowchart TB
   subgraph SRC["Non-RADIUS protocols (public-key / certificate auth, no RADIUS round-trip)"]
     WG["WireGuard (C)<br/>in-kernel, wgctrl-managed"]
+    AWG["AmneziaWG<br/>in-kernel amneziawg (DKMS), obfuscated"]
     IKE["IKEv2 PSK / EAP-TLS<br/>strongSwan charon"]
   end
 
@@ -205,9 +215,11 @@ flowchart TB
 
   %% control plane
   WG -.->|"peers + last-handshake"| P1
+  AWG -.->|"peers + last-handshake"| P1
   IKE -.->|"active SAs + Framed-IP"| P1
   SWEEP --> P1 --> P2 --> P3
   P2 -.->|"evict: remove peer / terminate SA"| WG
+  P2 -.->|"evict: remove peer"| AWG
   P2 -.->|"evict: terminate SA"| IKE
   P3 -->|"tunnel IP → account"| REG
   P3 -->|"add / remove counters"| ACCT
@@ -215,6 +227,7 @@ flowchart TB
 
   %% data plane
   WG ==> XRAY
+  AWG ==> XRAY
   IKE ==> XRAY
   ACCT -.- XRAY
 ```
@@ -251,6 +264,7 @@ A complete **E2E** test written in Python has been designed for this project ins
 | `sstp` | connect variants + checks + peer reachability (SSTP/accel-ppp, PPP-over-TLS) |
 | `ikev2` | connect + checks + peer reachability (IKEv2/IPsec, strongSwan charon; eap-mschapv2 + psk + eap-tls) |
 | `wg-c` | connect + checks + peer reachability + per-account usage/termination (WireGuard C, in-kernel wgctrl, gateway /29, + preshared-key mode) |
+| `awg` | connect + checks + peer reachability + per-account usage/termination (AmneziaWG, in-kernel amneziawg DKMS module, obfuscation params, + preshared-key mode) |
 | `mtproto` | alias: runs every MTProto phase below (MTProto Proxy, telemt) |
 | `mtproto-classic` | handshake + relay to a real Telegram DC + wrong-secret control + usage (obfuscated2) |
 | `mtproto-secure` | same, "dd" random-padding secret |

@@ -28,6 +28,7 @@ const (
 	SSTP        Protocol = "sstp"
 	IKEV2       Protocol = "ikev2"
 	WGC         Protocol = "wg-c"
+	AWG         Protocol = "awg"
 	MTPROTO     Protocol = "mtproto"
 	SSH         Protocol = "ssh"
 	// UI stores Hysteria v1 and v2 both as "hysteria" and uses
@@ -121,6 +122,62 @@ type Inbound struct {
 	TrafficMultiplierEnable bool    `json:"trafficMultiplierEnable" form:"trafficMultiplierEnable" gorm:"default:0"` // Whether the multiplier applies
 	TrafficMultiplierAfter  int64   `json:"trafficMultiplierAfter" form:"trafficMultiplierAfter" gorm:"default:0"`   // Threshold in bytes, counted on up+down
 	TrafficMultiplier       float64 `json:"trafficMultiplier" form:"trafficMultiplier" gorm:"default:1"`             // Weight applied past the threshold
+
+	// Speed Limit: throttle each account on this inbound to a fixed rate. Configured
+	// per inbound but ENFORCED PER EMAIL: every account gets its OWN bucket at this
+	// rate, so this is not a shared pool for the inbound. Applies to every protocol
+	// (native Xray and the VPN ones alike) because the enforcement point is Xray's
+	// dispatcher, which sits downstream of every inbound.
+	//
+	// These are columns rather than keys in Settings on purpose. Settings is passed
+	// VERBATIM to Xray for native protocols (see GenXrayInboundConfig below), and only
+	// settings["clients"] is rewritten on the way out, so a top-level key here would
+	// leak into Xray's own config. Columns also give every protocol one shared form
+	// instead of a copy per protocol.
+	//
+	// Rates are KB/s (1 KB = 1024 B) to match the UI. They are converted to bytes/s in
+	// exactly one place, where the limiter sidecar is written, so the 1024-vs-1000
+	// question lives there and nowhere else. 0 in a direction means that direction is
+	// unlimited.
+	SpeedLimitEnable   bool  `json:"speedLimitEnable" form:"speedLimitEnable" gorm:"default:0"`     // Whether the limiter applies
+	SpeedLimitSeparate bool  `json:"speedLimitSeparate" form:"speedLimitSeparate" gorm:"default:0"` // false = SpeedLimitDown caps BOTH directions
+	SpeedLimitDown     int   `json:"speedLimitDown" form:"speedLimitDown" gorm:"default:0"`         // KB/s, 0 = unlimited
+	SpeedLimitUp       int   `json:"speedLimitUp" form:"speedLimitUp" gorm:"default:0"`             // KB/s, 0 = unlimited; unused when SpeedLimitSeparate is false
+	SpeedLimitAfter    int64 `json:"speedLimitAfter" form:"speedLimitAfter" gorm:"default:0"`       // Threshold in bytes on up+down; 0 = apply immediately
+
+	// IP Limit: the DEFAULT cap on how many distinct client source addresses ONE account
+	// on this inbound may hold at once. 0 = no limit.
+	//
+	// Client.LimitIP (below, and long predating this) overrides it per client, so this is
+	// the operator's baseline for the whole inbound rather than a second, competing cap:
+	// see resolveIPLimit for the resolution, including why a client-level 0 inherits this
+	// default instead of forcing "unlimited".
+	//
+	// It counts ADDRESSES, not devices: devices behind one NAT share one source address
+	// and count as one. That undercount is irreducible rather than a defect (see
+	// ip-limiter-plan.md), which is exactly why the name says IP and must keep saying IP.
+	IPLimit int `json:"ipLimit" form:"ipLimit" gorm:"default:0"`
+
+	// IP Limit Strategy: what happens when an account already at its IP Limit is seen
+	// from a NEW source address. "reject" (the default) refuses the newcomer; "accept"
+	// admits it and disconnects that account's oldest address.
+	//
+	// The words are the VPN User Limit's ("accept"/"reject", see normUserLimitStrategy)
+	// on purpose: this is the same question asked at a different enforcement point, and
+	// a synonym here would make the three points look like three features.
+	//
+	// Unlike the cap above, this has NO per-client override, and the asymmetry is
+	// deliberate: how many addresses an account may hold is that account's entitlement, so
+	// a client may carry its own, but what to do AT the cap is the operator's policy for
+	// the whole inbound and not something an individual account should have a say in.
+	//
+	// A column rather than a key in Settings for the same reason as the SpeedLimit* block
+	// above: Settings is passed VERBATIM to Xray for native protocols and only
+	// settings["clients"] is rewritten on the way out, so a top-level key there would leak
+	// into Xray's own config. AutoMigrate adds the column, and the gorm default is what
+	// makes every pre-existing row read back "reject" instead of "" (readers normalize the
+	// empty string to reject anyway, so the default is belt-and-braces, not the contract).
+	IPLimitStrategy string `json:"ipLimitStrategy" form:"ipLimitStrategy" gorm:"default:reject"`
 
 	// Xray configuration fields
 	Listen         string   `json:"listen" form:"listen"`

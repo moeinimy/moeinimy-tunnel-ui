@@ -50,6 +50,11 @@ const CASES = [
   { name: "WgUser", cls: Inbound.WgcSettings.WgUser,
     stored: { email: "bob@t", id: "bob@t", enable: true,
               privKey: "k", pubKey: "p", psk: "" } },
+  // AmneziaWG mirrors wg-c exactly: an email-identity client that synthesizes id=email
+  // in toJson() and must re-expose it through fromJson() (same id-keyed invariants).
+  { name: "AwgUser", cls: Inbound.AwgSettings.AwgUser,
+    stored: { email: "carol@t", id: "carol@t", enable: true,
+              privKey: "k", pubKey: "p", psk: "" } },
 ];
 
 for (const { name, cls, stored } of CASES) {

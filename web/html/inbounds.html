@@ -2,11 +2,7 @@
 {{ template "page/head_end" .}}
 
 {{ template "page/body_start" .}}
-<a-layout id="app" v-cloak
-  :class="themeSwitcher.currentTheme + ' inbounds-page'">
-  <a-sidebar></a-sidebar>
-  <a-layout id="content-layout">
-    <a-layout-content>
+{{template "page/shell_start" . }}
       <a-spin :spinning="loadingStates.spinning" :delay="500"
         tip='{{ i18n "loading"}}' size="large">
         <transition name="list" appear>
@@ -22,106 +18,60 @@
           </a-row>
           <a-row :gutter="[isMobile ? 8 : 16, isMobile ? 0 : 12]" v-else>
             <a-col>
-              <a-card size="small" :style="{ padding: '16px' }" hoverable>
-                <a-row>
-                  <a-col :sm="12" :md="5">
-                    <a-custom-statistic
-                      title='{{ i18n "pages.inbounds.totalDownUp" }}'
-                      :value="`${SizeFormatter.sizeFormat(total.up)} / ${SizeFormatter.sizeFormat(total.down)}`">
-                      <template #prefix>
-                        <a-icon type="swap"></a-icon>
-                      </template>
-                    </a-custom-statistic>
-                  </a-col>
-                  <a-col :sm="12" :md="5">
-                    <a-custom-statistic
-                      title='{{ i18n "pages.inbounds.totalUsage" }}'
-                      :value="SizeFormatter.sizeFormat(total.up + total.down)"
-                      :style="{ marginTop: isMobile ? '10px' : 0 }">
-                      <template #prefix>
-                        <a-icon type="pie-chart"></a-icon>
-                      </template>
-                    </a-custom-statistic>
-                  </a-col>
-                  <a-col :sm="12" :md="5">
-                    <a-custom-statistic
-                      title='{{ i18n "pages.inbounds.allTimeTrafficUsage" }}'
-                      :value="SizeFormatter.sizeFormat(total.allTime)"
-                      :style="{ marginTop: isMobile ? '10px' : 0 }">
-                      <template #prefix>
-                        <a-icon type="history"></a-icon>
-                      </template>
-                    </a-custom-statistic>
-                  </a-col>
-                  <a-col :sm="12" :md="5">
-                    <a-custom-statistic
-                      title='{{ i18n "pages.inbounds.inboundCount" }}'
-                      :value="dbInbounds.length"
-                      :style="{ marginTop: isMobile ? '10px' : 0 }">
-                      <template #prefix>
-                        <a-icon type="bars"></a-icon>
-                      </template>
-                    </a-custom-statistic>
-                  </a-col>
-                  <a-col :sm="12" :md="4">
-                    <a-custom-statistic title='{{ i18n "clients" }}' value=" "
-                      :style="{ marginTop: isMobile ? '10px' : 0 }">
-                      <template #prefix>
-                        <a-space direction="horizontal">
-                          <a-icon type="team"></a-icon>
-                          <div>
-                            <a-back-top
-                              :target="() => document.getElementById('content-layout')"
-                              visibility-height="200"></a-back-top>
-                            <a-tag color="green">[[ total.clients ]]</a-tag>
-                            <a-popover title='{{ i18n "disabled" }}'
-                              :overlay-class-name="themeSwitcher.currentTheme">
-                              <template slot="content">
-                                <div
-                                  v-for="clientEmail in total.deactive"><span>[[
-                                    clientEmail ]]</span></div>
-                              </template>
-                              <a-tag v-if="total.deactive.length">[[
-                                total.deactive.length ]]</a-tag>
-                            </a-popover>
-                            <a-popover title='{{ i18n "depleted" }}'
-                              :overlay-class-name="themeSwitcher.currentTheme">
-                              <template slot="content">
-                                <div
-                                  v-for="clientEmail in total.depleted"><span>[[
-                                    clientEmail ]]</span></div>
-                              </template>
-                              <a-tag color="red" v-if="total.depleted.length">[[
-                                total.depleted.length ]]</a-tag>
-                            </a-popover>
-                            <a-popover title='{{ i18n "depletingSoon" }}'
-                              :overlay-class-name="themeSwitcher.currentTheme">
-                              <template slot="content">
-                                <div
-                                  v-for="clientEmail in total.expiring"><span>[[
-                                    clientEmail ]]</span></div>
-                              </template>
-                              <a-tag color="orange"
-                                v-if="total.expiring.length">[[
-                                total.expiring.length ]]</a-tag>
-                            </a-popover>
-                            <a-popover title='{{ i18n "online" }}'
-                              :overlay-class-name="themeSwitcher.currentTheme">
-                              <template slot="content">
-                                <div
-                                  v-for="clientEmail in onlineClients"><span>[[
-                                    clientEmail ]]</span></div>
-                              </template>
-                              <a-tag color="blue" v-if="onlineClients.length">[[
-                                onlineClients.length ]]</a-tag>
-                            </a-popover>
-                          </div>
-                        </a-space>
-                      </template>
-                    </a-custom-statistic>
-                  </a-col>
-                </a-row>
-              </a-card>
+              <!-- Bento stat band, matching the Overview's .bo-stat-grid: a 1px
+                   gap over a --border background with opaque cells, so the
+                   dividers come from the grid rather than per-cell borders. -->
+              <div class="bo-tile" :style="{ padding: '0', overflow: 'hidden' }">
+                <div class="bo-stat-grid bo-stat-grid--5">
+                  <div class="bo-stat-cell">
+                    <span class="bo-stat-cell-label">{{ i18n "pages.inbounds.totalDownUp" }}</span>
+                    <span class="bo-stat-cell-value num">[[ SizeFormatter.sizeFormat(total.up) ]] / [[ SizeFormatter.sizeFormat(total.down) ]]</span>
+                  </div>
+                  <div class="bo-stat-cell">
+                    <span class="bo-stat-cell-label">{{ i18n "pages.inbounds.totalUsage" }}</span>
+                    <span class="bo-stat-cell-value num">[[ SizeFormatter.sizeFormat(total.up + total.down) ]]</span>
+                  </div>
+                  <div class="bo-stat-cell">
+                    <span class="bo-stat-cell-label">{{ i18n "pages.inbounds.allTimeTrafficUsage" }}</span>
+                    <span class="bo-stat-cell-value num">[[ SizeFormatter.sizeFormat(total.allTime) ]]</span>
+                  </div>
+                  <div class="bo-stat-cell">
+                    <span class="bo-stat-cell-label">{{ i18n "pages.inbounds.inboundCount" }}</span>
+                    <span class="bo-stat-cell-value num">[[ dbInbounds.length ]]</span>
+                  </div>
+                  <div class="bo-stat-cell">
+                    <span class="bo-stat-cell-label">{{ i18n "clients" }}</span>
+                    <span class="bo-stat-cell-value" :style="{ display: 'flex', gap: '6px', flexWrap: 'wrap', alignItems: 'center' }">
+                      <a-back-top :target="() => document.querySelector('.bo-main')" visibility-height="200"></a-back-top>
+                      <span class="bo-status-pill bo-status-pill--ok num">[[ total.clients ]]</span>
+                      <a-popover title='{{ i18n "disabled" }}' :overlay-class-name="themeSwitcher.currentTheme">
+                        <template slot="content">
+                          <div v-for="clientEmail in total.deactive"><span>[[ clientEmail ]]</span></div>
+                        </template>
+                        <span class="bo-status-pill num" v-if="total.deactive.length">[[ total.deactive.length ]]</span>
+                      </a-popover>
+                      <a-popover title='{{ i18n "depleted" }}' :overlay-class-name="themeSwitcher.currentTheme">
+                        <template slot="content">
+                          <div v-for="clientEmail in total.depleted"><span>[[ clientEmail ]]</span></div>
+                        </template>
+                        <span class="bo-status-pill bo-status-pill--error num" v-if="total.depleted.length">[[ total.depleted.length ]]</span>
+                      </a-popover>
+                      <a-popover title='{{ i18n "depletingSoon" }}' :overlay-class-name="themeSwitcher.currentTheme">
+                        <template slot="content">
+                          <div v-for="clientEmail in total.expiring"><span>[[ clientEmail ]]</span></div>
+                        </template>
+                        <span class="bo-status-pill bo-status-pill--warn num" v-if="total.expiring.length">[[ total.expiring.length ]]</span>
+                      </a-popover>
+                      <a-popover title='{{ i18n "online" }}' :overlay-class-name="themeSwitcher.currentTheme">
+                        <template slot="content">
+                          <div v-for="clientEmail in onlineClients"><span>[[ clientEmail ]]</span></div>
+                        </template>
+                        <span class="bo-status-pill num" :style="{ background: 'var(--info-weak)', color: 'var(--info)' }" v-if="onlineClients.length">[[ onlineClients.length ]]</span>
+                      </a-popover>
+                    </span>
+                  </div>
+                </div>
+              </div>
             </a-col>
             <a-col>
               <a-card hoverable>
@@ -371,7 +321,13 @@
                       <template v-else>[[ dbInbound.port ]]</template>
                     </template>
                     <template slot="protocol" slot-scope="text, dbInbound">
-                      <a-tag :style="{ margin: '0' }" color="purple">[[
+                      <!-- Coloured by protocol FAMILY, not per protocol. There
+                           are 12+ protocols and a hue per protocol is not
+                           colourblind-safe at tag text sizes (see the note in
+                           ant-bridge.css). Families are few, meaningful, and
+                           the tag still spells the name. -->
+                      <a-tag :style="{ margin: '0' }" class="bo-proto"
+                        :class="'bo-proto--' + protocolFamily(dbInbound.protocol)">[[
                         ProtocolLabels[dbInbound.protocol] || dbInbound.protocol ]]</a-tag>
                       <template
                         v-if="dbInbound.isVMess || dbInbound.isVLess || dbInbound.isTrojan || dbInbound.isSS">
@@ -826,8 +782,6 @@
           </a-row>
         </transition>
       </a-spin>
-    </a-layout-content>
-  </a-layout>
   <a-modal id="bulk-ops-modal"
     title='{{ i18n "pages.inbounds.bulkOperations" }}'
     :visible="bulkOps.visible"
@@ -893,7 +847,7 @@
       </div>
     </a-form>
   </a-modal>
-</a-layout>
+{{template "page/shell_end" . }}
 {{template "page/body_scripts" .}}
 <script
   src="{{ .base_path }}assets/qrcode/qrious2.min.js?{{ .cur_ver }}"></script>
@@ -920,6 +874,7 @@
 {{template "modals/clientsModal"}}
 {{template "modals/clientsBulkModal"}}
 {{template "modals/wgcConfigModal"}}
+{{template "modals/awgConfigModal"}}
 {{template "modals/sshConfigModal"}}
 <a-modal id="copy-clients-modal"
   :title="copyClientsModal.title"
@@ -1222,7 +1177,10 @@
 
   const innerColumns = [
     { width: 30, align: 'center', slots: { title: 'selectAllClientsHeader' }, scopedSlots: { customRender: 'selectClient' } },
-    { title: '{{ i18n "pages.inbounds.operate" }}', width: 70, scopedSlots: { customRender: 'actions' } },
+    // 200, not 70: the cell holds up to eight action icons on one line. At 70
+    // they wrapped onto three ragged rows, and with nowrap they overflowed into
+    // the Enabled column.
+    { title: '{{ i18n "pages.inbounds.operate" }}', width: 200, scopedSlots: { customRender: 'actions' } },
     { title: '{{ i18n "pages.inbounds.enable" }}', width: 30, scopedSlots: { customRender: 'enable' } },
     { title: '{{ i18n "online" }}', width: 32, scopedSlots: { customRender: 'online' } },
     { title: '{{ i18n "pages.inbounds.client" }}', width: 80, scopedSlots: { customRender: 'client' } },
@@ -1244,6 +1202,8 @@
     mixins: [MediaQueryMixin],
     data: {
       themeSwitcher,
+      pageTitle: '{{ i18n "menu.inbounds"}}',
+      pageClass: 'inbounds-page',
       persianDatepicker,
       loadingStates: {
         fetched: false,
@@ -1368,7 +1328,7 @@
           to_inbound = dbInbound.toInbound()
           this.inbounds.push(to_inbound);
           this.dbInbounds.push(dbInbound);
-          if ([Protocols.VMESS, Protocols.VLESS, Protocols.TROJAN, Protocols.SHADOWSOCKS, Protocols.L2TP, Protocols.PPTP, Protocols.OPENVPN, Protocols.OPENCONNECT, Protocols.SSTP, Protocols.IKEV2, Protocols.WGC, Protocols.MTPROTO, Protocols.SSH].includes(inbound.protocol)) {
+          if ([Protocols.VMESS, Protocols.VLESS, Protocols.TROJAN, Protocols.SHADOWSOCKS, Protocols.L2TP, Protocols.PPTP, Protocols.OPENVPN, Protocols.OPENCONNECT, Protocols.SSTP, Protocols.IKEV2, Protocols.WGC, Protocols.AWG, Protocols.MTPROTO, Protocols.SSH].includes(inbound.protocol)) {
             if (dbInbound.isSS && (!to_inbound.isSSMultiUser)) {
               continue;
             }
@@ -1594,18 +1554,18 @@
           .map(email => ({ inboundId: dbInbound.id, email }));
       },
       // --- export (txt / pdf) -------------------------------------------
-      exportTxt(targets, filename) {
+      async exportTxt(targets, filename) {
         if (!targets || !targets.length) { this.$message.warning('{{ i18n "pages.inbounds.exportNoneSelected" }}'); return; }
         try {
-          const cards = AccountExport.buildCards(this, targets);
+          const cards = await AccountExport.buildCards(this, targets);
           if (!cards.length) { this.$message.warning('{{ i18n "pages.inbounds.exportNoneSelected" }}'); return; }
           AccountExport.txt(cards, filename || 'accounts');
         } catch (e) { this.$message.error('Export failed: ' + (e && e.message ? e.message : e)); }
       },
-      exportPdf(targets, filename) {
+      async exportPdf(targets, filename) {
         if (!targets || !targets.length) { this.$message.warning('{{ i18n "pages.inbounds.exportNoneSelected" }}'); return; }
         try {
-          const cards = AccountExport.buildCards(this, targets);
+          const cards = await AccountExport.buildCards(this, targets);
           if (!cards.length) { this.$message.warning('{{ i18n "pages.inbounds.exportNoneSelected" }}'); return; }
           AccountExport.pdf(cards, filename || 'accounts');
         } catch (e) { this.$message.error('Export failed: ' + (e && e.message ? e.message : e)); }
@@ -1839,6 +1799,13 @@
           trafficMultiplierEnable: dbInbound.trafficMultiplierEnable,
           trafficMultiplierAfter: dbInbound.trafficMultiplierAfter,
           trafficMultiplier: dbInbound.trafficMultiplier,
+          speedLimitEnable: dbInbound.speedLimitEnable,
+          speedLimitSeparate: dbInbound.speedLimitSeparate,
+          speedLimitDown: dbInbound.speedLimitDown,
+          speedLimitUp: dbInbound.speedLimitUp,
+          speedLimitAfter: dbInbound.speedLimitAfter,
+          ipLimit: dbInbound.ipLimit,
+          ipLimitStrategy: dbInbound.ipLimitStrategy,
 
           listen: '',
           port: RandomUtil.randomInteger(10000, 60000),
@@ -1904,6 +1871,13 @@
           trafficMultiplierEnable: dbInbound.trafficMultiplierEnable,
           trafficMultiplierAfter: dbInbound.trafficMultiplierAfter,
           trafficMultiplier: dbInbound.trafficMultiplier,
+          speedLimitEnable: dbInbound.speedLimitEnable,
+          speedLimitSeparate: dbInbound.speedLimitSeparate,
+          speedLimitDown: dbInbound.speedLimitDown,
+          speedLimitUp: dbInbound.speedLimitUp,
+          speedLimitAfter: dbInbound.speedLimitAfter,
+          ipLimit: dbInbound.ipLimit,
+          ipLimitStrategy: dbInbound.ipLimitStrategy,
 
           listen: inbound.listen,
           port: inbound.port,
@@ -1933,6 +1907,13 @@
           trafficMultiplierEnable: dbInbound.trafficMultiplierEnable,
           trafficMultiplierAfter: dbInbound.trafficMultiplierAfter,
           trafficMultiplier: dbInbound.trafficMultiplier,
+          speedLimitEnable: dbInbound.speedLimitEnable,
+          speedLimitSeparate: dbInbound.speedLimitSeparate,
+          speedLimitDown: dbInbound.speedLimitDown,
+          speedLimitUp: dbInbound.speedLimitUp,
+          speedLimitAfter: dbInbound.speedLimitAfter,
+          ipLimit: dbInbound.ipLimit,
+          ipLimitStrategy: dbInbound.ipLimitStrategy,
 
           listen: inbound.listen,
           port: inbound.port,
@@ -2145,6 +2126,12 @@
         // backend-minted keys); the modal fetches them from the wgc-configs API.
         wgcConfigModal.show(dbInboundId, client);
       },
+      showAwgConfig(dbInboundId, client) {
+        // AmneziaWG configs are rendered server-side (per-device .conf with
+        // backend-minted keys + obfuscation params); the modal fetches them from
+        // the awg-configs API.
+        awgConfigModal.show(dbInboundId, client);
+      },
       showSshConfig(dbInboundId, client) {
         // SSH configs are rendered server-side (a sing-box ssh outbound plus a
         // plaintext host/port/user/pass block); the modal fetches them from the
@@ -2183,6 +2170,13 @@
           trafficMultiplierEnable: dbInbound.trafficMultiplierEnable,
           trafficMultiplierAfter: dbInbound.trafficMultiplierAfter,
           trafficMultiplier: dbInbound.trafficMultiplier,
+          speedLimitEnable: dbInbound.speedLimitEnable,
+          speedLimitSeparate: dbInbound.speedLimitSeparate,
+          speedLimitDown: dbInbound.speedLimitDown,
+          speedLimitUp: dbInbound.speedLimitUp,
+          speedLimitAfter: dbInbound.speedLimitAfter,
+          ipLimit: dbInbound.ipLimit,
+          ipLimitStrategy: dbInbound.ipLimitStrategy,
 
           listen: inbound.listen,
           port: inbound.port,
@@ -2267,7 +2261,7 @@
         // set up; point the user at Core Settings. `data` is a plain object for
         // add/clone and FormData for update, so data.protocol only matches creates.
         if (typeof url === 'string' && url.endsWith('/inbounds/add') &&
-            data && [Protocols.L2TP, Protocols.PPTP, Protocols.OPENVPN, Protocols.OPENCONNECT, Protocols.SSTP, Protocols.IKEV2, Protocols.WGC, Protocols.MTPROTO, Protocols.SSH].includes(data.protocol)) {
+            data && [Protocols.L2TP, Protocols.PPTP, Protocols.OPENVPN, Protocols.OPENCONNECT, Protocols.SSTP, Protocols.IKEV2, Protocols.WGC, Protocols.AWG, Protocols.MTPROTO, Protocols.SSH].includes(data.protocol)) {
           // Not provisioned at all -> general message; provisioned but this protocol was
           // added by a later update (still in missingProtocols) -> protocol-specific
           // message. Both use the SAME modal (matching the initial setup prompt), not a toast.
@@ -2283,6 +2277,19 @@
         if (msg.success) {
           await this.getDBInbounds();
         }
+      },
+      // Two buckets only: protocols carried by the Xray core, and everything
+      // else. An earlier version split this four ways and painted the families
+      // with the RESERVED status hues, so a healthy IKEv2 inbound rendered in
+      // the same amber that means "stopped" elsewhere in the panel. Two
+      // categories need two hues, neither of which is warn or error.
+      protocolFamily(p) {
+        const k = String(p || '').toLowerCase();
+        const xrayNative = [
+          'vless', 'vmess', 'trojan', 'shadowsocks',
+          'socks', 'http', 'dokodemo-door', 'wireguard',
+        ];
+        return xrayNative.includes(k) ? 'xray' : 'vpn';
       },
       getInboundClients(dbInbound) {
         if (!dbInbound) return null;
@@ -2704,15 +2711,18 @@
   });
 </script>
 <style>
-  #content-layout > .ant-layout-content > .ant-spin-nested-loading > div > .ant-spin {
+  /* Pins the page spinner to the viewport centre rather than the centre of a
+     very tall table. The offset compensates for the nav rail, which is 96px
+     wide (64px collapsed or under 560px, hence the narrow-screen override). */
+  .bo-content > .ant-spin-nested-loading > div > .ant-spin {
     position: fixed !important;
     top: 50vh !important;
-    left: calc(50vw + 100px) !important;
+    left: calc(50vw + 48px) !important;
     transform: translate(-50%, -50%);
     z-index: 99999 !important;
   }
   @media (max-width: 768px) {
-    #content-layout > .ant-layout-content > .ant-spin-nested-loading > div > .ant-spin {
+    .bo-content > .ant-spin-nested-loading > div > .ant-spin {
       left: 50vw !important;
     }
   }

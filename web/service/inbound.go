@@ -177,18 +177,104 @@ func (s *InboundService) GetClients(inbound *model.Inbound) ([]model.Client, err
 	return clients, nil
 }
 
-func (s *InboundService) getAllEmails() ([]string, error) {
+// A client's email is the panel's GLOBAL account identity, not a per-inbound label:
+// it is the unique key of client_traffics, the name RADIUS authenticates and the
+// selector the per-account routing rules are built from. Two clients sharing one
+// email are therefore one account to everything downstream, whichever inbounds they
+// live in, which is why the checks below query across all inbounds rather than the
+// one being edited.
+
+// sameEmail reports whether two emails name the same account. Identity is case- and
+// whitespace-insensitive, so every comparison must be too: comparing with == would
+// read a "Bob" -> "bob" rename as a change of identity.
+func sameEmail(a, b string) bool {
+	return strings.EqualFold(strings.TrimSpace(a), strings.TrimSpace(b))
+}
+
+// containsEmail is the identity-aware counterpart of contains (which stays exact for
+// PPP usernames). It trims the stored side too, because rows written before
+// normalizeClientEmails existed may still carry untrimmed emails.
+func containsEmail(emails []string, email string) bool {
+	for _, e := range emails {
+		if sameEmail(e, email) {
+			return true
+		}
+	}
+	return false
+}
+
+// normalizeClientEmails trims surrounding whitespace off every client email in an
+// inbound's settings JSON, which is what later gets persisted.
+//
+// Normalizing on WRITE rather than only at compare time: client_traffics.email is
+// the unique index, so storing "bob " beside "bob" leaves two keys the index is
+// perfectly happy to accept, and downstream two accounts. Trimming before the
+// settings are parsed means the key that lands in the DB is the one uniqueness was
+// checked against.
+//
+// The JSON is only rebuilt when something actually changed, so the common case does
+// not churn key order or re-encode numbers.
+func normalizeClientEmails(settings string) string {
+	var root map[string]any
+	if err := json.Unmarshal([]byte(settings), &root); err != nil || root == nil {
+		// Malformed settings are the callers' own unmarshal to report, not ours.
+		return settings
+	}
+	list, ok := root["clients"].([]any)
+	if !ok {
+		return settings
+	}
+	changed := false
+	for _, item := range list {
+		client, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		email, ok := client["email"].(string)
+		if !ok {
+			continue
+		}
+		if trimmed := strings.TrimSpace(email); trimmed != email {
+			client["email"] = trimmed
+			changed = true
+		}
+	}
+	if !changed {
+		return settings
+	}
+	normalized, err := json.MarshalIndent(root, "", "  ")
+	if err != nil {
+		return settings
+	}
+	return string(normalized)
+}
+
+// duplicateEmailError is shared so the mutation paths cannot drift into wording the
+// UI shows differently for the same rejection.
+func duplicateEmailError(email string) error {
+	return common.NewErrorf("Duplicate email: %q is already used by another client. Emails must be unique across all inbounds.", email)
+}
+
+// getAllEmailsExcludingInbound lists every client email in the DB except one
+// inbound's. An ignoreInboundId of 0 excludes nothing: inbound ids are AUTOINCREMENT
+// and start at 1, so no row can hold 0.
+func (s *InboundService) getAllEmailsExcludingInbound(ignoreInboundId int) ([]string, error) {
 	db := database.GetDB()
 	var emails []string
 	err := db.Raw(`
 		SELECT JSON_EXTRACT(client.value, '$.email')
 		FROM inbounds,
 			JSON_EACH(JSON_EXTRACT(inbounds.settings, '$.clients')) AS client
-		`).Scan(&emails).Error
+		WHERE inbounds.id != ?
+		`, ignoreInboundId).Scan(&emails).Error
 	if err != nil {
 		return nil, err
 	}
 	return emails, nil
+}
+
+func (s *InboundService) getAllEmails() ([]string, error) {
+	return s.getAllEmailsExcludingInbound(0)
 }
 
 func (s *InboundService) contains(slice []string, str string) bool {
@@ -236,48 +322,36 @@ func (s *InboundService) checkPPPUsernamesForDuplicates(protocol string, clients
 	return "", nil
 }
 
-func (s *InboundService) checkEmailsExistForClients(clients []model.Client) (string, error) {
-	allEmails, err := s.getAllEmails()
+// checkEmailsExistExcludingInbound returns the first email in clients that already
+// names another account, whether inside the batch itself or anywhere in the DB
+// outside ignoreInboundId.
+//
+// The exclusion is what makes this usable from UpdateInbound, which REPLACES an
+// inbound's whole client list: measured against the whole DB, every client it is
+// KEEPING would collide with its own persisted row. Callers whose row is not yet
+// persisted (AddInbound) or whose write is additive (AddInboundClient) pass 0 and
+// get a plain global check.
+func (s *InboundService) checkEmailsExistExcludingInbound(clients []model.Client, ignoreInboundId int) (string, error) {
+	allEmails, err := s.getAllEmailsExcludingInbound(ignoreInboundId)
 	if err != nil {
 		return "", err
 	}
 	var emails []string
 	for _, client := range clients {
-		if client.Email != "" {
-			if s.contains(emails, client.Email) {
-				return client.Email, nil
-			}
-			if s.contains(allEmails, client.Email) {
-				return client.Email, nil
-			}
-			emails = append(emails, client.Email)
+		email := strings.TrimSpace(client.Email)
+		if email == "" {
+			continue
 		}
+		if containsEmail(emails, email) || containsEmail(allEmails, email) {
+			return email, nil
+		}
+		emails = append(emails, email)
 	}
 	return "", nil
 }
 
-func (s *InboundService) checkEmailExistForInbound(inbound *model.Inbound) (string, error) {
-	clients, err := s.GetClients(inbound)
-	if err != nil {
-		return "", err
-	}
-	allEmails, err := s.getAllEmails()
-	if err != nil {
-		return "", err
-	}
-	var emails []string
-	for _, client := range clients {
-		if client.Email != "" {
-			if s.contains(emails, client.Email) {
-				return client.Email, nil
-			}
-			if s.contains(allEmails, client.Email) {
-				return client.Email, nil
-			}
-			emails = append(emails, client.Email)
-		}
-	}
-	return "", nil
+func (s *InboundService) checkEmailsExistForClients(clients []model.Client) (string, error) {
+	return s.checkEmailsExistExcludingInbound(clients, 0)
 }
 
 // isVpnProtocol reports whether a protocol is one of the panel's built-in VPN
@@ -288,7 +362,41 @@ func (s *InboundService) checkEmailExistForInbound(inbound *model.Inbound) (stri
 // protocols), silently killing the clients' route to the internet. Changes to
 // them are applied by a full Xray restart instead.
 func isVpnProtocol(p model.Protocol) bool {
-	return p == model.L2TP || p == model.PPTP || p == model.OPENVPN || p == model.OPENCONNECT || p == model.SSTP || p == model.IKEV2 || p == model.WGC
+	return p == model.L2TP || p == model.PPTP || p == model.OPENVPN || p == model.OPENCONNECT || p == model.SSTP || p == model.IKEV2 || p == model.WGC || p == model.AWG
+}
+
+// isRelayProtocol reports whether p is a relay: it terminates its own protocol outside
+// Xray (telemt for mtproto, the in-binary gateway for ssh) and reaches Xray through a
+// PAIRED socks inbound the panel builds separately (GetSocksConfig), sharing this
+// inbound's tag.
+func isRelayProtocol(p model.Protocol) bool {
+	return p == model.MTPROTO || p == model.SSH
+}
+
+// hasDerivedXrayInbound reports whether what this inbound contributes to Xray is
+// something the panel DERIVES — a dokodemo-door for the VPN protocols, a socks inbound
+// for the relays — rather than GenXrayInboundConfig's own output.
+//
+// Such an inbound must never take the live del/add API path, and the relay half of that
+// is not a variation on the VPN reasoning above but the same bug with a worse ending.
+// DelInbound(tag) succeeds, because the derived inbound carries this inbound's tag, and
+// then AddInbound hands Xray a panel-only protocol ("unknown config id: mtproto") and
+// fails. The running core is left with no socks inbound, so telemt's upstream is refused
+// and every client on it is dead.
+//
+// What makes it stick is that nothing repairs it. The GENERATED config still contains
+// the derived inbound, so the running config and the generated one compare equal and
+// RestartXray takes its "does not need to restart" path, leaving the live instance
+// diverged from the config that describes it. It stays dead until some unrelated edit
+// changes the config enough to force a restart.
+//
+// Reported as "enabling the speed limit on an mtproto inbound kills the backend until
+// I restart all cores". The speed limit is only how it was found: it is delivered by the
+// speedlimits.json sidecar and touches no Xray inbound, which is exactly what leaves the
+// config byte-identical. Any inbound-level edit that does the same (remark, quota,
+// expiry, traffic multiplier) had the same effect.
+func hasDerivedXrayInbound(p model.Protocol) bool {
+	return isVpnProtocol(p) || isRelayProtocol(p)
 }
 
 // AddInbound creates a new inbound configuration.
@@ -329,6 +437,35 @@ func (s *InboundService) validateInboundConfig(inbound *model.Inbound) error {
 	}
 	if inbound.TrafficMultiplierAfter < 0 {
 		return common.NewError("Traffic multiplier threshold cannot be negative")
+	}
+
+	// Speed limit. The form's :min="0" is not a guard: the API can be posted directly.
+	// A negative rate would reach the sidecar and become a negative rate.Limit, which
+	// blocks the account outright instead of throttling it, so reject it here rather
+	// than let it look like a mysterious dead connection.
+	if inbound.SpeedLimitDown < 0 || inbound.SpeedLimitUp < 0 {
+		return common.NewError("Speed limit cannot be negative")
+	}
+	if inbound.SpeedLimitAfter < 0 {
+		return common.NewError("Speed limit threshold cannot be negative")
+	}
+
+	// IP limit. The resolver already reads a negative as "absent" so nothing bad can
+	// reach the core, but that defence is SILENT: an operator posting -1 would get a
+	// 200 and an account with no limit, and nothing would say why. Reject it here for
+	// the same reason the speed limits above are rejected, and keep the read-side
+	// guard as the last line against a hand-edited or imported DB, which no request
+	// validator ever sees.
+	if inbound.IPLimit < 0 {
+		return common.NewError("IP limit cannot be negative")
+	}
+	// The strategy resolver absorbs any unknown value as "reject", which is the safe
+	// default but silently discards a typo like "Accept" or "evict". Only the two
+	// words the VPN User Limit already uses are accepted.
+	switch inbound.IPLimitStrategy {
+	case "", "reject", "accept":
+	default:
+		return common.NewError(fmt.Sprintf("IP limit strategy must be \"reject\" or \"accept\" (got %q)", inbound.IPLimitStrategy))
 	}
 
 	if inbound.Protocol == "openvpn" {
@@ -413,6 +550,10 @@ func (s *InboundService) validateInboundConfig(inbound *model.Inbound) error {
 }
 
 func (s *InboundService) AddInbound(inbound *model.Inbound) (*model.Inbound, bool, error) {
+	// Before anything parses the settings, so the emails checked below and the ones
+	// persisted are the same strings.
+	inbound.Settings = normalizeClientEmails(inbound.Settings)
+
 	if err := s.validateInboundConfig(inbound); err != nil {
 		return inbound, false, err
 	}
@@ -429,17 +570,18 @@ func (s *InboundService) AddInbound(inbound *model.Inbound) (*model.Inbound, boo
 		return inbound, false, common.NewError("Port already exists:", inbound.Port)
 	}
 
-	existEmail, err := s.checkEmailExistForInbound(inbound)
+	clients, err := s.GetClients(inbound)
+	if err != nil {
+		return inbound, false, err
+	}
+
+	// Nothing to exclude: this inbound has no row yet, so the whole DB is "other".
+	existEmail, err := s.checkEmailsExistExcludingInbound(clients, 0)
 	if err != nil {
 		return inbound, false, err
 	}
 	if existEmail != "" {
-		return inbound, false, common.NewError("Duplicate email:", existEmail)
-	}
-
-	clients, err := s.GetClients(inbound)
-	if err != nil {
-		return inbound, false, err
+		return inbound, false, duplicateEmailError(existEmail)
 	}
 
 	// Ensure created_at and updated_at on clients in settings
@@ -489,7 +631,7 @@ func (s *InboundService) AddInbound(inbound *model.Inbound) (*model.Inbound, boo
 	}
 
 	// Check for duplicate L2TP/PPTP/OpenVPN/SSTP usernames
-	if inbound.Protocol == "l2tp" || inbound.Protocol == "pptp" || inbound.Protocol == "openvpn" || inbound.Protocol == "sstp" || inbound.Protocol == "ikev2" || inbound.Protocol == "wg-c" || inbound.Protocol == "ssh" {
+	if inbound.Protocol == "l2tp" || inbound.Protocol == "pptp" || inbound.Protocol == "openvpn" || inbound.Protocol == "sstp" || inbound.Protocol == "ikev2" || inbound.Protocol == "wg-c" || inbound.Protocol == "awg" || inbound.Protocol == "ssh" {
 		dupUser, err := s.checkPPPUsernamesForDuplicates(string(inbound.Protocol), clients)
 		if err != nil {
 			return inbound, false, err
@@ -522,8 +664,11 @@ func (s *InboundService) AddInbound(inbound *model.Inbound) (*model.Inbound, boo
 
 	needRestart := false
 	if inbound.Enable {
-		if isVpnProtocol(inbound.Protocol) {
-			// Its dokodemo is added by the full restart the caller triggers.
+		if hasDerivedXrayInbound(inbound.Protocol) {
+			// Its dokodemo (VPN) or socks inbound (relay) is added by the full restart
+			// the caller triggers. Neither can be built from this inbound's own
+			// protocol, so the API path below would only log a failure and set this
+			// same flag.
 			needRestart = true
 		} else {
 			s.xrayApi.Init(p.GetAPIPort())
@@ -613,6 +758,10 @@ func (s *InboundService) GetInbound(id int) (*model.Inbound, error) {
 // It validates changes, updates the database, and syncs with the running Xray instance.
 // Returns the updated inbound, whether Xray needs restart, and any error.
 func (s *InboundService) UpdateInbound(inbound *model.Inbound) (*model.Inbound, bool, error) {
+	// Before anything parses the settings, so the emails checked below and the ones
+	// persisted are the same strings.
+	inbound.Settings = normalizeClientEmails(inbound.Settings)
+
 	if err := s.validateInboundConfig(inbound); err != nil {
 		return inbound, false, err
 	}
@@ -625,6 +774,23 @@ func (s *InboundService) UpdateInbound(inbound *model.Inbound) (*model.Inbound, 
 	}
 	if exist {
 		return inbound, false, common.NewError("Port already exists:", inbound.Port)
+	}
+
+	// This edit REPLACES the client list, so the inbound's own persisted row is not a
+	// competitor and must be excluded, or every client being kept collides with
+	// itself. Ahead of updateClientTraffics because that is what would otherwise hit
+	// the client_traffics unique index mid-transaction, turning a duplicate the user
+	// can fix into an opaque constraint failure.
+	updatedClients, err := s.GetClients(inbound)
+	if err != nil {
+		return inbound, false, err
+	}
+	existEmail, err := s.checkEmailsExistExcludingInbound(updatedClients, inbound.Id)
+	if err != nil {
+		return inbound, false, err
+	}
+	if existEmail != "" {
+		return inbound, false, duplicateEmailError(existEmail)
 	}
 
 	oldInbound, err := s.GetInbound(inbound.Id)
@@ -719,6 +885,13 @@ func (s *InboundService) UpdateInbound(inbound *model.Inbound) (*model.Inbound, 
 	oldInbound.TrafficMultiplierEnable = inbound.TrafficMultiplierEnable
 	oldInbound.TrafficMultiplierAfter = inbound.TrafficMultiplierAfter
 	oldInbound.TrafficMultiplier = inbound.TrafficMultiplier
+	oldInbound.SpeedLimitEnable = inbound.SpeedLimitEnable
+	oldInbound.SpeedLimitSeparate = inbound.SpeedLimitSeparate
+	oldInbound.SpeedLimitDown = inbound.SpeedLimitDown
+	oldInbound.SpeedLimitUp = inbound.SpeedLimitUp
+	oldInbound.SpeedLimitAfter = inbound.SpeedLimitAfter
+	oldInbound.IPLimit = inbound.IPLimit
+	oldInbound.IPLimitStrategy = inbound.IPLimitStrategy
 	oldInbound.Listen = inbound.Listen
 	oldInbound.Port = inbound.Port
 	oldInbound.Protocol = inbound.Protocol
@@ -732,11 +905,11 @@ func (s *InboundService) UpdateInbound(inbound *model.Inbound) (*model.Inbound, 
 	}
 
 	needRestart := false
-	if isVpnProtocol(oldInbound.Protocol) {
-		// Leave the running dokodemo in place — the live del/add API would drop
-		// it and be unable to recreate it, cutting the clients' internet until a
-		// full restart. The caller's on{L2tp,Pptp,OpenVpn}Changed handles the
-		// restart that rebuilds it.
+	if hasDerivedXrayInbound(oldInbound.Protocol) {
+		// Leave the running dokodemo (VPN) or socks inbound (relay) in place. The live
+		// del/add API would drop it and be unable to recreate it, cutting the clients'
+		// internet until a full restart that an unchanged config will not trigger. The
+		// caller's on<Proto>Changed handles the restart that rebuilds it.
 		needRestart = true
 	} else {
 		s.xrayApi.Init(p.GetAPIPort())
@@ -875,6 +1048,10 @@ func (s *InboundService) updateClientTraffics(tx *gorm.DB, oldInbound *model.Inb
 }
 
 func (s *InboundService) AddInboundClient(data *model.Inbound) (bool, error) {
+	// Before anything parses the settings: interfaceClients below is spliced into the
+	// inbound's stored JSON verbatim, so an email left untrimmed here is persisted.
+	data.Settings = normalizeClientEmails(data.Settings)
+
 	clients, err := s.GetClients(data)
 	if err != nil {
 		return false, err
@@ -898,17 +1075,32 @@ func (s *InboundService) AddInboundClient(data *model.Inbound) (bool, error) {
 			interfaceClients[i] = cm
 		}
 	}
+	// Additive: these clients are not in any row yet, so the whole DB is "other".
 	existEmail, err := s.checkEmailsExistForClients(clients)
 	if err != nil {
 		return false, err
 	}
 	if existEmail != "" {
-		return false, common.NewError("Duplicate email:", existEmail)
+		return false, duplicateEmailError(existEmail)
 	}
 
 	oldInbound, err := s.GetInbound(data.Id)
 	if err != nil {
 		return false, err
+	}
+
+	// Capacity guard (per-account-IP protocols): refuse an add the IP pool can never
+	// place. Index-based allocation hands accounts past capacity a nil tunnel IP, so the
+	// client would otherwise be created and listed in the UI yet be silently unroutable
+	// (no peer, no route). Reject loudly with an actionable message instead. maxVpnAccounts
+	// is an upper bound, so this never rejects a client the pool could actually hold.
+	if maxAcc, ok := maxVpnAccounts(oldInbound); ok {
+		existing, _ := s.GetClients(oldInbound)
+		if len(existing)+len(clients) > maxAcc {
+			return false, common.NewError(fmt.Sprintf(
+				"IP pool full for this %s inbound: it can hold at most %d account(s) at the current User Limit (%d already present). Lower the User Limit, or add another inbound.",
+				oldInbound.Protocol, maxAcc, len(existing)))
+		}
 	}
 
 	// IKEv2 auth-mode client-management constraints:
@@ -944,7 +1136,7 @@ func (s *InboundService) AddInboundClient(data *model.Inbound) (bool, error) {
 	}
 
 	// Check for duplicate L2TP/PPTP/OpenVPN/SSTP usernames
-	if oldInbound.Protocol == "l2tp" || oldInbound.Protocol == "pptp" || oldInbound.Protocol == "openvpn" || oldInbound.Protocol == "sstp" || oldInbound.Protocol == "ikev2" || oldInbound.Protocol == "wg-c" || oldInbound.Protocol == "ssh" {
+	if oldInbound.Protocol == "l2tp" || oldInbound.Protocol == "pptp" || oldInbound.Protocol == "openvpn" || oldInbound.Protocol == "sstp" || oldInbound.Protocol == "ikev2" || oldInbound.Protocol == "wg-c" || oldInbound.Protocol == "awg" || oldInbound.Protocol == "ssh" {
 		dupUser, err := s.checkPPPUsernamesForDuplicates(string(oldInbound.Protocol), clients)
 		if err != nil {
 			return false, err
@@ -1306,6 +1498,10 @@ func (s *InboundService) DelInboundClient(inboundId int, clientId string) (bool,
 
 func (s *InboundService) UpdateInboundClient(data *model.Inbound, clientId string) (bool, error) {
 	// TODO: check if TrafficReset field is updating
+	// Before anything parses the settings: interfaceClients[0] below replaces the
+	// stored client verbatim, so an email left untrimmed here is persisted.
+	data.Settings = normalizeClientEmails(data.Settings)
+
 	clients, err := s.GetClients(data)
 	if err != nil {
 		return false, err
@@ -1360,18 +1556,24 @@ func (s *InboundService) UpdateInboundClient(data *model.Inbound, clientId strin
 		return false, common.NewError("empty client ID")
 	}
 
-	if len(clients[0].Email) > 0 && clients[0].Email != oldEmail {
+	// Only a change of IDENTITY needs checking, and identity is case- and
+	// whitespace-insensitive. Comparing with != instead made "Bob" -> "bob" look like
+	// a rename and run the check, which searches the whole DB INCLUDING this client's
+	// own persisted row, matches it case-insensitively and rejects the edit as a
+	// duplicate of itself. Keeping the check global (no exclusion) is right here: a
+	// genuine rename must not land on a sibling in this very inbound either.
+	if len(clients[0].Email) > 0 && !sameEmail(clients[0].Email, oldEmail) {
 		existEmail, err := s.checkEmailsExistForClients(clients)
 		if err != nil {
 			return false, err
 		}
 		if existEmail != "" {
-			return false, common.NewError("Duplicate email:", existEmail)
+			return false, duplicateEmailError(existEmail)
 		}
 	}
 
 	// Check for duplicate L2TP/PPTP/OpenVPN/SSTP usernames (allow keeping the same username)
-	if oldInbound.Protocol == "l2tp" || oldInbound.Protocol == "pptp" || oldInbound.Protocol == "openvpn" || oldInbound.Protocol == "sstp" || oldInbound.Protocol == "ikev2" || oldInbound.Protocol == "wg-c" || oldInbound.Protocol == "ssh" {
+	if oldInbound.Protocol == "l2tp" || oldInbound.Protocol == "pptp" || oldInbound.Protocol == "openvpn" || oldInbound.Protocol == "sstp" || oldInbound.Protocol == "ikev2" || oldInbound.Protocol == "wg-c" || oldInbound.Protocol == "awg" || oldInbound.Protocol == "ssh" {
 		oldUsername := oldClients[clientIndex].ID
 		newUsername := clients[0].ID
 		if newUsername != oldUsername {
@@ -3315,6 +3517,87 @@ func (s *InboundService) MigrationRequirements() {
 func (s *InboundService) MigrateDB() {
 	s.MigrationRequirements()
 	s.MigrationRemoveOrphanedTraffics()
+}
+
+// ClientStatsSummary is the overview's account roll-up: how many accounts the
+// caller owns, how many are connected right now, how many have run out of traffic
+// or time, and how many are close to it.
+type ClientStatsSummary struct {
+	Total    int `json:"total"`
+	Online   int `json:"online"`
+	Depleted int `json:"depleted"`
+	Expiring int `json:"expiring"`
+}
+
+// GetClientStatsFor counts the caller's accounts by state. It is the server-side
+// twin of the tally the inbounds page builds in the browser, and follows the same
+// rules so the two pages cannot disagree:
+//
+//   - clients on a DISABLED inbound still count towards the total, but are neither
+//     online, depleted nor expiring;
+//   - depleted wins over expiring, so the two never double-count the same account;
+//   - the warning windows come from the expireDiff/trafficDiff settings, in the
+//     days and GB the settings form stores them as.
+//
+// Scoping is inherited from GetInboundsFor, so an admin sees only their own
+// accounts. That also scopes "online": the panel-wide online list is narrowed to
+// the emails on the inbounds the caller can see.
+func (s *InboundService) GetClientStatsFor(user *model.User) (*ClientStatsSummary, error) {
+	inbounds, err := s.GetInboundsFor(user)
+	if err != nil {
+		return nil, err
+	}
+
+	var settingService SettingService
+	expireDiff, err := settingService.GetExpireDiff()
+	if err != nil {
+		return nil, err
+	}
+	trafficDiff, err := settingService.GetTrafficDiff()
+	if err != nil {
+		return nil, err
+	}
+	expireWindow := int64(expireDiff) * 86400000     // days -> milliseconds
+	trafficWindow := int64(trafficDiff) * 1073741824 // GB -> bytes
+
+	online := make(map[string]bool)
+	for _, email := range s.GetOnlineClients() {
+		online[email] = true
+	}
+
+	summary := &ClientStatsSummary{}
+	now := time.Now().UnixMilli()
+	for _, inbound := range inbounds {
+		clients, err := s.GetClients(inbound)
+		if err != nil {
+			// One inbound with unparsable settings must not blank the whole roll-up.
+			logger.Warning("get clients for stats failed on inbound", inbound.Id, ":", err)
+			continue
+		}
+		summary.Total += len(clients)
+		if !inbound.Enable {
+			continue
+		}
+		for _, client := range clients {
+			if client.Enable && online[client.Email] {
+				summary.Online++
+			}
+		}
+		for _, stat := range inbound.ClientStats {
+			exhausted := stat.Total > 0 && (stat.Up+stat.Down) >= stat.Total
+			expired := stat.ExpiryTime > 0 && stat.ExpiryTime <= now
+			if exhausted || expired {
+				summary.Depleted++
+				continue
+			}
+			nearExpiry := stat.ExpiryTime > 0 && stat.ExpiryTime-now < expireWindow
+			nearQuota := stat.Total > 0 && stat.Total-(stat.Up+stat.Down) < trafficWindow
+			if nearExpiry || nearQuota {
+				summary.Expiring++
+			}
+		}
+	}
+	return summary, nil
 }
 
 func (s *InboundService) GetOnlineClients() []string {

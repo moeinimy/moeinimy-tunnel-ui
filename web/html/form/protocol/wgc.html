@@ -45,10 +45,13 @@
         <template slot="label">
             <a-tooltip>
                 <template slot="title">
-                    Size of the account's IP block, rounded up to a power of two
-                    (e.g. 6 gives a /29 of 8 addresses). The account's single config
-                    addresses this whole block, which a router/gateway hands out to
-                    its LAN. 0 = the maximum (64 devices, a /26); 1 = a single /32.
+                    How many DEVICES each account may run at once. The panel issues one
+                    config per device, each with its own key and its own tunnel IP, so
+                    import Device 1 on one machine and Device 2 on another: two devices
+                    cannot share a single config (they would share a key, and only one
+                    could stay connected). Lowering it revokes the surplus devices' keys.
+                    1 = one device (default, best capacity). 0 = the maximum, 64 devices,
+                    which issues 64 configs and fits only ~3 accounts per /24.
                 </template>
                 User Limit
                 <a-icon type="question-circle"></a-icon>

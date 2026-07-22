@@ -198,6 +198,8 @@ class Client:
             "rm -f /run/tun2socks.pid /run/ssh-vpn.pid 2>/dev/null; "
             # WireGuard (C): tear the wg-quick interface down (and force-remove a stray link).
             "wg-quick down wgc 2>/dev/null; ip link del wgc 2>/dev/null; "
+            # AmneziaWG: same teardown via awg-quick (and force-remove a stray awg link).
+            "awg-quick down awg 2>/dev/null; ip link del awg 2>/dev/null; "
             "poff -a 2>/dev/null; pkill pppd 2>/dev/null; "
             "(echo 'd vpn' > /var/run/xl2tpd/l2tp-control 2>/dev/null); "
             "pkill xl2tpd 2>/dev/null; "

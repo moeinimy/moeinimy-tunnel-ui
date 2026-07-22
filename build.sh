@@ -55,9 +55,28 @@ if [[ "${SKIP_SUBMODULES:-0}" != "1" && -f .gitmodules ]]; then
         step "pulling LATEST upstream submodule commits (--remote)"
         git submodule update --init --remote --recursive
         info "submodules moved to branch tips — 'git add third_party/*' + commit to persist the new pin"
-    elif [[ "${SUBMODULES_UPDATE:-0}" == "1" ]] || git submodule status --recursive 2>/dev/null | grep -q '^[-+]'; then
-        step "syncing pinned submodule (Xray-core)"
+    elif [[ "${SUBMODULES_UPDATE:-0}" == "1" ]]; then
+        step "syncing pinned submodules (SUBMODULES_UPDATE=1)"
         git submodule update --init --recursive
+    # Capture ONCE into a variable and match with a here-string. Piping into `grep -q`
+    # is broken under this script's `set -o pipefail`: grep exits at the first match,
+    # git gets SIGPIPE, and the pipeline reports 141 even though the pattern matched,
+    # so the check silently evaluated FALSE and this whole block never ran.
+    elif sub_status="$(git submodule status --recursive 2>/dev/null || true)"; grep -q '^-' <<<"$sub_status"; then
+        # '-' means NOT INITIALISED (fresh clone): there is nothing local to lose, so
+        # checking it out at the recorded pin is always safe.
+        step "initialising submodules"
+        git submodule update --init --recursive
+    elif grep -q '^+' <<<"$sub_status"; then
+        # '+' means the submodule sits at a DIFFERENT commit than the parent's recorded
+        # pin — i.e. someone has local work there (a patch to the Xray-core or telemt
+        # fork). `git submodule update` would hard-reset it back to the pin and the build
+        # would silently produce a binary WITHOUT that patch, which is exactly how the
+        # telemt patches were lost once before. Never rewind implicitly: build what is
+        # checked out and say so. Use SUBMODULES_UPDATE=1 to force the reset on purpose.
+        warn "submodule(s) AHEAD of the recorded pin — building what is checked out, NOT rewinding:"
+        grep '^+' <<<"$sub_status" | sed 's/^/    /' || true
+        warn "commit the gitlink (git add third_party/<name>) to persist this, or SUBMODULES_UPDATE=1 to discard it"
     else
         ok "submodules already at pinned commits — skipping clone/sync"
     fi

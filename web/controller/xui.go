@@ -13,8 +13,8 @@ type XUIController struct {
 	settingController     *SettingController
 	xraySettingController *XraySettingController
 	coreController        *CoreController
-	tunnelController      *TunnelController
 	adminController       *AdminController
+	tunnelController      *TunnelController
 }
 
 // NewXUIController creates a new XUIController and initializes its routes.
@@ -45,8 +45,8 @@ func (a *XUIController) initRouter(g *gin.RouterGroup) {
 	a.settingController = NewSettingController(g)
 	a.xraySettingController = NewXraySettingController(g)
 	a.coreController = NewCoreController(g)
-	a.tunnelController = NewTunnelController(g)
 	a.adminController = NewAdminController(g)
+	a.tunnelController = NewTunnelController(g)
 }
 
 // index renders the main panel index page.
@@ -74,12 +74,12 @@ func (a *XUIController) coreSettings(c *gin.Context) {
 	html(c, "core.html", "pages.core.title", nil)
 }
 
-// tunnel renders the Tunnel management page (server-to-server tunnels + nodes).
-func (a *XUIController) tunnel(c *gin.Context) {
-	html(c, "tunnel.html", "pages.tunnel.title", nil)
-}
-
 // admins renders the Admins management page (super admin only).
 func (a *XUIController) admins(c *gin.Context) {
 	html(c, "admins.html", "pages.admins.title", nil)
+}
+
+// tunnel renders the Tunnel management page (server-to-server tunnels + nodes).
+func (a *XUIController) tunnel(c *gin.Context) {
+	html(c, "tunnel.html", "pages.tunnel.title", nil)
 }

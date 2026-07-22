@@ -16,6 +16,7 @@ const Protocols = {
     SSTP: 'sstp',
     IKEV2: 'ikev2',
     WGC: 'wg-c',
+    AWG: 'awg',
     MTPROTO: 'mtproto',
     SSH: 'ssh',
 };
@@ -41,6 +42,7 @@ const ProtocolLabels = {
     sstp: 'SSTP',
     ikev2: 'IKEv2',
     'wg-c': 'WireGuard (C)',
+    'awg': 'AmneziaWG',
     mtproto: 'MTProto Proxy',
     ssh: 'SSH',
 };
@@ -1674,6 +1676,7 @@ class Inbound extends XrayCommonClass {
             case Protocols.SSTP: return this.settings.sstpUsers;
             case Protocols.IKEV2: return this.settings.ikev2Users;
             case Protocols.WGC: return this.settings.wgcUsers;
+            case Protocols.AWG: return this.settings.awgUsers;
             case Protocols.MTPROTO: return this.settings.mtprotoUsers;
             case Protocols.SSH: return this.settings.sshUsers;
             default: return null;
@@ -2423,6 +2426,7 @@ Inbound.Settings = class extends XrayCommonClass {
             case Protocols.SSTP: return new Inbound.SstpSettings(protocol);
             case Protocols.IKEV2: return new Inbound.Ikev2Settings(protocol);
             case Protocols.WGC: return new Inbound.WgcSettings(protocol);
+            case Protocols.AWG: return new Inbound.AwgSettings(protocol);
             case Protocols.MTPROTO: return new Inbound.MtprotoSettings(protocol);
             case Protocols.SSH: return new Inbound.SshSettings(protocol);
             default: return null;
@@ -2448,6 +2452,7 @@ Inbound.Settings = class extends XrayCommonClass {
             case Protocols.SSTP: return Inbound.SstpSettings.fromJson(json);
             case Protocols.IKEV2: return Inbound.Ikev2Settings.fromJson(json);
             case Protocols.WGC: return Inbound.WgcSettings.fromJson(json);
+            case Protocols.AWG: return Inbound.AwgSettings.fromJson(json);
             case Protocols.MTPROTO: return Inbound.MtprotoSettings.fromJson(json);
             case Protocols.SSH: return Inbound.SshSettings.fromJson(json);
             default: return null;
@@ -2978,9 +2983,10 @@ Inbound.L2tpSettings = class extends Inbound.Settings {
     dns1 = "8.8.8.8",
     dns2 = "8.8.4.4",
     mtu = 1400,
-    userLimit = 0,
+    userLimit = 1,
     userLimitStrategy = "accept",
     l2tpUsers = [new Inbound.L2tpSettings.L2tpUser()],
+    externalProxy = [],
   ) {
     super(protocol);
     this.ipsecEnable = ipsecEnable;
@@ -2998,6 +3004,9 @@ Inbound.L2tpSettings = class extends Inbound.Settings {
     // At the User Limit cap: "reject" a new device, or "accept" (evict oldest).
     this.userLimitStrategy = userLimitStrategy;
     this.l2tpUsers = l2tpUsers;
+    // Advertised endpoint override(s): {dest,port,remark}. No config file for this
+    // protocol, so this only changes the server address shown in export / info.
+    this.externalProxy = externalProxy;
   }
 
   static fromJson(json = {}) {
@@ -3018,6 +3027,7 @@ Inbound.L2tpSettings = class extends Inbound.Settings {
       json.userLimit ?? 1,
       json.userLimitStrategy ?? "accept",
       Inbound.L2tpSettings.L2tpUser.fromJson(json.clients),
+      Array.isArray(json.externalProxy) ? json.externalProxy : [],
     );
   }
 
@@ -3035,6 +3045,7 @@ Inbound.L2tpSettings = class extends Inbound.Settings {
       userLimit: this.userLimit,
       userLimitStrategy: this.userLimitStrategy,
       clients: Inbound.L2tpSettings.L2tpUser.toJsonArray(this.l2tpUsers),
+      externalProxy: this.externalProxy,
     };
   }
 };
@@ -3151,9 +3162,10 @@ Inbound.PptpSettings = class extends Inbound.Settings {
     dns1 = "8.8.8.8",
     dns2 = "8.8.4.4",
     mtu = 1400,
-    userLimit = 0,
+    userLimit = 1,
     userLimitStrategy = "accept",
     pptpUsers = [new Inbound.PptpSettings.PptpUser()],
+    externalProxy = [],
   ) {
     super(protocol);
     this.clientToClient = clientToClient;
@@ -3168,6 +3180,9 @@ Inbound.PptpSettings = class extends Inbound.Settings {
     // At the User Limit cap: "reject" a new device, or "accept" (evict oldest).
     this.userLimitStrategy = userLimitStrategy;
     this.pptpUsers = pptpUsers;
+    // Advertised endpoint override(s): {dest,port,remark}. No config file for this
+    // protocol, so this only changes the server address shown in export / info.
+    this.externalProxy = externalProxy;
   }
 
   static fromJson(json = {}) {
@@ -3185,6 +3200,7 @@ Inbound.PptpSettings = class extends Inbound.Settings {
       json.userLimit ?? 1,
       json.userLimitStrategy ?? "accept",
       Inbound.PptpSettings.PptpUser.fromJson(json.clients),
+      Array.isArray(json.externalProxy) ? json.externalProxy : [],
     );
   }
 
@@ -3199,6 +3215,7 @@ Inbound.PptpSettings = class extends Inbound.Settings {
       userLimit: this.userLimit,
       userLimitStrategy: this.userLimitStrategy,
       clients: Inbound.PptpSettings.PptpUser.toJsonArray(this.pptpUsers),
+      externalProxy: this.externalProxy,
     };
   }
 };
@@ -3327,7 +3344,7 @@ Inbound.OpenvpnSettings = class extends Inbound.Settings {
     clientToClient = false,
     crossInbound = false,
     ipRanges = [],
-    userLimit = 0,
+    userLimit = 1,
     userLimitStrategy = "accept",
     separatePorts = false,
     tlsUseFile = false,
@@ -3627,10 +3644,11 @@ Inbound.OcservSettings = class extends Inbound.Settings {
     key = "",
     caCert = "",
     ocservUsers = [new Inbound.OcservSettings.OcservUser()],
+    externalProxy = [],
     clientToClient = false,
     crossInbound = false,
     ipRanges = [],
-    userLimit = 0,
+    userLimit = 1,
     userLimitStrategy = "accept",
   ) {
     super(protocol);
@@ -3644,6 +3662,9 @@ Inbound.OcservSettings = class extends Inbound.Settings {
     this.key = key;
     this.caCert = caCert;
     this.ocservUsers = ocservUsers;
+    // Advertised endpoint override(s): {dest,port,remark}. No config file for this
+    // protocol, so this only changes the server address shown in export / info.
+    this.externalProxy = externalProxy;
     this.clientToClient = clientToClient;
     this.crossInbound = crossInbound;
     // Panel-managed, auto-assigned 10.4.x block. Read-only in the form (ocserv
@@ -3666,6 +3687,7 @@ Inbound.OcservSettings = class extends Inbound.Settings {
       json.key ?? "",
       json.caCert ?? "",
       Inbound.OcservSettings.OcservUser.fromJson(json.clients),
+      Array.isArray(json.externalProxy) ? json.externalProxy : [],
       json.clientToClient ?? false,
       json.crossInbound ?? false,
       Array.isArray(json.ipRanges) ? json.ipRanges.slice() : [],
@@ -3686,6 +3708,7 @@ Inbound.OcservSettings = class extends Inbound.Settings {
       key: this.key,
       caCert: this.caCert,
       clients: Inbound.OcservSettings.OcservUser.toJsonArray(this.ocservUsers),
+      externalProxy: this.externalProxy,
       clientToClient: this.clientToClient,
       crossInbound: this.crossInbound,
       ipRanges: this.ipRanges || [],
@@ -3816,10 +3839,11 @@ Inbound.SstpSettings = class extends Inbound.Settings {
     key = "",
     caCert = "",
     sstpUsers = [new Inbound.SstpSettings.SstpUser()],
+    externalProxy = [],
     clientToClient = false,
     crossInbound = false,
     ipRanges = [],
-    userLimit = 0,
+    userLimit = 1,
     userLimitStrategy = "accept",
   ) {
     super(protocol);
@@ -3833,6 +3857,9 @@ Inbound.SstpSettings = class extends Inbound.Settings {
     this.key = key;
     this.caCert = caCert;
     this.sstpUsers = sstpUsers;
+    // Advertised endpoint override(s): {dest,port,remark}. No config file for this
+    // protocol, so this only changes the server address shown in export / info.
+    this.externalProxy = externalProxy;
     this.clientToClient = clientToClient;
     this.crossInbound = crossInbound;
     // Panel-managed, auto-assigned 10.5.x block. Read-only in the form.
@@ -3854,6 +3881,7 @@ Inbound.SstpSettings = class extends Inbound.Settings {
       json.key ?? "",
       json.caCert ?? "",
       Inbound.SstpSettings.SstpUser.fromJson(json.clients),
+      Array.isArray(json.externalProxy) ? json.externalProxy : [],
       json.clientToClient ?? false,
       json.crossInbound ?? false,
       Array.isArray(json.ipRanges) ? json.ipRanges.slice() : [],
@@ -3874,6 +3902,7 @@ Inbound.SstpSettings = class extends Inbound.Settings {
       key: this.key,
       caCert: this.caCert,
       clients: Inbound.SstpSettings.SstpUser.toJsonArray(this.sstpUsers),
+      externalProxy: this.externalProxy,
       clientToClient: this.clientToClient,
       crossInbound: this.crossInbound,
       ipRanges: this.ipRanges || [],
@@ -4010,10 +4039,11 @@ Inbound.Ikev2Settings = class extends Inbound.Settings {
     key = "",
     caCert = "",
     ikev2Users = [new Inbound.Ikev2Settings.Ikev2User()],
+    externalProxy = [],
     clientToClient = false,
     crossInbound = false,
     ipRanges = [],
-    userLimit = 0,
+    userLimit = 1,
     userLimitStrategy = "accept",
   ) {
     super(protocol);
@@ -4033,6 +4063,9 @@ Inbound.Ikev2Settings = class extends Inbound.Settings {
     this.key = key;
     this.caCert = caCert;
     this.ikev2Users = ikev2Users;
+    // Advertised endpoint override(s): {dest,port,remark}. No config file for this
+    // protocol, so this only changes the server address shown in export / info.
+    this.externalProxy = externalProxy;
     this.clientToClient = clientToClient;
     this.crossInbound = crossInbound;
     // Panel-managed, auto-assigned block. Read-only in the form.
@@ -4058,6 +4091,7 @@ Inbound.Ikev2Settings = class extends Inbound.Settings {
       json.key ?? "",
       json.caCert ?? "",
       Inbound.Ikev2Settings.Ikev2User.fromJson(json.clients),
+      Array.isArray(json.externalProxy) ? json.externalProxy : [],
       json.clientToClient ?? false,
       json.crossInbound ?? false,
       Array.isArray(json.ipRanges) ? json.ipRanges.slice() : [],
@@ -4082,6 +4116,7 @@ Inbound.Ikev2Settings = class extends Inbound.Settings {
       key: this.key,
       caCert: this.caCert,
       clients: Inbound.Ikev2Settings.Ikev2User.toJsonArray(this.ikev2Users),
+      externalProxy: this.externalProxy,
       clientToClient: this.clientToClient,
       crossInbound: this.crossInbound,
       ipRanges: this.ipRanges || [],
@@ -4215,7 +4250,7 @@ Inbound.WgcSettings = class extends Inbound.Settings {
     clientToClient = false,
     crossInbound = false,
     ipRanges = [],
-    userLimit = 0,
+    userLimit = 1,
     userLimitStrategy = "accept",
     externalProxy = [],
   ) {
@@ -4330,6 +4365,252 @@ Inbound.WgcSettings.WgUser = class extends XrayCommonClass {
     return json.map(
       (j) =>
         new Inbound.WgcSettings.WgUser(
+          j.email,
+          j.enable ?? true,
+          j.privKey ?? "",
+          j.pubKey ?? "",
+          j.psk ?? "",
+          j.expiryTime ?? 0,
+          j.tgId ?? "",
+          j.subId ?? "",
+          j.comment ?? "",
+          j.totalGB ?? 0,
+          j.limitIp ?? j.ipLimit ?? 0,
+          j.reset ?? 0,
+          j.created_at,
+          j.updated_at,
+        ),
+    );
+  }
+
+  static toJsonArray(users) {
+    return users.map((u) => u.toJson());
+  }
+
+  toJson() {
+    return {
+      id: this.email, // identity = email (no username); keeps shared id-based client logic working
+      email: this.email,
+      enable: this.enable,
+      privKey: this.privKey,
+      pubKey: this.pubKey,
+      psk: this.psk,
+      expiryTime: this.expiryTime,
+      tgId: this.tgId,
+      subId: this.subId,
+      comment: this.comment,
+      totalGB: this.totalGB,
+      limitIp: this.limitIp,
+      reset: this.reset,
+      created_at: this.created_at,
+      updated_at: this.updated_at,
+    };
+  }
+
+  get _expiryTime() {
+    if (this.expiryTime === 0) {
+      return null;
+    }
+    if (this.expiryTime < 0) {
+      return this.expiryTime / -86400000;
+    }
+    return moment(this.expiryTime);
+  }
+
+  set _expiryTime(t) {
+    if (t == null || t === "") {
+      this.expiryTime = 0;
+    } else {
+      this.expiryTime = t.valueOf();
+    }
+  }
+
+  get _totalGB() {
+    return NumberFormatter.toFixed(this.totalGB / SizeFormatter.ONE_GB, 2);
+  }
+
+  set _totalGB(gb) {
+    this.totalGB = NumberFormatter.toFixed(gb * SizeFormatter.ONE_GB, 0);
+  }
+};
+
+// AmneziaWG (awg) inbound settings. A near-exact clone of WgcSettings (same gateway
+// model: backend-minted server keypair + one keypair per account, auto-managed IP block,
+// DNS/MTU/User-Limit/client-to-client), PLUS the AWG 1.0 DPI-obfuscation parameters.
+// Jc/Jmin/Jmax/S1/S2 are editable NUMBERS; the magic headers H1-H4 are strings minted by
+// the backend (read-only in the UI, like serverPubKey). The JSON field names here MUST
+// match the Go awgSettings struct (web/service/awg.go) exactly.
+Inbound.AwgSettings = class extends Inbound.Settings {
+  constructor(
+    protocol,
+    dns1 = "1.1.1.1",
+    dns2 = "1.0.0.1",
+    mtu = 1420,
+    jc = 4,
+    jmin = 8,
+    jmax = 80,
+    s1 = 77,
+    s2 = 90,
+    h1 = "",
+    h2 = "",
+    h3 = "",
+    h4 = "",
+    serverPrivKey = "",
+    serverPubKey = "",
+    pskEnable = false,
+    awgUsers = [new Inbound.AwgSettings.AwgUser()],
+    clientToClient = false,
+    crossInbound = false,
+    ipRanges = [],
+    // User Limit K = how many DEVICES an account gets, and the panel provisions one
+    // keypair + one config + one /32 per device. 1 is the default because 0 means the
+    // maximum (64), which under that rule would mint 64 keypairs and render 64 configs
+    // for every account, and would fit only ~3 accounts per /24. Raise it to the number
+    // of devices the account should actually run.
+    userLimit = 1,
+    userLimitStrategy = "accept",
+    externalProxy = [],
+  ) {
+    super(protocol);
+    this.dns1 = dns1;
+    this.dns2 = dns2;
+    this.mtu = mtu;
+    // AWG 1.0 obfuscation. Junk/size params (numbers) are editable; magic headers
+    // H1-H4 (strings) are backend-minted and shown read-only, like serverPubKey.
+    this.jc = jc;
+    this.jmin = jmin;
+    this.jmax = jmax;
+    this.s1 = s1;
+    this.s2 = s2;
+    this.h1 = h1;
+    this.h2 = h2;
+    this.h3 = h3;
+    this.h4 = h4;
+    // Backend-generated server keypair. Read-only in the UI (never minted client-side).
+    this.serverPrivKey = serverPrivKey;
+    this.serverPubKey = serverPubKey;
+    // Optional preshared key: when on, the backend mints a PSK per device.
+    this.pskEnable = pskEnable;
+    this.awgUsers = awgUsers;
+    this.clientToClient = clientToClient;
+    this.crossInbound = crossInbound;
+    // Panel-managed, auto-assigned block. Read-only in the form.
+    this.ipRanges = ipRanges;
+    this.userLimit = userLimit;
+    this.userLimitStrategy = userLimitStrategy;
+    // Optional external-proxy endpoints: alternate Endpoints (relay/CDN host:port)
+    // rendered into the generated client config + QR instead of this server's address.
+    this.externalProxy = externalProxy;
+  }
+
+  static fromJson(json = {}) {
+    return new Inbound.AwgSettings(
+      Protocols.AWG,
+      json.dns1 ?? "1.1.1.1",
+      json.dns2 ?? "1.0.0.1",
+      json.mtu ?? 1420,
+      json.jc ?? 4,
+      json.jmin ?? 8,
+      json.jmax ?? 80,
+      json.s1 ?? 77,
+      json.s2 ?? 90,
+      json.h1 ?? "",
+      json.h2 ?? "",
+      json.h3 ?? "",
+      json.h4 ?? "",
+      json.serverPrivKey ?? "",
+      json.serverPubKey ?? "",
+      json.pskEnable ?? false,
+      Inbound.AwgSettings.AwgUser.fromJson(json.clients),
+      json.clientToClient ?? false,
+      json.crossInbound ?? false,
+      Array.isArray(json.ipRanges) ? json.ipRanges.slice() : [],
+      json.userLimit ?? 1,
+      json.userLimitStrategy ?? "accept",
+      Array.isArray(json.externalProxy) ? json.externalProxy : [],
+    );
+  }
+
+  toJson() {
+    return {
+      dns1: this.dns1,
+      dns2: this.dns2,
+      mtu: this.mtu,
+      jc: this.jc,
+      jmin: this.jmin,
+      jmax: this.jmax,
+      s1: this.s1,
+      s2: this.s2,
+      h1: this.h1,
+      h2: this.h2,
+      h3: this.h3,
+      h4: this.h4,
+      serverPrivKey: this.serverPrivKey,
+      serverPubKey: this.serverPubKey,
+      pskEnable: this.pskEnable,
+      clients: Inbound.AwgSettings.AwgUser.toJsonArray(this.awgUsers),
+      clientToClient: this.clientToClient,
+      crossInbound: this.crossInbound,
+      ipRanges: this.ipRanges || [],
+      userLimit: this.userLimit,
+      userLimitStrategy: this.userLimitStrategy,
+      externalProxy: this.externalProxy || [],
+    };
+  }
+};
+
+// An AmneziaWG account (gateway model). Identity is `email` — there is NO username or
+// password (the public key is the credential). ONE keypair per account {privKey,pubKey,psk}
+// minted by the backend; the config Address is the account's whole block CIDR (e.g. a /29).
+// The standard usage/quota/expiry fields are kept so the shared client form works.
+Inbound.AwgSettings.AwgUser = class extends XrayCommonClass {
+  constructor(
+    email = RandomUtil.randomLowerAndNum(9),
+    enable = true,
+    privKey = "",
+    pubKey = "",
+    psk = "",
+    expiryTime = 0,
+    tgId = "",
+    subId = "",
+    comment = "",
+    totalGB = 0,
+    limitIp = 0,
+    reset = 0,
+    created_at = undefined,
+    updated_at = undefined,
+  ) {
+    super();
+    this.email = email;
+    this.enable = enable;
+    // One keypair per account, minted by the backend (empty on add). Read-only in the UI.
+    this.privKey = privKey;
+    this.pubKey = pubKey;
+    this.psk = psk;
+    this.expiryTime = expiryTime;
+    this.tgId = tgId;
+    this.subId = subId;
+    this.comment = comment;
+    this.totalGB = totalGB;
+    this.limitIp = limitIp;
+    this.reset = reset;
+    this.created_at = created_at;
+    this.updated_at = updated_at;
+  }
+
+  // See MtprotoUser.id: same email-as-identity model, same reason. toJson() writes
+  // id=email but fromJson() cannot restore it through the constructor, so the live
+  // object needs this or every id-keyed path (edit, row-key) sees undefined.
+  get id() {
+    return this.email;
+  }
+
+  static fromJson(json = []) {
+    if (!Array.isArray(json))
+      return [new Inbound.AwgSettings.AwgUser()];
+    return json.map(
+      (j) =>
+        new Inbound.AwgSettings.AwgUser(
           j.email,
           j.enable ?? true,
           j.privKey ?? "",

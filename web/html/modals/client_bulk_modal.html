@@ -350,6 +350,8 @@
                     return new Inbound.Ikev2Settings.Ikev2User();
                 case Protocols.WGC:
                     return new Inbound.WgcSettings.WgUser();
+                case Protocols.AWG:
+                    return new Inbound.AwgSettings.AwgUser();
                 case Protocols.MTPROTO:
                     return new Inbound.MtprotoSettings.MtprotoUser();
                 case Protocols.SSH:

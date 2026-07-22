@@ -23,7 +23,7 @@ from .panel import Panel
 
 # protocol base octet for the 10.<base>.<id>.<host> tunnel address
 BASE = {"l2tp": 0, "pptp": 1, "ovpn-udp": 2, "ovpn-tcp": 3, "openconnect": 4,
-        "sstp": 5, "ikev2": 6, "wg-c": 7}
+        "sstp": 5, "ikev2": 6, "wg-c": 7, "awg": 8}
 
 PSK = "TestPSK-9182"  # L2TP/IPsec pre-shared key
 IKEV2_PSK = "TestIkev2PSK-7f3a91"  # IKEv2 psk-mode shared key (single-account inbound)
@@ -58,6 +58,9 @@ SSH_PORT = 2222
 # Per-device tests (user-limit 2nd device / multi-user-total / strategy) are Not Applicable
 # (one keypair can't split into distinct simultaneous device IPs — the /29 IS the block).
 WGC_USER_LIMIT = 6
+# AmneziaWG = the SAME gateway model as wg-c (one keypair per account, block sized by the
+# User Limit -> a /29), just obfuscated. So it uses the identical per-account block sizing.
+AWG_USER_LIMIT = 6
 
 # ---- MTProto Proxy -----------------------------------------------------------
 # 8443, not 443: the panel itself may hold 443, and MTProto needs a real TCP port
@@ -129,6 +132,9 @@ SECOND_PORTS = {
     # WireGuard listens on its OWN per-inbound UDP port (a kernel wgc<id> interface),
     # so this really binds a distinct listener (like openvpn/sstp, unlike l2tp/pptp).
     "wg-c":       {"udp": 51821},
+    # AmneziaWG likewise binds its OWN per-inbound UDP port (a kernel awg<id> interface),
+    # so this really binds a distinct listener (like wg-c).
+    "awg":        {"udp": 51823},
     # The SSH server binds its OWN per-inbound TCP listener, so this 2nd inbound really
     # binds a distinct port (like openvpn/wg-c). Distinct from the primary 2222.
     "ssh":        {"udp": 2223},
@@ -256,6 +262,22 @@ def build_second_inbound(panel: Panel, proto: str) -> Inbound:
             protocol="wg-c", inbound_id=inb["id"], udp_port=ports["udp"],
             tcp_port=0, accounts={"A": acct}, user_limit=1)
         _fetch_wg_configs(panel, second)
+        return second
+    if proto == "awg":
+        # A distinct kernel awg<id> interface on its own UDP port + 10.8 /24 pool,
+        # single account (K=1). Keys + obfuscation params are server-minted; fetch its
+        # device config too. Mirrors the wg-c case (same gateway model, awg backend).
+        settings = {
+            "dns1": "1.1.1.1", "dns2": "8.8.8.8", "mtu": 1420,
+            "pskEnable": False,
+            "clientToClient": True, "crossInbound": True,
+            "clients": [_dict_client(acct)],
+        }
+        inb = panel.add_inbound("test-awg-2", ports["udp"], "awg", settings)
+        second = Inbound(
+            protocol="awg", inbound_id=inb["id"], udp_port=ports["udp"],
+            tcp_port=0, accounts={"A": acct}, user_limit=1)
+        _fetch_awg_configs(panel, second)
         return second
     if proto == "ssh":
         # A distinct in-binary SSH listener on its own TCP port with a single account
@@ -386,7 +408,7 @@ class Inbound:
             base = BASE["ovpn-tcp"] if transport == "tcp" else BASE["ovpn-udp"]
         else:
             base = BASE[self.protocol]
-        if self.protocol == "wg-c" and self.user_limit > 1:
+        if self.protocol in ("wg-c", "awg") and self.user_limit > 1:
             # gateway model: one aligned power-of-two block per account; its IP is the
             # block's first address (nextPow2 rounding, mirrors Go wgcAccountBlock).
             bs = 1
@@ -684,6 +706,41 @@ def run(panel: Panel, server_ip: str, cfg: dict, result: JobResult,
 
     log(f"-> wgc-inbound [{wgs.status.value}] {wgs.detail}")
 
+    # ---- AmneziaWG inbound ----------------------------------------------
+    # Obfuscated in-kernel WireGuard (protocol id `awg`, base 10.8/16). IDENTICAL to
+    # wg-c above (gateway model, no RADIUS, one keypair per account, rbridge-swept usage/
+    # quota) plus the AmneziaWG obfuscation params (jc/jmin/jmax/s1/s2/h1..h4), which the
+    # panel backend defaults + mints itself — so the settings here match wg-c's exactly.
+    # The User Limit (6) sizes each account's aligned block (-> a /29); after build we
+    # fetch each account's config (rendered by the awg-configs endpoint).
+    log("-> creating awg inbound (kernel amneziawg, gateway /29, 2 accounts, user-limit 6)...")
+    aws = phase.add(SubTest("awg-inbound"))
+    try:
+        settings = {
+            "dns1": "1.1.1.1", "dns2": "8.8.8.8", "mtu": 1420,
+            "pskEnable": False,
+            "clientToClient": True, "crossInbound": True,
+            "userLimit": AWG_USER_LIMIT,
+            "clients": [_dict_client(_acct("awg", 0)),
+                        _dict_client(_acct("awg", 1))],
+        }
+        inb = panel.add_inbound("test-awg", 51825, "awg", settings)
+        iid = inb["id"]
+        awg_ib = Inbound(
+            protocol="awg", inbound_id=iid, udp_port=51825, tcp_port=0,
+            accounts={"A": _acct("awg", 0), "B": _acct("awg", 1)},
+            user_limit=AWG_USER_LIMIT)
+        _fetch_awg_configs(panel, awg_ib)
+        sc.inbounds["awg"] = awg_ib
+        n_cfg = sum(len(v) for v in awg_ib.wg_configs.values())
+        aws.status = Status.PASS
+        aws.detail = f"inbound {iid}, udp 51825, 2 accounts (gateway /29), {n_cfg} configs"
+    except Exception as e:  # noqa: BLE001
+        aws.status = Status.ERROR
+        aws.detail = str(e)[:300]
+
+    log(f"-> awg-inbound [{aws.status.value}] {aws.detail}")
+
     # ---- MTProto Proxy inbound ------------------------------------------
     # telemt (protocol id `mtproto`). The ODD ONE: a userspace relay, so there is NO
     # tunnel, NO 10.x block, NO BASE entry and NO RADIUS. All three connection modes
@@ -873,7 +930,7 @@ def run(panel: Panel, server_ip: str, cfg: dict, result: JobResult,
     # succeeded would still be declared a total failure and throw the good inbound
     # away. ("wg-c" was missing until now: mtproto would have hit the same trap.)
     if all(p not in sc.inbounds for p in ("openvpn", "l2tp", "pptp", "openconnect",
-                                          "sstp", "ikev2", "wg-c", "mtproto", "ssh")):
+                                          "sstp", "ikev2", "wg-c", "awg", "mtproto", "ssh")):
         return None
     return sc
 
@@ -897,5 +954,20 @@ def _fetch_wg_configs(panel: Panel, inbound: Inbound) -> None:
     for which, acct in inbound.accounts.items():
         try:
             inbound.wg_configs[which] = panel.wgc_configs(inbound.inbound_id, acct.email)
+        except Exception:  # noqa: BLE001
+            inbound.wg_configs[which] = []
+
+
+def _fetch_awg_configs(panel: Panel, inbound: Inbound) -> None:
+    """Populate inbound.wg_configs[which] with the panel-minted per-device AmneziaWG
+    client configs for every account. Same shape + field (wg_configs) as wg-c: the awg
+    client driver reads inbound.wg_configs exactly like the wgc driver, differing only in
+    the endpoint (awg-configs) and the obfuscation params carried in the config text.
+    Best-effort per account (an empty list surfaces later as a clear 'no amneziawg config'
+    connect failure rather than a setup crash)."""
+    inbound.wg_configs = {}
+    for which, acct in inbound.accounts.items():
+        try:
+            inbound.wg_configs[which] = panel.awg_configs(inbound.inbound_id, acct.email)
         except Exception:  # noqa: BLE001
             inbound.wg_configs[which] = []

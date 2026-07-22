@@ -49,6 +49,7 @@ type XrayService struct {
 	sstpService    SstpService
 	ikev2Service   Ikev2Service
 	wgcService     WgcService
+	awgService     AwgService
 	mtprotoService MtprotoService
 	sshService     SshService
 	xrayAPI        xray.XrayAPI
@@ -135,7 +136,7 @@ func (s *XrayService) GetXrayConfig() (*xray.Config, error) {
 		// Omitting a protocol here is not a no-op: its raw settings would be handed to
 		// Xray as a native inbound, Xray would reject the unknown protocol, and the
 		// WHOLE core would fail to start, taking every other inbound down with it.
-		if inbound.Protocol == "l2tp" || inbound.Protocol == "pptp" || inbound.Protocol == "openvpn" || inbound.Protocol == "openconnect" || inbound.Protocol == "sstp" || inbound.Protocol == "ikev2" || inbound.Protocol == "wg-c" || inbound.Protocol == "mtproto" || inbound.Protocol == "ssh" {
+		if inbound.Protocol == "l2tp" || inbound.Protocol == "pptp" || inbound.Protocol == "openvpn" || inbound.Protocol == "openconnect" || inbound.Protocol == "sstp" || inbound.Protocol == "ikev2" || inbound.Protocol == "wg-c" || inbound.Protocol == "awg" || inbound.Protocol == "mtproto" || inbound.Protocol == "ssh" {
 			continue
 		}
 		// get settings clients
@@ -290,6 +291,17 @@ func (s *XrayService) GetXrayConfig() (*xray.Config, error) {
 			continue
 		}
 		dokodemoConfig := s.wgcService.GetDokodemoConfig(wgcInbound)
+		xrayConfig.InboundConfigs = append(xrayConfig.InboundConfigs, *dokodemoConfig)
+	}
+
+	// Inject paired dokodemo-door inbounds for AmneziaWG (one per inbound; the amneziawg
+	// kernel interface decrypts, each inbound's 10.8 block routes to its own dokodemo).
+	awgInbounds, _ := s.awgService.GetAwgInbounds()
+	for _, awgInbound := range awgInbounds {
+		if !awgInbound.Enable {
+			continue
+		}
+		dokodemoConfig := s.awgService.GetDokodemoConfig(awgInbound)
 		xrayConfig.InboundConfigs = append(xrayConfig.InboundConfigs, *dokodemoConfig)
 	}
 

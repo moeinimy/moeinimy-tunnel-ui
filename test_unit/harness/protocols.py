@@ -18,11 +18,13 @@ from .clients import openconnect as oc_mod
 from .clients import sstp as sstp_mod
 from .clients import ikev2 as ikev2_mod
 from .clients import wgc as wgc_mod
+from .clients import awg as awg_mod
 from .clients import ssh as ssh_mod
 from .clients.base import Client
 from .model import Phase, SubTest, Status
 from .model import (PHASE_OPENVPN, PHASE_L2TP, PHASE_PPTP, PHASE_OPENCONNECT,
-                    PHASE_SSTP, PHASE_WGC, PHASE_SSH, PHASE_SSH_UDP, IKEV2_PHASE_BY_MODE)
+                    PHASE_SSTP, PHASE_WGC, PHASE_AWG, PHASE_SSH, PHASE_SSH_UDP,
+                    IKEV2_PHASE_BY_MODE)
 
 # Grace for a client edit to land. telemt itself is NOT restarted (the panel rewrites
 # config.toml and telemt picks it up via inotify), but a client edit also flags Xray
@@ -37,12 +39,12 @@ MTPROTO_RELOAD_WAIT = 8.0
 # so PEER["ssh"] is never read.
 PEER = {"openvpn": "l2tp", "l2tp": "pptp", "pptp": "openvpn",
         "openconnect": "openvpn", "sstp": "openvpn", "ikev2": "openvpn",
-        "wg-c": "openvpn"}
+        "wg-c": "openvpn", "awg": "openvpn"}
 # Non-ikev2 protocols map straight to their phase. ikev2 is split per auth mode
 # (IKEV2_PHASE_BY_MODE), resolved inside run() from its `mode` arg.
 PHASE = {"openvpn": PHASE_OPENVPN, "l2tp": PHASE_L2TP, "pptp": PHASE_PPTP,
          "openconnect": PHASE_OPENCONNECT, "sstp": PHASE_SSTP, "wg-c": PHASE_WGC,
-         "ssh": PHASE_SSH}
+         "awg": PHASE_AWG, "ssh": PHASE_SSH}
 
 # Connect variant used when dialing the SECOND same-protocol inbound (TEST 1,
 # _multi_inbound_check): l2tp uses RAW (the client's IPsec config is pinned to the
@@ -50,7 +52,7 @@ PHASE = {"openvpn": PHASE_OPENVPN, "l2tp": PHASE_L2TP, "pptp": PHASE_PPTP,
 # udp/new, pptp has no variant. sstp/ikev2 have no variant (single-variant protocols).
 _SECOND_VARIANT = {"openvpn": ("udp", "new"), "l2tp": "raw", "pptp": None,
                    "openconnect": "dtls", "sstp": None, "ikev2": None,
-                   "wg-c": None, "ssh": None}
+                   "wg-c": None, "awg": None, "ssh": None}
 
 
 def _connect(client: Client, sc, proto: str, which: str, variant=None, ib=None):
@@ -75,6 +77,8 @@ def _connect(client: Client, sc, proto: str, which: str, variant=None, ib=None):
         return ikev2_mod.connect(client, ib, which, server_ip=sc.server_ip)
     if proto == "wg-c":
         return wgc_mod.connect(client, ib, which, server_ip=sc.server_ip)
+    if proto == "awg":
+        return awg_mod.connect(client, ib, which, server_ip=sc.server_ip)
     if proto == "ssh":
         return ssh_mod.connect(client, ib, which, server_ip=sc.server_ip)
     raise ValueError(proto)
@@ -88,6 +92,7 @@ def _disconnect(client: Client, proto: str):
      "sstp": sstp_mod.disconnect,
      "ikev2": ikev2_mod.disconnect,
      "wg-c": wgc_mod.disconnect,
+     "awg": awg_mod.disconnect,
      "ssh": ssh_mod.disconnect}[proto](client)
 
 
@@ -1176,7 +1181,7 @@ def run(proto: str, cA: Client, cB: Client, cC: Client, sc, cfg: dict, result, p
         # With user_limit K>1 the account owns a block; the 2nd device must get a
         # DISTINCT IP inside that block (A device 1 = cA, still up) and reach the
         # internet. cB is idle here (client-to-client connects it later).
-        if proto == "wg-c":
+        if proto in ("wg-c", "awg"):
             phase.add(SubTest("user-limit", Status.NA,
                               "WireGuard gateway model: one keypair per account; the block "
                               "(e.g. /29) IS the limit, not per-device enforcement"))
@@ -1291,7 +1296,7 @@ def run(proto: str, cA: Client, cB: Client, cC: Client, sc, cfg: dict, result, p
     # key IS its credential), so there is no dynamic (K+1)th-device admission to reject
     # or evict — the cap is structural. The device COUNT and its hard disable/quota
     # enforcement are covered by user-limit / multi-user-total / account-termination.
-    if proto == "wg-c":
+    if proto in ("wg-c", "awg"):
         for nm in ("strategy-reject", "strategy-accept"):
             phase.add(SubTest(nm, Status.NA,
                               "WireGuard: K device keypairs are structural — no dynamic "
@@ -1302,13 +1307,14 @@ def run(proto: str, cA: Client, cB: Client, cC: Client, sc, cfg: dict, result, p
     elif ib is not None and getattr(ib, "user_limit", 1) > 1 and panel is not None:
         _strategy_check(proto, cA, cB, cC, sc, ib, panel, log, phase, server_exec)
 
-    # ---- WireGuard preshared-key mode ----------------------------------
-    # Prove the optional PSK mode works end-to-end: a separate psk-enabled wgc inbound,
-    # a real handshake + internet through it, then tear it down. Covers "with and without
-    # preshared key" (the primary suite above ran the no-PSK path).
-    if proto == "wg-c" and panel is not None:
+    # ---- WireGuard / AmneziaWG preshared-key mode ----------------------
+    # Prove the optional PSK mode works end-to-end: a separate psk-enabled wgc/awg
+    # inbound, a real handshake + internet through it, then tear it down. Covers "with
+    # and without preshared key" (the primary suite above ran the no-PSK path). awg runs
+    # the identical check against its OWN protocol (module/inbound), not wg-c's.
+    if proto in ("wg-c", "awg") and panel is not None:
         try:
-            pk = _wgc_psk_check(cC, sc, panel, log)
+            pk = _wgc_psk_check(cC, sc, panel, log, proto=proto)
         except Exception as e:  # noqa: BLE001
             pk = SubTest("psk-mode", Status.ERROR, str(e)[:150])
         phase.add(pk)
@@ -1333,7 +1339,7 @@ def run(proto: str, cA: Client, cB: Client, cC: Client, sc, cfg: dict, result, p
     # resets the counter fresh and, in termination, DISABLES account A — so this
     # must precede it). Independent of the shared suite; wrapped so a raising test
     # can't abort the phase.
-    if proto == "wg-c":
+    if proto in ("wg-c", "awg"):
         phase.add(SubTest("multi-user-total", Status.NA,
                           "WireGuard gateway model: one keypair per account, no per-device "
                           "traffic split to aggregate"))
@@ -1836,13 +1842,22 @@ def _oc_same_nat_check(cA, sc, ib, log, phase, server_exec=None):
     log(f"-> same-nat-limit [{st.status.value}] {st.detail}")
 
 
-def _wgc_psk_check(spare, sc, panel, log) -> SubTest:
-    """Prove WireGuard preshared-key mode end-to-end: build a psk-enabled wgc inbound
-    (single account), require a real handshake + internet through it, then delete it. The
-    primary wgc suite ran the no-PSK path, so together they cover both modes."""
+def _wgc_psk_check(spare, sc, panel, log, proto="wg-c") -> SubTest:
+    """Prove WireGuard/AmneziaWG preshared-key mode end-to-end: build a psk-enabled
+    wgc/awg inbound (single account), require a real handshake + internet through it,
+    then delete it. The primary suite ran the no-PSK path, so together they cover both
+    modes. `proto` selects wg-c (kernel wireguard, wgc_mod) or awg (amneziawg, awg_mod)
+    so awg's psk-mode subtest exercises awg itself, not wg-c under the awg column."""
+    is_awg = proto == "awg"
+    mod = awg_mod if is_awg else wgc_mod
+    _fetch = server_setup._fetch_awg_configs if is_awg else server_setup._fetch_wg_configs
+    # Distinct from the primary (51821/51820) and second (51823/51821) ports of each
+    # protocol so a psk inbound can never collide with them; awg uses its own port.
+    psk_port = 51824 if is_awg else 51822
+    remark = "test-awg-psk" if is_awg else "test-wgc-psk"
     st = SubTest("psk-mode")
-    log("-> psk-mode (preshared-key wgc inbound: handshake + internet)...")
-    acct = server_setup._acct("wgpsk", 0)
+    log(f"-> psk-mode (preshared-key {proto} inbound: handshake + internet)...")
+    acct = server_setup._acct("awgpsk" if is_awg else "wgpsk", 0)
     settings = {
         "dns1": "1.1.1.1", "dns2": "8.8.8.8", "mtu": 1420,
         "pskEnable": True,
@@ -1851,15 +1866,15 @@ def _wgc_psk_check(spare, sc, panel, log) -> SubTest:
     }
     second = None
     try:
-        inb = panel.add_inbound("test-wgc-psk", 51822, "wg-c", settings)
+        inb = panel.add_inbound(remark, psk_port, proto, settings)
         second = server_setup.Inbound(
-            protocol="wg-c", inbound_id=inb["id"], udp_port=51822, tcp_port=0,
+            protocol=proto, inbound_id=inb["id"], udp_port=psk_port, tcp_port=0,
             accounts={"A": acct}, user_limit=1)
-        server_setup._fetch_wg_configs(panel, second)
+        _fetch(panel, second)
         time.sleep(4)   # peer add + interface up
         spare.disconnect_all()
         time.sleep(2)
-        ok, ip, clog = wgc_mod.connect(spare, second, "A", server_ip=sc.server_ip)
+        ok, ip, clog = mod.connect(spare, second, "A", server_ip=sc.server_ip)
         net = checks.internet(spare) if ok else None
         works = bool(ok and net and net.status == Status.PASS)
         cfg0 = (second.wg_configs.get("A") or [{}])[0]
@@ -1879,7 +1894,7 @@ def _wgc_psk_check(spare, sc, panel, log) -> SubTest:
     except Exception as e:  # noqa: BLE001
         st.status, st.detail = Status.ERROR, str(e)[:150]
     finally:
-        wgc_mod.disconnect(spare)
+        mod.disconnect(spare)
         spare.disconnect_all()
         if second is not None:
             try:

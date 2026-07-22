@@ -28,6 +28,7 @@ type InboundController struct {
 	sstpService    service.SstpService
 	ikev2Service   service.Ikev2Service
 	wgcService     service.WgcService
+	awgService     service.AwgService
 	mtprotoService service.MtprotoService
 	sshService     service.SshService
 }
@@ -96,6 +97,8 @@ func (a *InboundController) initRouter(g *gin.RouterGroup) {
 	g.POST("/check-ikev2-cert", requirePerm(model.PermCreateInbound), a.checkIkev2Cert)
 	// WireGuard (C): render a client's per-device .conf(s) (keys are server-minted).
 	g.GET("/:id/wgc-configs", read, owns, a.getWgcConfigs)
+	// AmneziaWG: render a client's per-device .conf(s) with obfuscation (server-minted keys).
+	g.GET("/:id/awg-configs", read, owns, a.getAwgConfigs)
 	g.GET("/:id/ssh-configs", read, owns, a.getSshConfigs)
 }
 
@@ -272,6 +275,13 @@ func (a *InboundController) mtprotoChanged(clientOnly bool) {
 		if err := a.mtprotoService.RestartServices(); err != nil {
 			logger.Warning("MTProto: service restart failed:", err)
 		}
+	} else {
+		// Client-only changes hot-reload a running telemt via its config watcher, but
+		// when this change produces the inbound's first usable account nothing has
+		// launched the process yet. Start it if down (never supersedes a live one).
+		if err := a.mtprotoService.EnsureServicesRunning(); err != nil {
+			logger.Warning("MTProto: ensure-running failed:", err)
+		}
 	}
 	a.mtprotoService.KillDisabledSessions()
 	// The paired socks inbound (and thus this inbound's routing tag) is built from
@@ -316,6 +326,24 @@ func (a *InboundController) wgcChanged(clientOnly bool) {
 	}
 	if err := a.wgcService.SetupRouting(); err != nil {
 		logger.Warning("WireGuard: routing setup failed:", err)
+	}
+	_ = expanded
+	a.xrayService.SetToNeedRestart()
+}
+
+// onAwgChanged / onAwgClientChanged reconcile AmneziaWG identically to wg-c (see wgcChanged):
+// grow the 10.8 pool, mint server/device keys + obfuscation params, rebuild the kernel peer
+// set, re-apply routing. No daemon; each inbound is a kernel awg<id> interface.
+func (a *InboundController) onAwgChanged()       { a.awgChanged(false) }
+func (a *InboundController) onAwgClientChanged() { a.awgChanged(true) }
+func (a *InboundController) awgChanged(clientOnly bool) {
+	expanded := service.AutoExpandVpnRanges("awg")
+	a.awgService.ReconcileAllKeys()
+	if err := a.awgService.GenerateAllConfigs(); err != nil {
+		logger.Warning("AmneziaWG: config generation failed:", err)
+	}
+	if err := a.awgService.SetupRouting(); err != nil {
+		logger.Warning("AmneziaWG: routing setup failed:", err)
 	}
 	_ = expanded
 	a.xrayService.SetToNeedRestart()
@@ -468,6 +496,8 @@ func (a *InboundController) addInbound(c *gin.Context) {
 		a.onIkev2Changed()
 	} else if inbound.Protocol == model.WGC {
 		a.onWgcChanged()
+	} else if inbound.Protocol == model.AWG {
+		a.onAwgChanged()
 	} else if inbound.Protocol == model.MTPROTO {
 		a.onMtprotoChanged()
 	} else if inbound.Protocol == model.SSH {
@@ -516,6 +546,8 @@ func (a *InboundController) delInbound(c *gin.Context) {
 		a.onIkev2Changed()
 	} else if oldInbound != nil && oldInbound.Protocol == model.WGC {
 		a.onWgcChanged()
+	} else if oldInbound != nil && oldInbound.Protocol == model.AWG {
+		a.onAwgChanged()
 	} else if oldInbound != nil && oldInbound.Protocol == model.MTPROTO {
 		a.onMtprotoChanged()
 	} else if oldInbound != nil && oldInbound.Protocol == model.SSH {
@@ -570,6 +602,8 @@ func (a *InboundController) updateInbound(c *gin.Context) {
 		a.onIkev2Changed()
 	} else if inbound.Protocol == model.WGC {
 		a.onWgcChanged()
+	} else if inbound.Protocol == model.AWG {
+		a.onAwgChanged()
 	} else if inbound.Protocol == model.MTPROTO {
 		a.onMtprotoChanged()
 	} else if inbound.Protocol == model.SSH {
@@ -684,6 +718,8 @@ func (a *InboundController) addInboundClient(c *gin.Context) {
 		a.onIkev2ClientChanged()
 	} else if data.Protocol == model.WGC {
 		a.onWgcClientChanged()
+	} else if data.Protocol == model.AWG {
+		a.onAwgClientChanged()
 	} else if data.Protocol == model.MTPROTO {
 		a.onMtprotoClientChanged()
 	} else if data.Protocol == model.SSH {
@@ -761,6 +797,8 @@ func (a *InboundController) delInboundClient(c *gin.Context) {
 		a.onIkev2Changed()
 	} else if oldInbound != nil && oldInbound.Protocol == model.WGC {
 		a.onWgcChanged()
+	} else if oldInbound != nil && oldInbound.Protocol == model.AWG {
+		a.onAwgChanged()
 	} else if oldInbound != nil && oldInbound.Protocol == model.MTPROTO {
 		a.onMtprotoChanged()
 	} else if oldInbound != nil && oldInbound.Protocol == model.SSH {
@@ -815,6 +853,8 @@ func (a *InboundController) updateInboundClient(c *gin.Context) {
 		a.onIkev2ClientChanged()
 	} else if inbound.Protocol == model.WGC {
 		a.onWgcClientChanged()
+	} else if inbound.Protocol == model.AWG {
+		a.onAwgClientChanged()
 	} else if inbound.Protocol == model.MTPROTO {
 		a.onMtprotoClientChanged()
 	} else if inbound.Protocol == model.SSH {
@@ -875,6 +915,8 @@ func (a *InboundController) bulkUpdateClients(c *gin.Context) {
 			a.onIkev2ClientChanged()
 		case string(model.WGC):
 			a.onWgcClientChanged()
+		case string(model.AWG):
+			a.onAwgClientChanged()
 		case string(model.MTPROTO):
 			a.onMtprotoClientChanged()
 		case string(model.SSH):
@@ -920,6 +962,7 @@ func (a *InboundController) resetClientTraffic(c *gin.Context) {
 	a.onSstpClientChanged()
 	a.onIkev2ClientChanged()
 	a.onWgcClientChanged()
+	a.onAwgClientChanged()
 	a.onMtprotoClientChanged()
 	a.onSshClientChanged()
 }
@@ -951,6 +994,7 @@ func (a *InboundController) resetAllTraffics(c *gin.Context) {
 	a.onSstpClientChanged()
 	a.onIkev2ClientChanged()
 	a.onWgcClientChanged()
+	a.onAwgClientChanged()
 	a.onMtprotoClientChanged()
 	a.onSshClientChanged()
 }
@@ -978,6 +1022,7 @@ func (a *InboundController) resetAllClientTraffics(c *gin.Context) {
 	a.onSstpClientChanged()
 	a.onIkev2ClientChanged()
 	a.onWgcClientChanged()
+	a.onAwgClientChanged()
 	a.onMtprotoClientChanged()
 	a.onSshClientChanged()
 }
@@ -1349,6 +1394,28 @@ func (a *InboundController) getWgcConfigs(c *gin.Context) {
 		return
 	}
 	configs, err := a.wgcService.RenderClientConfigs(inbound, c.Query("email"), browserHost(c))
+	if err != nil {
+		jsonMsg(c, I18nWeb(c, "somethingWentWrong"), err)
+		return
+	}
+	jsonObj(c, configs, nil)
+}
+
+// getAwgConfigs renders the AmneziaWG client configuration(s) for one account (?email=) of an
+// inbound: identical to getWgcConfigs but each [Interface] carries the obfuscation params.
+func (a *InboundController) getAwgConfigs(c *gin.Context) {
+	id, err := strconv.Atoi(c.Param("id"))
+	if err != nil {
+		jsonMsg(c, "Invalid inbound ID", err)
+		return
+	}
+	a.awgService.ReconcileAllKeys()
+	inbound, err := a.inboundService.GetInbound(id)
+	if err != nil {
+		jsonMsg(c, "Inbound not found", err)
+		return
+	}
+	configs, err := a.awgService.RenderClientConfigs(inbound, c.Query("email"), browserHost(c))
 	if err != nil {
 		jsonMsg(c, I18nWeb(c, "somethingWentWrong"), err)
 		return

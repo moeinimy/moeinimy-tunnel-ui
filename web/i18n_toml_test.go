@@ -86,6 +86,7 @@ var knownMissing = keySet(
 	"pages.settings.service.startDesc", "pages.settings.service.status",
 	"pages.settings.service.statusDesc", "pages.settings.service.unit",
 	"pages.settings.service.unitDesc", "pages.settings.serviceSettings",
+
 	// Tunnel management panel (merged tunnel-manager). Translated in en_US and
 	// fa_IR; the other locales render via the English fallback until translated.
 	"menu.tunnel",

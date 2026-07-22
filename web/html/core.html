@@ -2,10 +2,7 @@
 {{ template "page/head_end" .}}
 
 {{ template "page/body_start" .}}
-<a-layout id="app" v-cloak :class="themeSwitcher.currentTheme">
-  <a-sidebar></a-sidebar>
-  <a-layout id="content-layout">
-    <a-layout-content>
+{{template "page/shell_start" . }}
       <a-spin :spinning="spinning" :delay="300" tip='{{ i18n "loading"}}' size="large">
         <transition name="list" appear>
         <a-row :gutter="[16, 16]" :style="{ margin: 0 }">
@@ -232,8 +229,6 @@
         </a-row>
         </transition>
       </a-spin>
-    </a-layout-content>
-  </a-layout>
 
   <!-- Provision live log: a real streaming terminal console. Closing mid-run is
        safe — provisioning runs server-side and the poll keeps ticking. -->
@@ -353,7 +348,7 @@
     </div>
     <pre class="core-logs">[[ logsContent || '{{ i18n "pages.core.noLogs" }}' ]]</pre>
   </a-modal>
-</a-layout>
+{{template "page/shell_end" . }}
 
 {{template "page/body_scripts" .}}
 {{template "component/aSidebar" .}}
@@ -365,6 +360,8 @@
     el: '#app',
     data: {
       themeSwitcher,
+      pageTitle: '{{ i18n "menu.core"}}',
+      pageClass: '',
       spinning: false,
       loaded: false,
       provisioned: false,
@@ -626,11 +623,11 @@
         this.reconnectTimer = setTimeout(probe, 20000);
       },
       coreTitle(name) {
-        return ({ xray: 'Xray', l2tp: 'L2TP', ipsec: 'IPsec', pptp: 'PPTP', openvpn: 'OpenVPN', openconnect: 'OpenConnect (cisco)', sstp: 'SSTP', ikev2: 'IKEv2', wgc: 'WireGuard (C)', mtproto: 'MTProto Proxy', ssh: 'SSH', radius: 'RADIUS' })[name] || name;
+        return ({ xray: 'Xray', l2tp: 'L2TP', ipsec: 'IPsec', pptp: 'PPTP', openvpn: 'OpenVPN', openconnect: 'OpenConnect (cisco)', sstp: 'SSTP', ikev2: 'IKEv2', wgc: 'WireGuard (C)', awg: 'AmneziaWG', mtproto: 'MTProto Proxy', ssh: 'SSH', radius: 'RADIUS' })[name] || name;
       },
       coreBackend(name) {
         // The actual software powering each core (shown in the Backend row).
-        return ({ xray: 'Xray-core', l2tp: 'xl2tpd', ipsec: 'strongSwan (charon)', pptp: 'pptpd', openvpn: 'OpenVPN', openconnect: 'ocserv', sstp: 'accel-ppp', ikev2: 'strongSwan (charon)', wgc: 'WireGuard (kernel)', mtproto: 'telemt', ssh: 'Built-in (vpn-ui)', radius: 'Built-in (vpn-ui)' })[name] || '-';
+        return ({ xray: 'Xray-core', l2tp: 'xl2tpd', ipsec: 'strongSwan (charon)', pptp: 'pptpd', openvpn: 'OpenVPN', openconnect: 'ocserv', sstp: 'accel-ppp', ikev2: 'strongSwan (charon)', wgc: 'WireGuard (kernel)', awg: 'AmneziaWG (kernel)', mtproto: 'telemt', ssh: 'Built-in (vpn-ui)', radius: 'Built-in (vpn-ui)' })[name] || '-';
       },
       coreIcon(name) {
         // A single lock icon represents every core (Xray + all VPN daemons).

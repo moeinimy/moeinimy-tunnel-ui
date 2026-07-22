@@ -18,7 +18,6 @@ import (
 	"github.com/mhsanaei/3x-ui/v2/util/random"
 	"github.com/mhsanaei/3x-ui/v2/util/reflect_util"
 	"github.com/mhsanaei/3x-ui/v2/web/entity"
-	"github.com/mhsanaei/3x-ui/v2/xray"
 )
 
 //go:embed config.json
@@ -38,6 +37,7 @@ var defaultValueMap = map[string]string{
 	"expireDiff":                  "0",
 	"trafficDiff":                 "0",
 	"remarkModel":                 "-ieo",
+	"serverName":                  "",
 	"timeLocation":                "Local",
 	"tgBotEnable":                 "false",
 	"tgBotToken":                  "",
@@ -423,6 +423,22 @@ func (s *SettingService) SetSystemdServiceName(value string) error {
 	return s.setString("systemdServiceName", value)
 }
 
+// GetServerName returns the operator's own label for this server. Empty is the
+// default and means the overview falls back to the host it was reached on.
+//
+// Deliberately NOT part of AllSetting: that struct is bound wholesale from the
+// settings form, so a field the form does not post is written back as its zero
+// value. A label edited from the overview would be wiped by the next unrelated
+// save on the settings page.
+func (s *SettingService) GetServerName() (string, error) {
+	return s.getString("serverName")
+}
+
+// SetServerName persists the operator's label for this server. Empty clears it.
+func (s *SettingService) SetServerName(value string) error {
+	return s.setString("serverName", value)
+}
+
 func (s *SettingService) GetTwoFactorToken() (string, error) {
 	return s.getString("twoFactorToken")
 }
@@ -681,12 +697,20 @@ func (s *SettingService) SetExternalTrafficInformURI(InformURI string) error {
 	return s.setString("externalTrafficInformURI", InformURI)
 }
 
+// GetIpLimitEnable reports whether the panel offers the per-client IP Limit controls.
+// Always true, and kept as a (bool, error) getter so its callers and the settings map
+// that publishes "ipLimitEnable" to the UI are unchanged.
+//
+// It used to derive from the Xray access log path, back when the limit was enforced by
+// scraping that log and handing the offending address to fail2ban. Since the shipped
+// template sets "access": "none" (config.json), that made the entire IP Limit UI
+// invisible on a default install: the feature was off unless an operator first turned on
+// a log they had no reason to connect to it. Enforcement now happens inside the core,
+// which reads each account's cap from the speedlimits.json sidecar and never looks at the
+// access log, so there is nothing left to gate on. A client's own limit of 0 already
+// means "no cap" for that client, which is the real off switch.
 func (s *SettingService) GetIpLimitEnable() (bool, error) {
-	accessLogPath, err := xray.GetAccessLogPath()
-	if err != nil {
-		return false, err
-	}
-	return (accessLogPath != "none" && accessLogPath != ""), nil
+	return true, nil
 }
 
 // GetLdapEnable returns whether LDAP is enabled.

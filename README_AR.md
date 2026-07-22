@@ -16,6 +16,7 @@
 - SSTP
 - IKEv2
 - WireGuard (C)
+- AmneziaWG (WireGuard مموّه)
 - MTProto Proxy (Telegram)
 - SSH
 
@@ -41,18 +42,24 @@
 ## أنظمة التشغيل المُختبَرة
 
 
-| | التوزيعة |الإصدار |الإصدار |الإصدار |
-|:---:|:---|:---:|:---:|:---:|
-| <img src="https://cdn.simpleicons.org/ubuntu" width="32" height="32" alt="Ubuntu"> | **Ubuntu** | `22.04` | `24.04` | `26.04` |
-| <img src="https://cdn.simpleicons.org/debian" width="32" height="32" alt="Debian"> | **Debian** | `12` | `13` | |
-| <img src="https://cdn.simpleicons.org/fedora" width="32" height="32" alt="Fedora"> | **Fedora** | `43` | `44` | |
-| <img src="https://cdn.simpleicons.org/almalinux/2F80ED" width="32" height="32" alt="AlmaLinux"> | **AlmaLinux** | `9` | `10` | |
-| <img src="https://cdn.simpleicons.org/rockylinux" width="32" height="32" alt="Rocky Linux"> | **Rocky Linux** | `9` | `10` | |
-| <img src="https://cdn.simpleicons.org/archlinux" width="32" height="32" alt="Arch Linux"> | **Arch Linux** | `Rolling` | | |
+| | التوزيعة |الإصدار |الإصدار |
+|:---:|:---|:---:|:---:|
+| <img src="https://cdn.simpleicons.org/ubuntu" width="32" height="32" alt="Ubuntu"> | **Ubuntu** | `24.04` | `26.04` |
+| <img src="https://cdn.simpleicons.org/debian" width="32" height="32" alt="Debian"> | **Debian** | `12` | `13` |
+| <img src="https://cdn.simpleicons.org/fedora" width="32" height="32" alt="Fedora"> | **Fedora** | `43` | `44` |
+| <img src="https://cdn.simpleicons.org/almalinux/2F80ED" width="32" height="32" alt="AlmaLinux"> | **AlmaLinux** | `9` | `10` |
+| <img src="https://cdn.simpleicons.org/rockylinux" width="32" height="32" alt="Rocky Linux"> | **Rocky Linux** | `9` | `10` |
+| <img src="https://cdn.simpleicons.org/centos" width="32" height="32" alt="CentOS Stream"> | **CentOS Stream** | `9` | `10` |
+| <img src="https://cdn.simpleicons.org/archlinux" width="32" height="32" alt="Arch Linux"> | **Arch Linux** | `Rolling` | |
 
 
 > [!IMPORTANT]
 > يُوصى بشدّة بتثبيت اللوحة على أنظمة التشغيل المُختبَرة؛ لأن احتمال ألّا تعمل النوى الجديدة بشكل صحيح على بقية أنظمة التشغيل مرتفع!
+
+> [!NOTE]
+> **يعمل AmneziaWG على Debian 12/13 وUbuntu 24.04/26.04 فقط.**
+> على خلاف بقية البروتوكولات، AmneziaWG غير موجود في نواة أي توزيعة: فاللوحة تُجمِّع (compile) وحدة النواة الخاصة به على خادمك أثناء الإعداد. وهذه الوحدة تفشل حالياً في البناء في حالتين. على **النواة 7.1 أو أحدث** (Fedora 43/44 وArch) أزالت النواة الرمز `ipv6_stub` الذي ما زالت الوحدة تستخدمه. وعلى **AlmaLinux وRocky Linux وCentOS Stream** تتعارض نوى RHEL المنقولة (backported) مع طبقة التوافق في الوحدة، كما أن EL10 غير معروف لها إطلاقاً. وكلتا الحالتين قيدٌ في وحدة AmneziaWG الأصلية، وإصلاحهما ما زال مفتوحاً لدى المشروع الأصلي، لذا لا يمكن للوحة تجاوزهما بأي إعداد.
+> يكتشف الإعداد ذلك ويُخبرك به بدلاً من أن يفشل بصمت. **أما بقية البروتوكولات فتعمل بشكل طبيعي على كل أنظمة التشغيل المُختبَرة.**
 
 ## تثبيت اللوحة
 
@@ -72,14 +79,13 @@ sudo /opt/vpn-ui/vpn-ui-amd64 --uninstall
 ## لقطات الشاشة
 
 ![نظرة عامة](https://raw.githubusercontent.com/Sir-MmD/vpn-ui/refs/heads/main/media/overview.png)
-![إعدادات النواة](https://raw.githubusercontent.com/Sir-MmD/vpn-ui/refs/heads/main/media/core_Settings.png)
 
 
 ## كيفية تفاعل البروتوكولات الجديدة مع نواة Xray-core
 
 ```mermaid
 flowchart TB
-  Client["VPN Client<br/>(L2TP/IPsec · PPTP · OpenVPN · OpenConnect · SSTP · IKEv2 · WireGuard (C))"]
+  Client["VPN Client<br/>(L2TP/IPsec · PPTP · OpenVPN · OpenConnect · SSTP · IKEv2 · WireGuard (C) · AmneziaWG)"]
   TGC["Telegram Client<br/>(MTProto Proxy)"]
   SSHC["SSH Client<br/>(ssh -D dynamic SOCKS · badvpn-udpgw for UDP)"]
 
@@ -98,7 +104,7 @@ flowchart TB
   end
 
   subgraph KERNEL["Linux kernel data plane"]
-    IFACE["ppp0 / tun0 / wgc0<br/>client is assigned a pool IP"]
+    IFACE["ppp0 / tun0 / wgc0 / awg0<br/>client is assigned a pool IP"]
     NFT["nftables mark:<br/>UDP → TPROXY · TCP → REDIRECT"]
     RULE["ip rule fwmark 1 → table 100"]
   end
@@ -115,6 +121,7 @@ flowchart TB
   %% control plane
   Client -->|"tunnel + credentials"| D
   Client -.->|"WireGuard (C): in-kernel wgc, no daemon"| IFACE
+  Client -.->|"AmneziaWG: in-kernel awg (DKMS module), no daemon<br/>obfuscated handshake: Jc/Jmin/Jmax · S1/S2 · H1-H4"| IFACE
   TGC -->|"obfuscated2 / dd / FakeTLS secret"| MT
   SSHC -->|"username + password (checked in-process, no RADIUS)"| SSHSRV
   D -.->|"MS-CHAPv2 Access-Request"| RAD
@@ -143,12 +150,15 @@ flowchart TB
 
 ## كيف يدمج RBridge البروتوكولات بدون RADIUS
 
-يعتمد WireGuard (C) وأوضاع **PSK** / **EAP-TLS** في IKEv2 على مصادقة بمفتاح عام أو شهادة، لذا لا تُجري أي جولة تبادل مع RADIUS، وكانت لولا ذلك ستبقى بلا سجل جلسة ولا محاسبة حركة ولا فرض لحدّ **User Limit**. يسدّ **RBridge** (جسر RADIUS) هذه الفجوة: مرة واحدة في كل دورة جمع للحركة، يقوم **Sweeper** باستطلاع الأنفاق الحيّة لكل بروتوكول (poll)، ويطبّق الحصة (quota) والتعطيل وحدّ **User Limit** لكل حساب (K) مع طرد الزائدين (evict)، ثم يوفّق الناجين داخل نفس سجلّ جلسات **RADIUS** المدمج ونفس محاسبة **nftables** التي تستخدمها بروتوكولات RADIUS أصلاً. وبذلك يحصل البروتوكول القائم على المفاتيح على نفس سلوك الاستهلاك والحصة وحدّ الأجهزة تمامًا، ويخرج عبر نفس مستوى بيانات **dokodemo-door** الخاص بـ Xray.
+يعتمد WireGuard (C) و AmneziaWG وأوضاع **PSK** / **EAP-TLS** في IKEv2 على مصادقة بمفتاح عام أو شهادة، لذا لا تُجري أي جولة تبادل مع RADIUS، وكانت لولا ذلك ستبقى بلا سجل جلسة ولا محاسبة حركة ولا فرض لحدّ **User Limit**. يسدّ **RBridge** (جسر RADIUS) هذه الفجوة: مرة واحدة في كل دورة جمع للحركة، يقوم **Sweeper** باستطلاع الأنفاق الحيّة لكل بروتوكول (poll)، ويطبّق الحصة (quota) والتعطيل وحدّ **User Limit** لكل حساب (K) مع طرد الزائدين (evict)، ثم يوفّق الناجين داخل نفس سجلّ جلسات **RADIUS** المدمج ونفس محاسبة **nftables** التي تستخدمها بروتوكولات RADIUS أصلاً. وبذلك يحصل البروتوكول القائم على المفاتيح على نفس سلوك الاستهلاك والحصة وحدّ الأجهزة تمامًا، ويخرج عبر نفس مستوى بيانات **dokodemo-door** الخاص بـ Xray.
+
+وفي بروتوكولَي الأنفاق القائمين على المفاتيح، **WireGuard (C)** و **AmneziaWG**، يخصّص **User Limit** بقيمة K عددًا K من فتحات الأجهزة لكل حساب: K من أزواج المفاتيح، وK من ملفات الإعداد، وK من عناوين IP مختلفة داخل النفق، بواقع ملف إعداد واحد لكل جهاز. وهو نفس النموذج الذي تستخدمه الخدمات التجارية، وهو ما يتيح استعمال حساب واحد على الهاتف والحاسوب والراوتر في آن واحد دون أن تتنازع الأجهزة على مفتاح واحد.
 
 ```mermaid
 flowchart TB
   subgraph SRC["Non-RADIUS protocols (public-key / certificate auth, no RADIUS round-trip)"]
     WG["WireGuard (C)<br/>in-kernel, wgctrl-managed"]
+    AWG["AmneziaWG<br/>in-kernel amneziawg (DKMS), obfuscated"]
     IKE["IKEv2 PSK / EAP-TLS<br/>strongSwan charon"]
   end
 
@@ -168,9 +178,11 @@ flowchart TB
 
   %% control plane
   WG -.->|"peers + last-handshake"| P1
+  AWG -.->|"peers + last-handshake"| P1
   IKE -.->|"active SAs + Framed-IP"| P1
   SWEEP --> P1 --> P2 --> P3
   P2 -.->|"evict: remove peer / terminate SA"| WG
+  P2 -.->|"evict: remove peer"| AWG
   P2 -.->|"evict: terminate SA"| IKE
   P3 -->|"tunnel IP → account"| REG
   P3 -->|"add / remove counters"| ACCT
@@ -178,6 +190,7 @@ flowchart TB
 
   %% data plane
   WG ==> XRAY
+  AWG ==> XRAY
   IKE ==> XRAY
   ACCT -.- XRAY
 ```
@@ -214,6 +227,7 @@ git clone https://github.com/Sir-MmD/vpn-ui.git && cd vpn-ui
 | `sstp` | connect variants + checks + peer reachability (SSTP/accel-ppp, PPP-over-TLS) |
 | `ikev2` | connect + checks + peer reachability (IKEv2/IPsec, strongSwan charon; eap-mschapv2 + psk + eap-tls) |
 | `wg-c` | connect + checks + peer reachability + per-account usage/termination (WireGuard C, in-kernel wgctrl, gateway /29, + preshared-key mode) |
+| `awg` | connect + checks + peer reachability + per-account usage/termination (AmneziaWG, in-kernel amneziawg DKMS module, obfuscation params, + preshared-key mode) |
 | `mtproto` | alias: runs every MTProto phase below (MTProto Proxy, telemt) |
 | `mtproto-classic` | handshake + relay to a real Telegram DC + wrong-secret control + usage (obfuscated2) |
 | `mtproto-secure` | same, "dd" random-padding secret |

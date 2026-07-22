@@ -1367,7 +1367,7 @@ func BuildVpnEmailToIPMap() map[string][]string {
 	// per-index/per-block IPs come out of computeVpnClientIP/vpnAccountDeviceIPs keyed
 	// on protocolBase(protocol), identical to the ppp path. ---
 	var pppInbounds []*model.Inbound
-	db.Where("protocol IN ? AND enable = ?", []string{"l2tp", "pptp", "openconnect", "sstp", "ikev2", "wg-c"}, true).Find(&pppInbounds)
+	db.Where("protocol IN ? AND enable = ?", []string{"l2tp", "pptp", "openconnect", "sstp", "ikev2", "wg-c", "awg"}, true).Find(&pppInbounds)
 
 	type pppSettingsJSON struct {
 		IpRanges  []string      `json:"ipRanges"`
@@ -1407,12 +1407,12 @@ func BuildVpnEmailToIPMap() map[string][]string {
 			// WireGuard (C) gateway model: the account owns ONE aligned block (a /29-style
 			// CIDR); route its whole CIDR (matches wgcAccountBlock) so every IP the router
 			// hands out behind the single link flows through Xray.
-			if string(inbound.Protocol) == "wg-c" {
-				// WireGuard (C) sizes the account block with wgc semantics (User Limit 0
-				// = the full 64-device /26), which differs from the shared k above.
+			if string(inbound.Protocol) == "wg-c" || string(inbound.Protocol) == "awg" {
+				// WireGuard (C) / AmneziaWG size the account block with gateway semantics
+				// (User Limit 0 = the full 64-device /26), which differs from the shared k above.
 				wk := wgcEffectiveK(settings.UserLimit)
 				if wk <= 1 {
-					if ip := computeVpnClientIP(ranges, inbound.Id, i, "wg-c"); ip != nil {
+					if ip := computeVpnClientIP(ranges, inbound.Id, i, string(inbound.Protocol)); ip != nil {
 						result[client.Email] = append(result[client.Email], ip.String()+"/32")
 					}
 				} else {

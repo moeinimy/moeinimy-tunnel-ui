@@ -51,6 +51,17 @@ var vpnOptionalKernelModules = []string{
 	// kernel without it degrades to a Warn (kernel-only build, no userspace fallback yet)
 	// rather than failing provisioning. Autoloads on the first `ip link add type wireguard`.
 	"wireguard",
+	// amneziawg: the AmneziaWG data plane. Unlike every other entry here this module is
+	// NOT shipped by any distro kernel; ensureAmneziawg DKMS-builds it from the vendored
+	// source during setup. Listed so it shows up in the System card's module list once
+	// built (GetSystemStatus only renders an optional module when it is actually
+	// available, so it stays hidden rather than red on a host that never built it).
+	//
+	// It must stay OPTIONAL and out of vpnKernelModules: MissingKernelModules would
+	// otherwise always report it (no stock kernel has it), sending provisionKernelModules
+	// off to install a distro kernel package that cannot provide it and needlessly
+	// tripping the reboot/bootloader-pin path.
+	"amneziawg",
 }
 
 // CoreState is the coarse health of a backend "core".
@@ -116,6 +127,7 @@ type CoreService struct {
 	sstpService    SstpService
 	ikev2Service   Ikev2Service
 	wgcService     WgcService
+	awgService     AwgService
 	mtprotoService MtprotoService
 	sshService     SshService
 	xrayService    XrayService
@@ -315,6 +327,7 @@ func (s *CoreService) GetCoresStatus() []CoreStatus {
 		s.sstpStatus(),
 		s.ikev2Status(),
 		s.wgcStatus(),
+		s.awgStatus(),
 		s.mtprotoStatus(),
 		s.sshStatus(),
 		s.radiusStatus(),
@@ -535,6 +548,36 @@ func (s *CoreService) wgcStatus() CoreStatus {
 	return cs
 }
 
+// awgStatus reports the AmneziaWG core. Like wg-c it has no daemon: the data plane is the
+// out-of-tree amneziawg kernel module (DKMS-built) + the panel's wgctrl-managed interfaces.
+func (s *CoreService) awgStatus() CoreStatus {
+	cs := CoreStatus{Name: "awg"}
+	inbounds, _ := s.awgService.GetAwgInbounds()
+	cs.Inbounds = len(inbounds)
+	if !s.awgService.AmneziawgAvailable() {
+		cs.State = CoreNotInstalled
+		// Distinguish "setup has not run yet" from "this host cannot build it at all".
+		// Telling an operator on Fedora/Arch/RHEL to re-run setup would send them round a
+		// loop that can never succeed, so say what is actually wrong.
+		if ok, why := awgKernelModuleSupported(); !ok {
+			cs.Detail = why
+		} else {
+			cs.Detail = "amneziawg kernel module not built (run Core Settings setup)"
+		}
+		return cs
+	}
+	cs.Version = amneziawgModuleVersion()
+	switch {
+	case cs.Inbounds == 0:
+		cs.State = CoreIdle
+	case s.awgService.AnyInterfaceUp():
+		cs.State = CoreRunning
+	default:
+		cs.State = CoreStopped
+	}
+	return cs
+}
+
 // mtprotoStatus reports the MTProto Proxy core. Unlike the tunnel protocols there
 // is no kernel module or interface to probe: telemt is a plain userspace relay, so
 // availability is just "is the bundled binary present" and liveness is "is any
@@ -645,7 +688,7 @@ func (s *CoreService) IsProvisioned() bool {
 // APPEND to this list when adding a new host-dependent protocol. An install that
 // was already provisioned for the older set is then told to re-run setup for the
 // new protocol only (see MissingProtocols), so upgrades don't silently miss it.
-var provisionProtocols = []string{"l2tp", "pptp", "openvpn", "openconnect", "sstp", "ikev2", "wgc", "mtproto"}
+var provisionProtocols = []string{"l2tp", "pptp", "openvpn", "openconnect", "sstp", "ikev2", "wgc", "awg", "mtproto"}
 
 // provisionBaseline is FROZEN — the protocol set as of when per-protocol setup
 // tracking was introduced. Do NOT add to it; new protocols go in provisionProtocols
@@ -727,6 +770,8 @@ func (s *CoreService) RestartCore(name string) error {
 		return s.ikev2Service.RestartServices()
 	case "wgc":
 		return s.wgcService.RestartServices()
+	case "awg":
+		return s.awgService.RestartServices()
 	case "mtproto":
 		return s.mtprotoService.RestartServices()
 	case "ssh":
@@ -745,7 +790,7 @@ func (s *CoreService) RestartCore(name string) error {
 // one failing core doesn't abort the rest.
 func (s *CoreService) RestartAll() error {
 	var errs []string
-	for _, name := range []string{"xray", "l2tp", "pptp", "openvpn", "openconnect", "sstp", "ikev2", "wgc", "mtproto", "ssh", "radius"} {
+	for _, name := range []string{"xray", "l2tp", "pptp", "openvpn", "openconnect", "sstp", "ikev2", "wgc", "awg", "mtproto", "ssh", "radius"} {
 		if err := s.RestartCore(name); err != nil {
 			errs = append(errs, fmt.Sprintf("%s: %v", name, err))
 		}
@@ -780,6 +825,8 @@ func (s *CoreService) StopCore(name string) error {
 		return s.ikev2Service.StopServices()
 	case "wgc":
 		return s.wgcService.StopServices()
+	case "awg":
+		return s.awgService.StopServices()
 	case "mtproto":
 		return s.mtprotoService.StopServices()
 	case "ssh":
@@ -819,6 +866,15 @@ func (s *CoreService) CoreLogs(name string) string {
 			up = "yes"
 		}
 		return fmt.Sprintf("WireGuard (C) runs in-kernel via wgctrl (no daemon log).\nModule version: %s\nInterface(s) up: %s", wireguardModuleVersion(), up)
+	case "awg":
+		if !s.awgService.AmneziawgAvailable() {
+			return "AmneziaWG: kernel module 'amneziawg' not built on this host (run Core Settings setup)."
+		}
+		up := "no"
+		if s.awgService.AnyInterfaceUp() {
+			up = "yes"
+		}
+		return fmt.Sprintf("AmneziaWG runs in-kernel via the wgctrl fork (no daemon log).\nModule version: %s\nInterface(s) up: %s", amneziawgModuleVersion(), up)
 	case "mtproto":
 		return procMgr.LogsByPrefix("mtproto-server-")
 	case "ssh":
@@ -902,8 +958,18 @@ func (s *CoreService) runProvisionSteps(emit func(ProvisionStep)) (rebootModules
 			continue
 		}
 		if !moduleAvailable(m) {
-			emit(ProvisionStep{Name: "module " + m, OK: true,
-				Msg: "not on this kernel — optional, IPsec uses XFRM instead"})
+			// amneziawg is the one entry here that no kernel ships: it is built from the
+			// vendored source by ensureAmneziawg later in THIS same pass, so on a first
+			// run it is legitimately absent at this point. Saying "IPsec uses XFRM
+			// instead" would be simply wrong for it.
+			msg := "not on this kernel, optional: IPsec uses XFRM instead"
+			if m == amneziawgModule {
+				// Deliberately neutral: on a supported host the AmneziaWG step below builds
+				// it, on an unsupported one that step explains why it cannot. Promising a
+				// build here would contradict the very next line on Fedora/Arch/RHEL.
+				msg = "not built yet, see the AmneziaWG step below"
+			}
+			emit(ProvisionStep{Name: "module " + m, OK: true, Msg: msg})
 			continue
 		}
 		if exec.Command("modprobe", m).Run() == nil {
@@ -1009,6 +1075,18 @@ func (s *CoreService) runProvisionSteps(emit func(ProvisionStep)) (rebootModules
 	// effort install of the distro's full kernel-modules package. When the modules
 	// ship only in a newer kernel, this reports that a reboot is needed to load them.
 	mods, pkg := s.provisionKernelModules(emit)
+
+	// AmneziaWG: DKMS-build + load the out-of-tree `amneziawg` module from the vendored
+	// source (the project's only on-host compile). Warn-and-degrade on failure.
+	//
+	// This MUST run AFTER provisionKernelModules. That step can install a fuller kernel on
+	// a cut-down cloud image (Debian's "cloud" flavour ships no PPP/L2TP) and ask for a
+	// reboot, so the kernel this host will actually boot is not the one running now.
+	// Building first meant the module was compiled for the kernel being left behind, and
+	// AmneziaWG came back "module not found" after the reboot until setup was run a second
+	// time. Running here, the incoming kernel and its headers are already on disk, so the
+	// `dkms autoinstall` inside this step covers it too.
+	emit(ensureAmneziawg())
 
 	// Clear any distro deny-list/disable for our modules (and their dependencies) so
 	// systemd-modules-load auto-loads them on boot (Fedora/RHEL blacklist the L2TP

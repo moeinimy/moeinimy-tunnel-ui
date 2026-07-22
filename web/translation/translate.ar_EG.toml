@@ -90,6 +90,9 @@
 "noExpiry" = "بدون انتهاء"
 
 [menu]
+"navigation" = "التنقل الرئيسي"
+"collapse" = "طي الشريط الجانبي"
+"expand" = "توسيع الشريط الجانبي"
 "theme" = "الثيم"
 "dark" = "داكن"
 "ultraDark" = "داكن جدًا"
@@ -116,6 +119,8 @@
 "successLogin" = "لقد تم تسجيل الدخول إلى حسابك بنجاح."
 
 [pages.index]
+"restore" = "استعادة"
+"systemStatus" = "حالة النظام"
 "title" = "نظرة عامة"
 "cpu" = "المعالج"
 "logicalProcessors" = "المعالجات المنطقية"
@@ -218,6 +223,7 @@
 "customGeoErrUpdateAllIncomplete" = "تعذر تحديث مصدر واحد أو أكثر من مصادر geo المخصصة"
 
 [pages.inbounds]
+"totalUsers" = "إجمالي المستخدمين"
 "exportTxt" = "Export TXT"
 "exportPdf" = "Export PDF"
 "exportNoneSelected" = "No accounts selected"
@@ -327,6 +333,18 @@
 "trafficMultiplierFromStart" = "= طبّق على كل الترافيك. (الوحدة: GB)"
 "trafficMultiplierValue" = "المضاعف"
 "trafficMultiplierValueDesc" = "كام مرة يتحسب الترافيك اللي بعد الحد من حصة العميل. مثلاً، 2 بيحسب 10 MB استهلاك على أنها 20 MB."
+"speedLimitTitle" = "حد السرعة"
+"speedLimitDesc" = "حدّد سرعة ثابتة لكل حساب على الـ inbound ده. الحد بيتطبق لكل حساب لوحده: كل عميل بياخد نصيبه بالسرعة دي، مش حصة مشتركة بينهم."
+"speedLimitSeparateTitle" = "فصل الاتجاهين"
+"speedLimitSeparateDesc" = "اضبط سرعة التنزيل والرفع كل واحدة لوحدها. لما يبقى مقفول، نفس السرعة بتحدّ كل اتجاه لوحده (مش المجموع)."
+"speedLimitValue" = "السرعة"
+"speedLimitValueDesc" = "السرعة لكل حساب، بالـ KB/s. بتحدّ التنزيل والرفع كل واحد لوحده بنفس السرعة. 0 = بلا حدود."
+"speedLimitDown" = "التنزيل"
+"speedLimitDownDesc" = "سرعة التنزيل لكل حساب، بالـ KB/s. 0 = بلا حدود."
+"speedLimitUp" = "الرفع"
+"speedLimitUpDesc" = "سرعة الرفع لكل حساب، بالـ KB/s. 0 = بلا حدود."
+"speedLimitApplyAfter" = "طبّق بعد"
+"speedLimitFromStart" = "= حدّد من البداية. (الوحدة: GB)"
 "lastReset" = "آخر إعادة تعيين"
 
 [pages.client]

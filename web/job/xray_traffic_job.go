@@ -26,6 +26,7 @@ type XrayTrafficJob struct {
 	sstpService     service.SstpService
 	ikev2Service    service.Ikev2Service
 	wgcService      service.WgcService
+	awgService      service.AwgService
 	mtprotoService  service.MtprotoService
 	sshService      service.SshService
 	nftService      service.NftService
@@ -57,6 +58,7 @@ func NewXrayTrafficJob(rs *service.RadiusService) *XrayTrafficJob {
 	j.sweeper = rbridge.New(rs)
 	j.sweeper.Register(&j.ikev2Service)
 	j.sweeper.Register(&j.wgcService)
+	j.sweeper.Register(&j.awgService)
 	return j
 }
 
@@ -89,6 +91,10 @@ func (j *XrayTrafficJob) Run() {
 	if err := j.wgcService.GenerateAllConfigs(); err != nil {
 		logger.Debug("wgc: peer reconcile failed:", err)
 	}
+	// AmneziaWG: identical hard-enforcement reconcile to wg-c, before the sweep polls.
+	if err := j.awgService.GenerateAllConfigs(); err != nil {
+		logger.Debug("awg: peer reconcile failed:", err)
+	}
 	// IKEv2 psk/eap-tls: same hard-enforcement contract, for the same reason. Those two
 	// modes authenticate locally at charon (no RADIUS round-trip that could re-check the
 	// account), so the sweep below only terminates the SA and the client re-dials into the
@@ -110,6 +116,7 @@ func (j *XrayTrafficJob) Run() {
 		"sstp":        j.radiusService.GetSessions("sstp"),
 		"ikev2":       j.radiusService.GetSessions("ikev2"),
 		"wg-c":        j.radiusService.GetSessions("wg-c"),
+		"awg":         j.radiusService.GetSessions("awg"),
 	}
 	clientTraffics = append(clientTraffics, j.nftService.CollectAndResetTraffic(vpnSessions)...)
 
@@ -156,6 +163,16 @@ func (j *XrayTrafficJob) Run() {
 	if err != nil {
 		logger.Warning("add inbound traffic failed:", err)
 	}
+	// Republish the speed limit sidecar now that AddTraffic has committed: this is the
+	// only point in the tick where every protocol's bytes have landed, so it is the
+	// first moment a "Limit After" threshold crossing is visible. It is deliberately
+	// independent of the needRestart flags below and never sets one: nothing in the
+	// xray.Config graph changed, and a restart per threshold crossing (which is a
+	// continuous event as users consume data) is the exact thing the sidecar exists to
+	// avoid. Cheap on a no-op tick: it skips the write when the bytes are unchanged.
+	// The idle-tick early return above correctly skips this, since no bytes means no
+	// threshold can have crossed.
+	service.WriteSpeedLimits()
 	// AddTraffic is where THIS tick's bytes land and a crossed quota flips the account
 	// to disabled, so the sweep above (which ran before it) could only ever see the
 	// PREVIOUS tick's verdict: an account that blew its quota kept relaying for one

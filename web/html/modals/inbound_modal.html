@@ -223,6 +223,28 @@
                     inModal.inbound.settings.externalProxy = [];
                 }
             },
+            // Shared toggle for the connection-oriented protocols (l2tp/pptp/ikev2/
+            // sstp/openconnect), which keep an advertised-endpoint list in
+            // settings.externalProxy just like OpenVPN / WireGuard-C.
+            get vpnExternalProxy() {
+                return (
+                    Array.isArray(inModal.inbound.settings.externalProxy) &&
+                    inModal.inbound.settings.externalProxy.length > 0
+                );
+            },
+            set vpnExternalProxy(value) {
+                if (value) {
+                    inModal.inbound.settings.externalProxy = [
+                        {
+                            dest: window.location.hostname,
+                            port: inModal.inbound.port,
+                            remark: "",
+                        },
+                    ];
+                } else {
+                    inModal.inbound.settings.externalProxy = [];
+                }
+            },
         },
         computed: {
             ovpnAeadCiphers() {
@@ -386,6 +408,8 @@
                     }
                 } else if (protocol === 'wg-c') {
                     inModal.inbound.port = 51820;
+                } else if (protocol === 'awg') {
+                    inModal.inbound.port = 51821;
                 } else if (protocol === 'mtproto') {
                     // 443 is what MTProto clients expect and what FakeTLS needs to be
                     // plausible (an "HTTPS" session on a non-443 port is a giveaway).
@@ -765,6 +789,13 @@
                         trafficMultiplierEnable: dbInbound.trafficMultiplierEnable,
                         trafficMultiplierAfter: dbInbound.trafficMultiplierAfter,
                         trafficMultiplier: dbInbound.trafficMultiplier,
+                        speedLimitEnable: dbInbound.speedLimitEnable,
+                        speedLimitSeparate: dbInbound.speedLimitSeparate,
+                        speedLimitDown: dbInbound.speedLimitDown,
+                        speedLimitUp: dbInbound.speedLimitUp,
+                        speedLimitAfter: dbInbound.speedLimitAfter,
+                        ipLimit: dbInbound.ipLimit,
+                        ipLimitStrategy: dbInbound.ipLimitStrategy,
                         listen: inbound.listen,
                         port: inbound.port,
                         protocol: inbound.protocol,

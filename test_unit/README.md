@@ -33,6 +33,12 @@ Per server distro (own isolated incus bridge, run in parallel):
    - **client-to-client** — client A pings client B on the same inbound
    - **cross-inbound** — client A pings a client on the *peer* protocol's inbound
      (cross-inbound is an IP/inbound-level gate, so cross-protocol exercises it)
+4. **awg** (AmneziaWG) - connect, dns-resolve, internet, dns-leak, xray routing,
+   client-to-client and per-account usage/termination, the same shape as the
+   `wg-c` phase. AmneziaWG is obfuscated WireGuard, so both ends need the
+   out-of-tree `amneziawg` kernel module: the panel DKMS-builds it on the server
+   during `core-init`, and this phase DKMS-builds it on the client VM as well
+   (idempotent, a fast no-op once present) before it dials the tunnel.
 
 ### Routing test note
 The panel auto-translates a routing rule authored by client **email**
@@ -74,7 +80,7 @@ sudo ./setup.sh          # install + init incus, python3, deps (idempotent)
 ```
 
 `setup.sh` detects the package manager (apt/dnf/yum/pacman) and installs incus
-(Zabbly upstream repo fallback on Debian 12 / Ubuntu 22; EPEL on RHEL-family),
+(Zabbly upstream repo fallback on older host distros like Debian 12; EPEL on RHEL-family),
 python3 + pip and the python deps, starts the incus daemon, and runs
 `incus admin init --minimal` if no storage pool exists. Re-running is safe.
 
@@ -82,7 +88,7 @@ python3 + pip and the python deps, starts the incus daemon, and runs
 
 ```bash
 # place the prebuilt amd64 binary named `vpn-ui` (+ its bin/ dir) in test_subject/
-sudo ./run.sh                          # full 12-distro matrix (auto-setup if needed)
+sudo ./run.sh                          # full 13-distro matrix (auto-setup if needed)
 sudo ./run.sh --only ubuntu-24,arch    # subset
 sudo ./run.sh -c /path/to/other.toml
 ```
@@ -145,7 +151,8 @@ harness/
   checks.py                dns-resolve / internet / dns-leak / xray-route / peer-ping
   xraylink.py              parse vless/vmess/ss/trojan share link -> Xray outbound
   probes.py                one-time preflight (external outbound reachability)
-  clients/{base,openvpn,l2tp,pptp}.py   client VM tooling + connect scripts
+  clients/{base,openvpn,l2tp,pptp,openconnect,sstp,ikev2,wgc,awg,mtproto,ssh}.py
+                           client VM tooling + connect scripts
   model.py                 result model (JobResult/Phase/SubTest/Status)
 report/report.py           results.json + self-contained report.html
 ```

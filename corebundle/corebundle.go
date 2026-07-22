@@ -1,6 +1,6 @@
-// Package corebundle bakes the project's pinned Xray core binary and the base
-// geo data files (geoip.dat / geosite.dat) into the panel executable via
-// go:embed and extracts them at runtime.
+// Package corebundle bakes the project's pinned Xray core binary and the geo
+// data files (base + the IR/RU rulesets) into the panel executable via go:embed
+// and extracts them at runtime.
 //
 // The panel ships a SPECIFIC patched Xray-core fork (Sir-MmD/Xray-core, which
 // fixes the Shadowsocks per-user `method` fallback). To guarantee that exact
@@ -19,6 +19,10 @@
 //	core/<goarch>/xray      the pinned core binary for that architecture
 //	core/geoip.dat          base geo data (architecture-independent)
 //	core/geosite.dat
+//	core/geoip_IR.dat       regional rulesets, offered by the dashboard's
+//	core/geosite_IR.dat     geofile updater and referenced by routing rules
+//	core/geoip_RU.dat       as "ext:geosite_IR.dat:ir" and friends
+//	core/geosite_RU.dat
 package corebundle
 
 import (
@@ -34,10 +38,21 @@ import (
 //go:embed all:core
 var bundleFS embed.FS
 
-// geoFiles are the base geo data files shipped as a first-run fallback. Updating
-// them from the dashboard is allowed, so ExtractGeofiles only writes them when
-// missing — it never clobbers a dashboard-updated copy.
-var geoFiles = []string{"geoip.dat", "geosite.dat"}
+// geoFiles are the geo data files shipped as a first-run fallback. Updating them
+// from the dashboard is allowed, so ExtractGeofiles only writes them when missing
+// — it never clobbers a dashboard-updated copy.
+//
+// The regional sets are here, not just the base pair, because xray treats a
+// routing rule naming a missing ext: file as a FATAL config error (exit 23) — it
+// refuses to start at all. A restored backup whose rules reference
+// "ext:geosite_IR.dat:ir" would take the whole proxy down on first boot, and the
+// dashboard button that could fetch them lives in a panel the operator can still
+// reach but whose xray is dead. Shipping them makes that restore a no-op.
+var geoFiles = []string{
+	"geoip.dat", "geosite.dat",
+	"geoip_IR.dat", "geosite_IR.dat",
+	"geoip_RU.dat", "geosite_RU.dat",
+}
 
 // XrayBinaryName is the on-disk core binary name the panel launches. It matches
 // the name xray/process.go builds ("xray-<goos>-<goarch>").

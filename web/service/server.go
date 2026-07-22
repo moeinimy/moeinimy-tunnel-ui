@@ -1128,12 +1128,97 @@ func (s *ServerService) ImportDB(file multipart.File) error {
 	s.l2tpService.InitL2tp()
 	s.pptpService.InitPptp()
 
+	// The imported routing rules may name geo files this host has never had. Fetch
+	// them BEFORE starting xray: a rule pointing at a missing ext: file is a fatal
+	// config error, and the resulting "exit status 23" says nothing about which
+	// file is missing. Best-effort — a failure here is reported by the xray start
+	// below, which is the real gate.
+	if fetched, err := s.ensureReferencedGeofiles(); err != nil {
+		logger.Warningf("Could not fetch geo files referenced by the imported config: %v", err)
+	} else if len(fetched) > 0 {
+		logger.Info("Fetched geo files referenced by the imported config: ", strings.Join(fetched, ", "))
+	}
+
 	// Start Xray
 	if err = s.RestartXrayService(); err != nil {
-		return common.NewErrorf("Imported DB but failed to start Xray: %v", err)
+		return common.NewErrorf("Imported DB but failed to start Xray: %v%s", err, s.geoHint())
 	}
 
 	return nil
+}
+
+// geoRefPattern matches an external geo reference in a routing rule, e.g.
+// "ext:geosite_IR.dat:ir" -> "geosite_IR.dat".
+var geoRefPattern = regexp.MustCompile(`ext:([A-Za-z0-9._-]+\.dat):`)
+
+// referencedGeofiles returns the distinct geo files the current xray template
+// references via "ext:", paired with whether each one exists in the bin folder.
+func (s *ServerService) referencedGeofiles() map[string]bool {
+	out := map[string]bool{}
+	// SettingService is stateless (XrayService embeds it by value, no constructor),
+	// so a local zero value is the cheapest way to read one setting here.
+	var settingService SettingService
+	tmpl, err := settingService.GetXrayConfigTemplate()
+	if err != nil {
+		return out
+	}
+	for _, m := range geoRefPattern.FindAllStringSubmatch(tmpl, -1) {
+		name := m[1]
+		if _, seen := out[name]; seen {
+			continue
+		}
+		_, statErr := os.Stat(filepath.Join(config.GetBinFolderPath(), name))
+		out[name] = statErr == nil
+	}
+	return out
+}
+
+// ensureReferencedGeofiles downloads any referenced-but-missing geo file that is
+// in the allowlist. Names outside it are left alone — UpdateGeofile refuses them
+// anyway, and silently fetching arbitrary filenames from the imported config
+// would let a crafted backup choose what gets written into the bin folder.
+//
+// UpdateGeofile restarts xray itself, so with more than one file missing the
+// early calls restart onto a still-incomplete config and report failure even
+// though the download succeeded. Harmless: the loop keeps going, and ImportDB's
+// own restart afterwards is the one that decides the outcome.
+func (s *ServerService) ensureReferencedGeofiles() ([]string, error) {
+	var fetched []string
+	var firstErr error
+	for name, present := range s.referencedGeofiles() {
+		if present {
+			continue
+		}
+		if err := s.UpdateGeofile(name); err != nil {
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
+		}
+		fetched = append(fetched, name)
+	}
+	return fetched, firstErr
+}
+
+// geoHint turns xray's opaque "exit status 23" into the actual cause when the
+// config references a geo file that is not on disk — the common outcome of
+// restoring a backup made on a host that had extra geo files.
+func (s *ServerService) geoHint() string {
+	var missing []string
+	for name, present := range s.referencedGeofiles() {
+		if !present {
+			missing = append(missing, name)
+		}
+	}
+	if len(missing) == 0 {
+		return ""
+	}
+	sort.Strings(missing)
+	return fmt.Sprintf(" — the config's routing rules reference %s, which %s not in %s;"+
+		" xray refuses to start on a missing ext: file",
+		strings.Join(missing, ", "),
+		map[bool]string{true: "is", false: "are"}[len(missing) == 1],
+		config.GetBinFolderPath())
 }
 
 // IsValidGeofileName validates that the filename is safe for geofile operations.

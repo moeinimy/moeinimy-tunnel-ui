@@ -67,12 +67,24 @@ _geo_one() {
     fi
 }
 
+# The IR/RU sets ship alongside the base ones because a routing rule that names a
+# MISSING ext: file is a hard startup failure: xray refuses the whole config and
+# exits 23, so the panel comes up with no proxy at all. The panel's own geofile UI
+# already offers these four, and any restored backup whose rules reference
+# "ext:geosite_IR.dat:ir" (the common Iran ruleset) needs them present on disk from
+# the first boot — long before anyone can click Update in a panel that is down.
 fetch_geo() {
     local base="https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download"
-    step "Checking base geo files (conditional; GEO_FORCE=1 to force a refresh)"
+    local ir="https://github.com/chocolate4u/Iran-v2ray-rules/releases/latest/download"
+    local ru="https://github.com/runetfreedom/russia-v2ray-rules-dat/releases/latest/download"
+    step "Checking geo files (conditional; GEO_FORCE=1 to force a refresh)"
     _geo_one "$base/geoip.dat"   "$OUT_ROOT/geoip.dat"
     _geo_one "$base/geosite.dat" "$OUT_ROOT/geosite.dat"
-    info "geo: $(ls -lh "$OUT_ROOT"/geoip.dat "$OUT_ROOT"/geosite.dat | awk '{print $5, $9}' | tr '\n' ' ')"
+    _geo_one "$ir/geoip.dat"     "$OUT_ROOT/geoip_IR.dat"
+    _geo_one "$ir/geosite.dat"   "$OUT_ROOT/geosite_IR.dat"
+    _geo_one "$ru/geoip.dat"     "$OUT_ROOT/geoip_RU.dat"
+    _geo_one "$ru/geosite.dat"   "$OUT_ROOT/geosite_RU.dat"
+    info "geo: $(ls -lh "$OUT_ROOT"/geo*.dat | awk '{print $5, $9}' | tr '\n' ' ')"
 }
 
 # --- the pinned core -----------------------------------------------------------

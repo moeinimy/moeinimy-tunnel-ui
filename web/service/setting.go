@@ -18,6 +18,7 @@ import (
 	"github.com/mhsanaei/3x-ui/v2/util/random"
 	"github.com/mhsanaei/3x-ui/v2/util/reflect_util"
 	"github.com/mhsanaei/3x-ui/v2/web/entity"
+	"github.com/mhsanaei/3x-ui/v2/web/middleware"
 )
 
 //go:embed config.json
@@ -225,16 +226,33 @@ func (s *SettingService) saveSetting(key string, value string) error {
 	setting, err := s.getSetting(key)
 	db := database.GetDB()
 	if database.IsNotFound(err) {
-		return db.Create(&model.Setting{
+		if cerr := db.Create(&model.Setting{
 			Key:   key,
 			Value: value,
-		}).Error
+		}).Error; cerr != nil {
+			return cerr
+		}
+		applyLiveSetting(key, value)
+		return nil
 	} else if err != nil {
 		return err
 	}
 	setting.Key = key
 	setting.Value = value
-	return db.Save(setting).Error
+	if serr := db.Save(setting).Error; serr != nil {
+		return serr
+	}
+	applyLiveSetting(key, value)
+	return nil
+}
+
+// applyLiveSetting pushes settings that a running request path reads from memory
+// rather than from the database. Without it the value is persisted but ignored
+// until the panel restarts, which reads as "the setting does nothing".
+func applyLiveSetting(key, value string) {
+	if key == "webDomain" {
+		middleware.SetAllowedDomain(value)
+	}
 }
 
 func (s *SettingService) getString(key string) (string, error) {
@@ -881,22 +899,22 @@ func extractHostname(host string) string {
 func (s *SettingService) GetDefaultSettings(host string) (any, error) {
 	type settingFunc func() (any, error)
 	settings := map[string]settingFunc{
-		"expireDiff":     func() (any, error) { return s.GetExpireDiff() },
-		"trafficDiff":    func() (any, error) { return s.GetTrafficDiff() },
-		"pageSize":       func() (any, error) { return s.GetPageSize() },
-		"defaultCert":    func() (any, error) { return s.GetCertFile() },
-		"defaultKey":     func() (any, error) { return s.GetKeyFile() },
-		"tgBotEnable":    func() (any, error) { return s.GetTgbotEnabled() },
-		"subEnable":      func() (any, error) { return s.GetSubEnable() },
-		"subJsonEnable":  func() (any, error) { return s.GetSubJsonEnable() },
-		"subClashEnable": func() (any, error) { return s.GetSubClashEnable() },
-		"subTitle":       func() (any, error) { return s.GetSubTitle() },
-		"subURI":         func() (any, error) { return s.GetSubURI() },
-		"subJsonURI":     func() (any, error) { return s.GetSubJsonURI() },
-		"subClashURI":    func() (any, error) { return s.GetSubClashURI() },
-		"remarkModel":    func() (any, error) { return s.GetRemarkModel() },
-		"datepicker":     func() (any, error) { return s.GetDatepicker() },
-		"ipLimitEnable":  func() (any, error) { return s.GetIpLimitEnable() },
+		"expireDiff":       func() (any, error) { return s.GetExpireDiff() },
+		"trafficDiff":      func() (any, error) { return s.GetTrafficDiff() },
+		"pageSize":         func() (any, error) { return s.GetPageSize() },
+		"defaultCert":      func() (any, error) { return s.GetCertFile() },
+		"defaultKey":       func() (any, error) { return s.GetKeyFile() },
+		"tgBotEnable":      func() (any, error) { return s.GetTgbotEnabled() },
+		"subEnable":        func() (any, error) { return s.GetSubEnable() },
+		"subJsonEnable":    func() (any, error) { return s.GetSubJsonEnable() },
+		"subClashEnable":   func() (any, error) { return s.GetSubClashEnable() },
+		"subTitle":         func() (any, error) { return s.GetSubTitle() },
+		"subURI":           func() (any, error) { return s.GetSubURI() },
+		"subJsonURI":       func() (any, error) { return s.GetSubJsonURI() },
+		"subClashURI":      func() (any, error) { return s.GetSubClashURI() },
+		"remarkModel":      func() (any, error) { return s.GetRemarkModel() },
+		"datepicker":       func() (any, error) { return s.GetDatepicker() },
+		"ipLimitEnable":    func() (any, error) { return s.GetIpLimitEnable() },
 		"provisioned":      func() (any, error) { var cs CoreService; return cs.IsProvisioned(), nil },
 		"missingProtocols": func() (any, error) { var cs CoreService; return cs.MissingProtocols(), nil },
 	}

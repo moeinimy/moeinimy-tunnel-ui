@@ -111,11 +111,23 @@
   font-size:var(--fs-sm); font-weight:var(--fw-bold);
   color:var(--text); letter-spacing:.01em;
 }
-/* logo.png is 1456x368, a 3.96:1 wordmark. Sizing it by HEIGHT overflows the
-   rail (40px tall needs 158px of width against a 124px rail), and max-width
-   then squashed it horizontally because the height stayed fixed. Size by
-   width and let the height follow, so it can never distort. */
-.bo-rail-brand img { display:block; width:100%; max-width:88px; height:auto; }
+/* The wordmark is TEXT, not logo.png (see aSidebar.html): that image reads
+   "[VPN-UI]", so it could never follow the operator's rename. These rules
+   reproduce its look — bracketed, accent-coloured, wide-tracked — and the class
+   selectors outrank the ".bo-rail-brand span" rule above, which would otherwise
+   paint the name in body colour. */
+.bo-rail-brand .bo-wordmark {
+  display:block; max-width:100%;
+  font-size:var(--fs-md); font-weight:var(--fw-bold);
+  color:var(--accent); letter-spacing:.10em;
+  white-space:nowrap; direction:ltr; unicode-bidi:isolate;
+}
+/* A long name must not widen the rail, so it truncates rather than wraps; the
+   closing bracket stays put because only the name shrinks. */
+.bo-rail-brand .bo-wordmark-name {
+  display:inline-block; max-width:80px; overflow:hidden;
+  text-overflow:ellipsis; vertical-align:bottom; color:inherit;
+}
 
 .bo-rail-nav {
   display:flex; flex-direction:column; gap:5px;
@@ -151,7 +163,13 @@
 .bo-rail--collapsed .bo-rail-item { width:64px; }
 .bo-rail--collapsed .bo-rail-item span,
 .bo-rail--collapsed .bo-rail-brand span { display:none; }
-.bo-rail--collapsed .bo-rail-brand img { max-width:52px; }
+/* Keep the wordmark in the collapsed rail — it is the only thing identifying the
+   panel there, and it is also the link home. Re-shown against the blanket
+   span-hiding rule above, then tightened to fit the 76px rail. */
+.bo-rail--collapsed .bo-rail-brand .bo-wordmark {
+  display:block; font-size:var(--fs-sm); letter-spacing:.02em;
+}
+.bo-rail--collapsed .bo-rail-brand .bo-wordmark-name { display:inline-block; max-width:40px; }
 
 .bo-rail-item {
   display:flex; flex-direction:column; align-items:center; gap:7px;

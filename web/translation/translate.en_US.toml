@@ -213,8 +213,8 @@
 
 [pages.index]
 "donate" = "Donate"
-"donateTitle" = "Support VPN-UI"
-"donateIntro" = "If VPN-UI is useful to you, a donation to any of these addresses helps keep it maintained."
+"donateTitle" = "Support {{ .Brand }}"
+"donateIntro" = "If {{ .Brand }} is useful to you, a donation to any of these addresses helps keep it maintained."
 "restore" = "Restore"
 "systemStatus" = "System Status"
 "title" = "Overview"
@@ -1003,7 +1003,7 @@
 "report" = "🕰 Scheduled Reports: {{ .RunTime }}\r\n"
 "datetime" = "⏰ Date&Time: {{ .DateTime }}\r\n"
 "hostname" = "💻 Host: {{ .Hostname }}\r\n"
-"version" = "🚀 VPN-UI Version: {{ .Version }}\r\n"
+"version" = "🚀 {{ .Brand }} Version: {{ .Version }}\r\n"
 "xrayVersion" = "📡 Xray Version: {{ .XrayVersion }}\r\n"
 "ipv6" = "🌐 IPv6: {{ .IPv6 }}\r\n"
 "ipv4" = "🌐 IPv4: {{ .IPv4 }}\r\n"

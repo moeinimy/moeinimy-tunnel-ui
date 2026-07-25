@@ -289,7 +289,7 @@ type openvpnClient struct {
 	Password string `json:"password"` // OpenVPN password
 	Email    string `json:"email"`    // tracking identifier
 	Enable   bool   `json:"enable"`
-	Slot     *int   `json:"slot"`     // address-pool slot; nil = fall back to list index
+	Slot     *int   `json:"slot"` // address-pool slot; nil = fall back to list index
 }
 
 // SetRadius configures the RADIUS service and shared secret for OpenVPN authentication.

@@ -8,6 +8,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/mhsanaei/3x-ui/v2/config"
 	"github.com/mhsanaei/3x-ui/v2/logger"
 
 	"github.com/gin-gonic/gin"
@@ -67,6 +68,11 @@ func createTemplateData(params []string, separator ...string) map[string]any {
 	}
 
 	templateData := make(map[string]any)
+	// Brand is available to EVERY translated string, so a locale can write
+	// "Support {{ .Brand }}" and follow the operator's rename (config.GetBrand)
+	// instead of baking a product name into 13 locale files. Set first so an
+	// explicit caller-supplied Brand param still wins.
+	templateData["Brand"] = config.GetBrand()
 	for _, param := range params {
 		parts := strings.SplitN(param, sep, 2)
 		templateData[parts[0]] = parts[1]

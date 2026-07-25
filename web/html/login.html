@@ -276,7 +276,7 @@ body { background:var(--bg); }
       <div class="lgt-card lgt-rise" ref="card">
 
         <div class="lgt-head">
-          <p class="lgt-brand">[VPN-UI]</p>
+          <p class="lgt-brand">[{{ .brand }}]</p>
           <div class="lgt-pop-wrap">
             <button type="button" class="lgt-gear" ref="gear" @click.stop="settingsOpen = !settingsOpen"
               :aria-expanded="settingsOpen ? 'true' : 'false'" aria-controls="lgt-pop"

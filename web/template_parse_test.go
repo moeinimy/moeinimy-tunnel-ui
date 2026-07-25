@@ -77,11 +77,13 @@ func TestEditedTemplatesParse(t *testing.T) {
 	}
 }
 
-// TestSidebarLogoSrcResolves renders the sidebar component with data and asserts the
-// brand logo <img> src is prefixed with base_path. The mark lives in the nested
-// "component/sidebar/content" template, which must be included WITH data ({{template
-// ... .}}) — otherwise .base_path is nil and the src renders empty, so the logo 404s.
-func TestSidebarLogoSrcResolves(t *testing.T) {
+// TestSidebarResolvesBrandAndBasePath renders the sidebar component with data and
+// asserts both dynamic values reach the nested "component/sidebar/content"
+// template: the operator's display name and the base_path-prefixed links. That
+// template must be included WITH data ({{template ... .}}) — otherwise the
+// pipeline is nil, the links render without their prefix and 404, and the
+// wordmark comes out empty.
+func TestSidebarResolvesBrandAndBasePath(t *testing.T) {
 	funcMap := template.FuncMap{
 		"i18n": func(key string, args ...string) (string, error) { return "", nil },
 	}
@@ -94,7 +96,20 @@ func TestSidebarLogoSrcResolves(t *testing.T) {
 		t.Fatalf("parse: %v", err)
 	}
 	var buf bytes.Buffer
-	data := map[string]any{"base_path": "/test/", "request_uri": "/test/panel/"}
+	// Every gate the template reads has to be present: a missing map key
+	// evaluates to nil and taking a field off it is an execution error, so a
+	// partial fixture would fail for a reason unrelated to what is asserted.
+	data := map[string]any{
+		"base_path":   "/test/",
+		"request_uri": "/test/panel/",
+		"brand":       "Moeinimy-UI",
+		"perms": map[string]any{
+			"accessInbounds": true, "accessPanelSettings": true,
+			"accessXraySettings": true, "accessCoreSettings": true,
+			"superAdmin": true, "manageResellers": true,
+		},
+		"reseller": map[string]any{"isReseller": false, "allowOverview": true},
+	}
 	if err := tpl.ExecuteTemplate(&buf, "component/aSidebar", data); err != nil {
 		t.Fatalf("execute: %v", err)
 	}
@@ -102,8 +117,12 @@ func TestSidebarLogoSrcResolves(t *testing.T) {
 	// JS-escapes the dynamic base_path (/ -> \/); the browser un-escapes it at
 	// parse time. Normalise before matching.
 	out := strings.ReplaceAll(buf.String(), `\/`, "/")
-	if !strings.Contains(out, "/test/assets/img/logo.png") {
-		t.Errorf("logo src not resolved with base_path (nil-data bug?); output:\n%s", out)
+	if !strings.Contains(out, "/test/panel/") {
+		t.Errorf("base_path not applied to sidebar links (nil-data bug?); output:\n%s", out)
+	}
+	// The wordmark is text rather than logo.png precisely so it follows a rename.
+	if !strings.Contains(out, "Moeinimy-UI") {
+		t.Errorf("brand not rendered in the sidebar wordmark; output:\n%s", out)
 	}
 	if strings.Contains(out, "<no value>") {
 		t.Errorf("template produced <no value> — data not threaded into the component")

@@ -40,7 +40,7 @@ type RadiusService struct {
 	stationIP   map[string]string         // key: "proto:idx:Calling-Station-Id" -> its stable block IP
 	stationSeen map[string]time.Time      // last time each station authenticated (for pruning)
 	secret      []byte
-	eapSessions map[string]*eapState      // key: hex(State attr) — in-flight EAP-MSCHAPv2 exchanges (IKEv2/strongSwan)
+	eapSessions map[string]*eapState // key: hex(State attr) — in-flight EAP-MSCHAPv2 exchanges (IKEv2/strongSwan)
 	// ocActiveFn overrides the OpenConnect liveness probe (isIPActive) — set in unit
 	// tests where no real ocserv route table exists. nil in production.
 	ocActiveFn func(ip string) bool

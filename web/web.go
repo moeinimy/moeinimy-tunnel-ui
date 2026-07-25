@@ -202,9 +202,11 @@ func (s *Server) initRouter() (*gin.Engine, error) {
 		return nil, err
 	}
 
-	if webDomain != "" {
-		engine.Use(middleware.DomainValidatorMiddleware(webDomain))
-	}
+	// Installed unconditionally and fed the domain through a live value: the
+	// setting can then be turned on or off without restarting the panel, which is
+	// what the settings page implies happens. It is a no-op while unset.
+	middleware.SetAllowedDomain(webDomain)
+	engine.Use(middleware.LiveDomainValidatorMiddleware())
 
 	secret, err := s.settingService.GetSecret()
 	if err != nil {

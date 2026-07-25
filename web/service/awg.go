@@ -118,6 +118,7 @@ type awgClient struct {
 	PubKey  string      `json:"pubKey"`
 	Psk     string      `json:"psk"`
 	Devices []awgDevice `json:"devices"`
+	Slot    *int        `json:"slot"` // address-pool slot; nil = fall back to list index
 }
 
 // deviceList returns the account's device slots, seeding from the legacy single-keypair
@@ -238,18 +239,20 @@ func (s *AwgService) GetDokodemoConfig(inbound *model.Inbound) *xray.InboundConf
 }
 
 // awgAccountBlock mirrors wgcAccountBlock in the 10.8 /16 (gateway model, block sized to K).
-func (s *AwgService) awgAccountBlock(inbound *model.Inbound, settings *awgSettings, accountIdx int) (string, int) {
+// The slot comes from the account (model.Client.Slot), not from its position in clients[]:
+// see wgcAccountBlock for why that distinction is load-bearing here.
+func (s *AwgService) awgAccountBlock(inbound *model.Inbound, settings *awgSettings, accountSlot int) (string, int) {
 	ranges := settings.effectiveRanges()
 	k := wgcEffectiveK(settings.UserLimit)
 	if k <= 1 {
-		if ip := computeVpnClientIP(ranges, inbound.Id, accountIdx, "awg"); ip != nil {
+		if ip := computeVpnClientIP(ranges, inbound.Id, accountSlot, "awg"); ip != nil {
 			return ip.String(), 32
 		}
 		return "", 0
 	}
 	bs := nextPow2(k)
 	subnets := pppSubnetsOrDefault(ranges, "awg", inbound.Id)
-	subnet, hostBase, ok := vpnAccountBlock(subnets, accountIdx, bs)
+	subnet, hostBase, ok := vpnAccountBlock(subnets, accountSlot, bs)
 	if !ok {
 		return "", 0
 	}
@@ -259,16 +262,16 @@ func (s *AwgService) awgAccountBlock(inbound *model.Inbound, settings *awgSettin
 // awgDeviceIPs returns the account's K per-device tunnel IPs, in slot order. Device d gets
 // the d-th address of the account's block, so the block CIDR used for routing/accounting
 // still covers every device. K<=1 collapses to the single legacy address.
-func (s *AwgService) awgDeviceIPs(inbound *model.Inbound, settings *awgSettings, accountIdx int) []string {
+func (s *AwgService) awgDeviceIPs(inbound *model.Inbound, settings *awgSettings, accountSlot int) []string {
 	ranges := settings.effectiveRanges()
 	k := wgcEffectiveK(settings.UserLimit)
 	if k <= 1 {
-		if ip := computeVpnClientIP(ranges, inbound.Id, accountIdx, "awg"); ip != nil {
+		if ip := computeVpnClientIP(ranges, inbound.Id, accountSlot, "awg"); ip != nil {
 			return []string{ip.String()}
 		}
 		return nil
 	}
-	base, _ := s.awgAccountBlock(inbound, settings, accountIdx)
+	base, _ := s.awgAccountBlock(inbound, settings, accountSlot)
 	if base == "" {
 		return nil
 	}
@@ -287,8 +290,8 @@ func (s *AwgService) awgDeviceIPs(inbound *model.Inbound, settings *awgSettings,
 	return out
 }
 
-func (s *AwgService) awgAccountCIDR(inbound *model.Inbound, settings *awgSettings, accountIdx int) string {
-	ip, prefix := s.awgAccountBlock(inbound, settings, accountIdx)
+func (s *AwgService) awgAccountCIDR(inbound *model.Inbound, settings *awgSettings, accountSlot int) string {
+	ip, prefix := s.awgAccountBlock(inbound, settings, accountSlot)
 	if ip == "" {
 		return ""
 	}
@@ -347,6 +350,10 @@ func (s *AwgService) GenerateAllConfigs() error {
 			if !inbound.Enable {
 				continue
 			}
+			// Claimed before the reconcile is attempted; see WgcService.GenerateAllConfigs
+			// for why a failed reconcile must not hand the interface to removeStaleLinks.
+			wanted[awgIfaceName(inbound.Id)] = true
+
 			settings, err := s.parseSettings(inbound)
 			if err != nil {
 				logger.Warning("AmneziaWG: skipping inbound", inbound.Id, err)
@@ -373,7 +380,6 @@ func (s *AwgService) GenerateAllConfigs() error {
 				logger.Warning("AmneziaWG: configure device failed for", iface, err)
 				continue
 			}
-			wanted[iface] = true
 		}
 	}
 
@@ -388,7 +394,7 @@ func (s *AwgService) buildPeers(inbound *model.Inbound, settings *awgSettings, d
 		if client.Email == "" || !client.Enable || disabled[client.Email] {
 			continue
 		}
-		ips := s.awgDeviceIPs(inbound, settings, i)
+		ips := s.awgDeviceIPs(inbound, settings, slotOr(client.Slot, i))
 		// One peer PER DEVICE, each cryptokey-routed to its own /32. Pinning the peer to a
 		// single address (not the whole block) is what stops one device from sourcing
 		// another's IP, and gives every device an identity the data plane can tell apart.
@@ -518,6 +524,8 @@ func (s *AwgService) ensureLink(iface string, mtu int, blockNet net.IP, prefix i
 			gw := net.IPv4(v4[0], v4[1], v4[2], v4[3]+1)
 			addr := &netlink.Addr{IPNet: &net.IPNet{IP: gw, Mask: net.CIDRMask(prefix, 32)}}
 			_ = netlink.AddrReplace(link, addr)
+			// Same stale-address cleanup as wg-c; see dropForeignV4Addrs.
+			dropForeignV4Addrs(link, addr)
 		}
 	}
 	return netlink.LinkSetUp(link)
@@ -651,7 +659,7 @@ func (s *AwgService) RenderClientConfigs(inbound *model.Inbound, email, endpoint
 		if client.Email != email {
 			continue
 		}
-		ips := s.awgDeviceIPs(inbound, settings, i)
+		ips := s.awgDeviceIPs(inbound, settings, slotOr(client.Slot, i))
 		devices := client.deviceList()
 		if len(ips) == 0 || len(devices) == 0 {
 			break
@@ -708,6 +716,104 @@ func (s *AwgService) RenderClientConfigs(inbound *model.Inbound, email, endpoint
 					Remark:      remark,
 					PublicKey:   dev.PubKey,
 					Config:      b.String(),
+				})
+			}
+		}
+		break
+	}
+	return out, nil
+}
+
+// AwgClientParams is WgcClientParams plus AmneziaWG obfuscation, for the Clash
+// `type: wireguard` + `amnezia-wg-option` proxy. The obfuscation values are exported
+// (rather than the unexported awgObfs) so the sub package can read them. Keep in
+// lock-step with RenderClientConfigs.
+type AwgClientParams struct {
+	WgcClientParams
+	Jc, Jmin, Jmax, S1, S2 int
+	H1, H2, H3, H4         string
+}
+
+// RenderClientParams mirrors RenderClientConfigs (same targets/devices loop + obfs)
+// but returns structured params instead of .conf text.
+func (s *AwgService) RenderClientParams(inbound *model.Inbound, email, endpointHost string) ([]AwgClientParams, error) {
+	settings, err := s.parseSettings(inbound)
+	if err != nil {
+		return nil, err
+	}
+	obfs := settings.resolveObfs()
+	type endpointTarget struct {
+		host   string
+		port   int
+		remark string
+	}
+	var targets []endpointTarget
+	for _, ep := range settings.ExternalProxy {
+		dest := strings.TrimSpace(ep.Dest)
+		if dest == "" {
+			continue
+		}
+		port := ep.Port
+		if port <= 0 {
+			port = inbound.Port
+		}
+		targets = append(targets, endpointTarget{host: dest, port: port, remark: strings.TrimSpace(ep.Remark)})
+	}
+	if len(targets) == 0 {
+		host := endpointHost
+		if l := strings.TrimSpace(inbound.Listen); l != "" && l != "0.0.0.0" {
+			host = l
+		}
+		targets = append(targets, endpointTarget{host: host, port: inbound.Port})
+	}
+	dns := strings.Split(settings.dnsList(), ", ")
+	mtu := settings.mtu()
+
+	var out []AwgClientParams
+	for i, client := range settings.Clients {
+		if client.Email != email {
+			continue
+		}
+		ips := s.awgDeviceIPs(inbound, settings, slotOr(client.Slot, i))
+		devices := client.deviceList()
+		if len(ips) == 0 || len(devices) == 0 {
+			break
+		}
+		for d, dev := range devices {
+			if d >= len(ips) || strings.TrimSpace(dev.PrivKey) == "" {
+				continue
+			}
+			cidr := ips[d] + "/32"
+			psk := ""
+			if settings.PskEnable && strings.TrimSpace(dev.Psk) != "" {
+				psk = dev.Psk
+			}
+			for _, t := range targets {
+				remark := ""
+				if len(devices) > 1 {
+					remark = fmt.Sprintf("Device %d", d+1)
+				}
+				if t.remark != "" {
+					if remark != "" {
+						remark += " - "
+					}
+					remark += t.remark
+				}
+				out = append(out, AwgClientParams{
+					WgcClientParams: WgcClientParams{
+						Name:         remark,
+						PrivateKey:   dev.PrivKey,
+						Address:      cidr,
+						PublicKey:    settings.ServerPubKey,
+						PreSharedKey: psk,
+						Host:         t.host,
+						Port:         t.port,
+						MTU:          mtu,
+						DNS:          dns,
+						AllowedIPs:   []string{"0.0.0.0/0"},
+					},
+					Jc: obfs.Jc, Jmin: obfs.Jmin, Jmax: obfs.Jmax, S1: obfs.S1, S2: obfs.S2,
+					H1: obfs.H1, H2: obfs.H2, H3: obfs.H3, H4: obfs.H4,
 				})
 			}
 		}
@@ -911,7 +1017,7 @@ func (s *AwgService) Poll() ([]rbridge.Live, error) {
 		// key, which is what keeps usage/quota aggregated per account rather than per device.
 		byPub := make(map[string]acctInfo)
 		for i, client := range settings.Clients {
-			cidr := s.awgAccountCIDR(inbound, settings, i)
+			cidr := s.awgAccountCIDR(inbound, settings, slotOr(client.Slot, i))
 			for _, d := range client.deviceList() {
 				if strings.TrimSpace(d.PubKey) == "" {
 					continue

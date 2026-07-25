@@ -47,6 +47,7 @@
         </div>
       </div>
     </div>
+    {{ template "component/aSubBlock" "ssh" }}
   </a-spin>
 </a-modal>
 
@@ -71,10 +72,15 @@
     dbInboundId: 0,
     email: '',
     username: '',
+    // Declared here, not assigned only in show(): Vue makes the properties of this
+    // object reactive when the instance below is created, so a key added later would
+    // never drive the subscription block's v-if.
+    subId: '',
     configs: [],
     show: function (dbInboundId, client) {
       this.dbInboundId = dbInboundId;
       this.email = client && client.email ? client.email : '';
+      this.subId = client && client.subId ? client.subId : '';
       // SSH identity is the login username (client.id); fall back to the email label.
       this.username = client && client.id ? client.id : this.email;
       this.title = 'SSH Config' + (this.email ? ' - ' + this.email : '');
@@ -93,6 +99,29 @@
     el: '#ssh-config-modal',
     data: {
       sshConfigModal: sshConfigModal,
+    },
+    computed: {
+      // What component/aSubBlock reads. Empty unless the sub server is on and the
+      // account has a subId, which is also what hides the block.
+      //
+      // The account's subId is read FIRST and unconditionally: a computed only re-runs
+      // when a dependency it actually touched changes, so guarding on app.subSettings
+      // ahead of it short-circuited before Vue ever recorded subId as a dependency, and
+      // the cached '' from page load was never invalidated when a modal opened. The
+      // settings arrive from an API call, so at that first evaluation they are not there
+      // yet and the guard was always false.
+      subId() {
+        const subId = sshConfigModal.subId;
+        const subEnabled = !!(typeof app !== 'undefined' && app.subSettings && app.subSettings.enable);
+        return subEnabled ? subId : '';
+      },
+      subLink() {
+        return this.subId ? app.subSettings.subURI + this.subId : '';
+      },
+      subJsonLink() {
+        return this.subId && app.subSettings.subJsonEnable
+          ? app.subSettings.subJsonURI + this.subId : '';
+      },
     },
     methods: {
       async fetchConfigs() {
@@ -134,21 +163,28 @@
         document.body.removeChild(a);
         URL.revokeObjectURL(url);
       },
+      // a-modal portals its body to the document root, so these are looked up on the
+      // document rather than through this.$el.
+      qr(selector, value) {
+        const el = document.querySelector(selector);
+        if (!el || !value) return;
+        new QRious({
+          element: el,
+          size: 360,
+          value: value,
+          background: 'white',
+          backgroundAlpha: 1,
+          foreground: 'black',
+          padding: 8,
+          level: 'L',
+        });
+      },
       renderQrs() {
         sshConfigModal.configs.forEach((cfg, index) => {
-          const el = document.querySelector('#sshQr-' + index);
-          if (!el) return;
-          new QRious({
-            element: el,
-            size: 360,
-            value: cfg.link || cfg.plain || '',
-            background: 'white',
-            backgroundAlpha: 1,
-            foreground: 'black',
-            padding: 8,
-            level: 'L',
-          });
+          this.qr('#sshQr-' + index, cfg.link || cfg.plain || '');
         });
+        this.qr('#ssh-sub-qr', this.subLink);
+        this.qr('#ssh-subjson-qr', this.subJsonLink);
       },
     },
     updated() {

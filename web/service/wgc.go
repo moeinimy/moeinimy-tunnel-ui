@@ -118,6 +118,7 @@ type wgcClient struct {
 	PubKey  string      `json:"pubKey"`
 	Psk     string      `json:"psk"`
 	Devices []wgcDevice `json:"devices"`
+	Slot    *int        `json:"slot"` // address-pool slot; nil = fall back to list index
 }
 
 // wgcDevice is ONE device slot of an account: its own keypair (and optional preshared key)
@@ -149,16 +150,16 @@ func (c *wgcClient) deviceList() []wgcDevice {
 
 // wgcDeviceIPs returns the account's K per-device tunnel IPs in slot order; device d takes
 // the d-th address of the account's block, so the block CIDR still covers every device.
-func (s *WgcService) wgcDeviceIPs(inbound *model.Inbound, settings *wgcSettings, accountIdx int) []string {
+func (s *WgcService) wgcDeviceIPs(inbound *model.Inbound, settings *wgcSettings, accountSlot int) []string {
 	ranges := settings.effectiveRanges()
 	k := wgcEffectiveK(settings.UserLimit)
 	if k <= 1 {
-		if ip := computeVpnClientIP(ranges, inbound.Id, accountIdx, "wg-c"); ip != nil {
+		if ip := computeVpnClientIP(ranges, inbound.Id, accountSlot, "wg-c"); ip != nil {
 			return []string{ip.String()}
 		}
 		return nil
 	}
-	base, _ := s.wgcAccountBlock(inbound, settings, accountIdx)
+	base, _ := s.wgcAccountBlock(inbound, settings, accountSlot)
 	if base == "" {
 		return nil
 	}
@@ -248,23 +249,27 @@ func nextPow2(n int) int {
 	return p
 }
 
-// wgcAccountBlock returns account i's CIDR block as (first-IP string, prefix): an
+// wgcAccountBlock returns the CIDR block of the account holding this SLOT, as (first-IP
+// string, prefix). The slot is stored on the account (model.Client.Slot), NOT its position in
+// clients[]: deriving it from position moved every later account's address when an earlier
+// one was deleted, and a WireGuard config carries its address, so those tunnels went silently
+// dead. An
 // aligned power-of-two block sized to the User Limit K. K<=1 -> a single /32 IP (walks the
 // ranges, computeVpnClientIP); K>=2 -> nextPow2(K) addresses as one aligned block (e.g. K
 // in 5..8 -> a /29 like 10.7.8.8/29). ONE config addresses this whole block so a gateway
 // behind the link routes it to its LAN. Must match BuildVpnEmailToIPMap for routing.
-func (s *WgcService) wgcAccountBlock(inbound *model.Inbound, settings *wgcSettings, accountIdx int) (string, int) {
+func (s *WgcService) wgcAccountBlock(inbound *model.Inbound, settings *wgcSettings, accountSlot int) (string, int) {
 	ranges := settings.effectiveRanges()
 	k := wgcEffectiveK(settings.UserLimit)
 	if k <= 1 {
-		if ip := computeVpnClientIP(ranges, inbound.Id, accountIdx, "wg-c"); ip != nil {
+		if ip := computeVpnClientIP(ranges, inbound.Id, accountSlot, "wg-c"); ip != nil {
 			return ip.String(), 32
 		}
 		return "", 0
 	}
 	bs := nextPow2(k)
 	subnets := pppSubnetsOrDefault(ranges, "wg-c", inbound.Id)
-	subnet, hostBase, ok := vpnAccountBlock(subnets, accountIdx, bs)
+	subnet, hostBase, ok := vpnAccountBlock(subnets, accountSlot, bs)
 	if !ok {
 		return "", 0
 	}
@@ -273,8 +278,8 @@ func (s *WgcService) wgcAccountBlock(inbound *model.Inbound, settings *wgcSettin
 
 // wgcAccountCIDR returns account i's block as a CIDR string ("10.7.8.8/29"), or "" past
 // capacity. Used as the routing / accounting / session key for the account.
-func (s *WgcService) wgcAccountCIDR(inbound *model.Inbound, settings *wgcSettings, accountIdx int) string {
-	ip, prefix := s.wgcAccountBlock(inbound, settings, accountIdx)
+func (s *WgcService) wgcAccountCIDR(inbound *model.Inbound, settings *wgcSettings, accountSlot int) string {
+	ip, prefix := s.wgcAccountBlock(inbound, settings, accountSlot)
 	if ip == "" {
 		return ""
 	}
@@ -340,6 +345,15 @@ func (s *WgcService) GenerateAllConfigs() error {
 			if !inbound.Enable {
 				continue
 			}
+			// Claim the interface BEFORE attempting to reconcile it. `wanted` decides
+			// what removeStaleLinks tears down, so building it only from SUCCESSFUL
+			// reconciles meant a single transient failure below (an unparseable
+			// settings blob, a momentary wgctrl error) deleted a live interface and
+			// dropped every connected client, turning a retryable hiccup into an
+			// outage that only a later save would repair. An interface is stale when
+			// its inbound is gone or disabled, which is exactly what this loop skips.
+			wanted[wgIfaceName(inbound.Id)] = true
+
 			settings, err := s.parseSettings(inbound)
 			if err != nil {
 				logger.Warning("WireGuard: skipping inbound", inbound.Id, err)
@@ -366,7 +380,6 @@ func (s *WgcService) GenerateAllConfigs() error {
 				logger.Warning("WireGuard: configure device failed for", iface, err)
 				continue
 			}
-			wanted[iface] = true
 		}
 	}
 
@@ -387,7 +400,7 @@ func (s *WgcService) buildPeers(inbound *model.Inbound, settings *wgcSettings, d
 		if client.Email == "" || !client.Enable || disabled[client.Email] {
 			continue
 		}
-		ips := s.wgcDeviceIPs(inbound, settings, i)
+		ips := s.wgcDeviceIPs(inbound, settings, slotOr(client.Slot, i))
 		// One peer PER DEVICE, each cryptokey-routed to its own /32 so a device cannot
 		// source another's address and every device is separable on the data plane.
 		for d, dev := range client.deviceList() {
@@ -510,9 +523,31 @@ func (s *WgcService) ensureLink(iface string, mtu int, blockNet net.IP, prefix i
 			gw := net.IPv4(v4[0], v4[1], v4[2], v4[3]+1)
 			addr := &netlink.Addr{IPNet: &net.IPNet{IP: gw, Mask: net.CIDRMask(prefix, 32)}}
 			_ = netlink.AddrReplace(link, addr)
+			dropForeignV4Addrs(link, addr)
 		}
 	}
 	return netlink.LinkSetUp(link)
+}
+
+// dropForeignV4Addrs removes every IPv4 address on link except keep. AddrReplace
+// only replaces an address with the SAME prefix, so an interface whose block moved
+// kept the old gateway address too, and with it a connected route for a block the
+// peers no longer use. Blocks are pinned now (see keepOwnedBlock in vpnrange.go), so
+// this is mostly cleanup for interfaces that already drifted before the fix.
+func dropForeignV4Addrs(link netlink.Link, keep *netlink.Addr) {
+	addrs, err := netlink.AddrList(link, netlink.FAMILY_V4)
+	if err != nil {
+		return
+	}
+	for i := range addrs {
+		if addrs[i].IPNet == nil || addrs[i].IPNet.String() == keep.IPNet.String() {
+			continue
+		}
+		if err := netlink.AddrDel(link, &addrs[i]); err != nil {
+			logger.Debugf("WireGuard: could not remove stale address %s from %s: %v",
+				addrs[i].IPNet, link.Attrs().Name, err)
+		}
+	}
 }
 
 // removeStaleLinks deletes every wgc<id> interface not present in keep.
@@ -671,7 +706,7 @@ func (s *WgcService) RenderClientConfigs(inbound *model.Inbound, email, endpoint
 		if client.Email != email {
 			continue
 		}
-		ips := s.wgcDeviceIPs(inbound, settings, i)
+		ips := s.wgcDeviceIPs(inbound, settings, slotOr(client.Slot, i))
 		devices := client.deviceList()
 		if len(ips) == 0 || len(devices) == 0 {
 			break
@@ -715,6 +750,106 @@ func (s *WgcService) RenderClientConfigs(inbound *model.Inbound, email, endpoint
 					Remark:      remark,
 					PublicKey:   dev.PubKey,
 					Config:      b.String(),
+				})
+			}
+		}
+		break
+	}
+	return out, nil
+}
+
+// WgcClientParams is the structured form of a rendered WireGuard client config, the
+// same data RenderClientConfigs writes as .conf text, for callers that need the fields
+// rather than the text (e.g. the Clash subscription's `type: wireguard` proxy). Keep it
+// in lock-step with RenderClientConfigs: they share the target/device loop.
+type WgcClientParams struct {
+	Name         string   // per-device/endpoint label, fed to the subscription remark
+	PrivateKey   string   // client device private key
+	Address      string   // client address CIDR, e.g. 10.7.8.8/32
+	PublicKey    string   // server public key
+	PreSharedKey string   // empty when PSK is off
+	Host         string   // endpoint host the client dials
+	Port         int      // endpoint port
+	MTU          int
+	DNS          []string
+	AllowedIPs   []string
+}
+
+// RenderClientParams mirrors RenderClientConfigs (same targets/devices loop) but returns
+// structured params instead of .conf text.
+func (s *WgcService) RenderClientParams(inbound *model.Inbound, email, endpointHost string) ([]WgcClientParams, error) {
+	settings, err := s.parseSettings(inbound)
+	if err != nil {
+		return nil, err
+	}
+	type endpointTarget struct {
+		host   string
+		port   int
+		remark string
+	}
+	var targets []endpointTarget
+	for _, ep := range settings.ExternalProxy {
+		dest := strings.TrimSpace(ep.Dest)
+		if dest == "" {
+			continue
+		}
+		port := ep.Port
+		if port <= 0 {
+			port = inbound.Port
+		}
+		targets = append(targets, endpointTarget{host: dest, port: port, remark: strings.TrimSpace(ep.Remark)})
+	}
+	if len(targets) == 0 {
+		host := endpointHost
+		if l := strings.TrimSpace(inbound.Listen); l != "" && l != "0.0.0.0" {
+			host = l
+		}
+		targets = append(targets, endpointTarget{host: host, port: inbound.Port})
+	}
+	dns := strings.Split(settings.dnsList(), ", ")
+	mtu := settings.mtu()
+
+	var out []WgcClientParams
+	for i, client := range settings.Clients {
+		if client.Email != email {
+			continue
+		}
+		ips := s.wgcDeviceIPs(inbound, settings, slotOr(client.Slot, i))
+		devices := client.deviceList()
+		if len(ips) == 0 || len(devices) == 0 {
+			break
+		}
+		for d, dev := range devices {
+			if d >= len(ips) || strings.TrimSpace(dev.PrivKey) == "" {
+				continue
+			}
+			cidr := ips[d] + "/32"
+			psk := ""
+			if settings.PskEnable && strings.TrimSpace(dev.Psk) != "" {
+				psk = dev.Psk
+			}
+			for _, t := range targets {
+				remark := ""
+				if len(devices) > 1 {
+					remark = fmt.Sprintf("Device %d", d+1)
+				}
+				if t.remark != "" {
+					if remark != "" {
+						remark += " - "
+					}
+					remark += t.remark
+				}
+				out = append(out, WgcClientParams{
+					Name:         remark,
+					PrivateKey:   dev.PrivKey,
+					Address:      cidr,
+					PublicKey:    settings.ServerPubKey,
+					PreSharedKey: psk,
+					Host:         t.host,
+					Port:         t.port,
+					MTU:          mtu,
+					DNS:          dns,
+					AllowedIPs:   []string{"0.0.0.0/0"},
 				})
 			}
 		}
@@ -923,7 +1058,7 @@ func (s *WgcService) Poll() ([]rbridge.Live, error) {
 		// quota stay per-account, not per-device).
 		byPub := make(map[string]acctInfo)
 		for i, client := range settings.Clients {
-			cidr := s.wgcAccountCIDR(inbound, settings, i)
+			cidr := s.wgcAccountCIDR(inbound, settings, slotOr(client.Slot, i))
 			for _, d := range client.deviceList() {
 				if strings.TrimSpace(d.PubKey) == "" {
 					continue

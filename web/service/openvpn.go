@@ -289,6 +289,7 @@ type openvpnClient struct {
 	Password string `json:"password"` // OpenVPN password
 	Email    string `json:"email"`    // tracking identifier
 	Enable   bool   `json:"enable"`
+	Slot     *int   `json:"slot"`     // address-pool slot; nil = fall back to list index
 }
 
 // SetRadius configures the RADIUS service and shared secret for OpenVPN authentication.
@@ -322,14 +323,6 @@ func (s *OpenVpnService) configDir(inboundId int) string {
 // pre-multi-range behavior.
 func ovpnBlockFor(inbound *model.Inbound, settings *openvpnSettings, proto string) (net.IP, int) {
 	return ovpnBlock(settings.effectiveRanges(), proto, inbound.Id)
-}
-
-// ovpnClientIP returns the deterministic tunnel IP (pinned via client-config-dir)
-// for the client at index i on the given transport. Returns "" when the index
-// overflows the inbound's block.
-func ovpnClientIP(inbound *model.Inbound, settings *openvpnSettings, i int, proto string) string {
-	netAddr, prefix := ovpnBlockFor(inbound, settings, proto)
-	return ovpnBlockClientIP(netAddr, prefix, i)
 }
 
 // binaryPath returns the absolute path of the running panel binary, used for
@@ -523,16 +516,19 @@ func (s *OpenVpnService) writeClientConfigDir(inbound *model.Inbound, settings *
 		if client.ID == "" {
 			continue
 		}
+		// The account's stored slot, NOT its position: deleting an earlier account used
+		// to renumber this one, moving a live session's pushed address.
+		slot := slotOr(client.Slot, i)
 		var ips []string
 		if k <= 1 {
 			// One-IP block = the account's legacy deterministic IP (the same address
 			// the routing map uses for K==1), so per-account source-IP routing still
 			// resolves to the right account.
-			if ip := ovpnBlockClientIP(netAddr, prefix, i); ip != "" {
+			if ip := ovpnBlockClientIP(netAddr, prefix, slot); ip != "" {
 				ips = []string{ip}
 			}
 		} else {
-			ips = vpnAccountDeviceIPs(subnets, i, k)
+			ips = vpnAccountDeviceIPs(subnets, slot, k)
 		}
 		if len(ips) == 0 {
 			continue

@@ -1,12 +1,16 @@
 package sub
 
 import (
+	"bytes"
 	"encoding/base64"
+	"encoding/hex"
 	"fmt"
 	"maps"
 	"net"
 	"net/url"
+	"reflect"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -30,6 +34,10 @@ type SubService struct {
 	datepicker     string
 	inboundService service.InboundService
 	settingService service.SettingService
+	sshService     service.SshService
+	wgcService     service.WgcService
+	awgService     service.AwgService
+	openvpnService service.OpenVpnService
 }
 
 // NewSubService creates a new subscription service with the given configuration.
@@ -78,12 +86,17 @@ func (s *SubService) GetSubs(subId string, host string) ([]string, int64, xray.C
 		}
 		for _, client := range clients {
 			if client.Enable && client.SubID == subId {
-				link := s.getLink(inbound, client.Email)
-				result = append(result, link)
+				// Count every matching client's usage so the subscriber page shows the
+				// account's remaining traffic/days for ALL protocols, including ones with
+				// no raw link (wg-c/awg deliver via the Clash sub; the credential VPNs add
+				// a connection-info line via getLink).
 				ct := s.getClientTraffics(inbound.ClientStats, client.Email)
 				clientTraffics = append(clientTraffics, ct)
 				if ct.LastOnline > lastOnline {
 					lastOnline = ct.LastOnline
+				}
+				if link := s.getLink(inbound, client.Email); link != "" {
+					result = append(result, link)
 				}
 			}
 		}
@@ -124,7 +137,7 @@ func (s *SubService) getInboundsBySubId(subId string) ([]*model.Inbound, error) 
 		FROM inbounds,
 			JSON_EACH(JSON_EXTRACT(inbounds.settings, '$.clients')) AS client
 		WHERE
-			protocol in ('vmess','vless','trojan','shadowsocks','hysteria','hysteria2')
+			protocol in ('vmess','vless','trojan','shadowsocks','hysteria','hysteria2','mtproto','ssh','wg-c','awg','openvpn','l2tp','pptp','openconnect','sstp','ikev2')
 			AND JSON_EXTRACT(client.value, '$.subId') = ? AND enable = ?
 	)`, subId, true).Find(&inbounds).Error
 	if err != nil {
@@ -177,8 +190,327 @@ func (s *SubService) getLink(inbound *model.Inbound, email string) string {
 		return s.genShadowsocksLink(inbound, email)
 	case "hysteria", "hysteria2":
 		return s.genHysteriaLink(inbound, email)
+	case "mtproto":
+		// tg:// is the link Telegram itself imports, but no proxy client can parse it,
+		// so the account would contribute nothing a subscription importer recognises.
+		// The card is what makes the account appear (with its usage) in those clients.
+		return joinLinks(s.genMtprotoLink(inbound, email), s.genConnectionCard(inbound, email))
+	case "ssh":
+		// Same split: ssh:// here is the Shadowrocket/base64 form (service.sshShareLink),
+		// which subscription importers do not read either.
+		return joinLinks(s.genSshLink(inbound, email), s.genConnectionCard(inbound, email))
+	case "wg-c", "awg":
+		// A real, importable link rather than a card: Xray/sing-box clients speak
+		// WireGuard, so these accounts get a working entry. The full-fidelity .conf
+		// still comes from the Clash sub and the per-client modal.
+		return s.genWireguardLink(inbound, email)
+	case "openvpn", "l2tp", "pptp", "openconnect", "sstp", "ikev2":
+		// Username/password VPNs have no importable proxy URI at all, so the entry is
+		// a connection card: parseable enough for a client to accept the account and
+		// show its quota, with the credentials in the name.
+		return s.genConnectionCard(inbound, email)
 	}
 	return ""
+}
+
+// joinLinks joins the per-protocol entries of one account with "\n", the same
+// convention genHysteriaLink uses for its external-proxy fan-out (the raw sub endpoint
+// splits them back apart), skipping the ones that came out empty.
+func joinLinks(links ...string) string {
+	out := make([]string, 0, len(links))
+	for _, l := range links {
+		if l != "" {
+			out = append(out, l)
+		}
+	}
+	return strings.Join(out, "\n")
+}
+
+// --- New-protocol raw links: MTProto tg:// and SSH ssh:// ---
+
+// mtprotoModeOrder mirrors MtprotoUser.enabledModes() (web/assets/js/model/inbound.js)
+// so the Go and JS links come out in the same order.
+var mtprotoModeOrder = []string{"classic", "secure", "tls"}
+
+// mtprotoSecretFor mirrors MtprotoUser.secretFor() byte for byte. The default domain
+// is applied BEFORE the trim (JS: (this.tlsDomain||"www.google.com").trim()), so a
+// whitespace-only domain yields an empty hex suffix; replicated deliberately.
+func mtprotoSecretFor(secret, mode, tlsDomain string) string {
+	switch mode {
+	case "secure":
+		return "dd" + secret
+	case "tls":
+		domain := tlsDomain
+		if domain == "" {
+			domain = "www.google.com"
+		}
+		domain = strings.TrimSpace(domain)
+		return "ee" + secret + hex.EncodeToString([]byte(domain)) // lowercase hex == JS padStart(2,"0")
+	default:
+		return secret
+	}
+}
+
+func mtprotoModeEnabled(c model.Client, mode string) bool {
+	switch mode {
+	case "classic":
+		return c.ModeClassic
+	case "secure":
+		return c.ModeSecure
+	case "tls":
+		return c.ModeTls
+	}
+	return false
+}
+
+// encodeURIComponentGo replicates JS encodeURIComponent. url.QueryEscape is NOT a
+// substitute: it escapes ! * ' ( ) and encodes space as '+' rather than %20. Each
+// UTF-8 byte is percent-encoded, so walk bytes.
+func encodeURIComponentGo(s string) string {
+	const keep = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_.!~*'()"
+	var b strings.Builder
+	for i := 0; i < len(s); i++ {
+		if strings.IndexByte(keep, s[i]) >= 0 {
+			b.WriteByte(s[i])
+		} else {
+			fmt.Fprintf(&b, "%%%02X", s[i])
+		}
+	}
+	return b.String()
+}
+
+// genMtprotoLink emits one tg://proxy link per enabled mode per endpoint, identical to
+// MtprotoUser.links(). The links are "\n"-joined (the same convention genHysteriaLink
+// uses for its external-proxy fan-out); the raw sub endpoint splits them back apart.
+func (s *SubService) genMtprotoLink(inbound *model.Inbound, email string) string {
+	if inbound.Protocol != model.MTPROTO {
+		return ""
+	}
+	clients, _ := s.inboundService.GetClients(inbound)
+	idx := findClientIndex(clients, email)
+	if idx < 0 {
+		return ""
+	}
+	c := clients[idx]
+
+	type endpoint struct {
+		host string
+		port int
+	}
+	var endpoints []endpoint
+	// Mirror links() EXACTLY: no empty-dest filter, no port fallback. Diverging here
+	// would break byte-for-byte parity with the JS-generated links.
+	if len(c.ExternalProxy) > 0 {
+		for _, ep := range c.ExternalProxy {
+			endpoints = append(endpoints, endpoint{host: ep.Dest, port: ep.Port})
+		}
+	} else {
+		endpoints = append(endpoints, endpoint{host: s.address, port: inbound.Port})
+	}
+
+	var links []string
+	for _, ep := range endpoints {
+		for _, mode := range mtprotoModeOrder {
+			if !mtprotoModeEnabled(c, mode) {
+				continue
+			}
+			links = append(links, "tg://proxy?server="+encodeURIComponentGo(ep.host)+
+				"&port="+strconv.Itoa(ep.port)+
+				"&secret="+mtprotoSecretFor(c.Secret, mode, c.TlsDomain))
+		}
+	}
+	return strings.Join(links, "\n")
+}
+
+// genSshLink reuses the SSH service's own config renderer so a subscription entry is
+// identical to the per-client config modal by construction (SSH external proxies are
+// inbound-level, not on model.Client, so the link cannot be rebuilt from the client).
+func (s *SubService) genSshLink(inbound *model.Inbound, email string) string {
+	if inbound.Protocol != model.SSH {
+		return ""
+	}
+	cfgs, err := s.sshService.RenderClientConfigs(inbound, email, s.address)
+	if err != nil {
+		return ""
+	}
+	links := make([]string, 0, len(cfgs))
+	for _, cfg := range cfgs {
+		if cfg.Link != "" {
+			links = append(links, cfg.Link)
+		}
+	}
+	return strings.Join(links, "\n")
+}
+
+// genConnectionCard produces the subscription entry for the protocols Xray-core has no
+// outbound for: the username/password VPNs (l2tp, pptp, openvpn, openconnect, sstp,
+// ikev2) plus mtproto and ssh, whose own links (tg://, the base64 ssh://) no
+// subscription importer reads.
+//
+// It is deliberately a `trojan://` URI rather than the plain-text summary this used to
+// emit. A subscription client keeps only the lines it can parse, so a plain-text line
+// left the account with NO entry: the group imported as empty and the quota/expiry the
+// Subscription-Userinfo header carries had nothing to attach to. The card is that entry.
+// Its host:port is the real VPN endpoint and its password field the real credential, so
+// nothing about it is invented; it simply cannot be dialled by a proxy client, which is
+// true of the protocol either way.
+//
+// The name comes from genRemark, so it carries the same remaining-traffic and
+// remaining-days suffixes an Xray node's name gets when Show Info is on, and the
+// credentials ride along in it, since the name is all a client displays.
+func (s *SubService) genConnectionCard(inbound *model.Inbound, email string) string {
+	clients, _ := s.inboundService.GetClients(inbound)
+	idx := findClientIndex(clients, email)
+	if idx < 0 {
+		return ""
+	}
+	c := clients[idx]
+
+	server := s.address
+	if l := strings.TrimSpace(inbound.Listen); l != "" && l != "0.0.0.0" {
+		server = l
+	}
+
+	// What goes in the URI's credential slot: the account's own secret, so the card
+	// carries no filler. ikev2 in psk/eap-tls mode has an email-only account with no
+	// password, hence the fallback.
+	secret := c.Password
+	if inbound.Protocol == model.MTPROTO {
+		secret = c.Secret
+	}
+	if secret == "" {
+		secret = email
+	}
+
+	// The login name is NOT always the account email. The RADIUS protocols accept
+	// either (radius.go matches client.ID or client.Email), but the SSH gateway compares
+	// the client id alone (SshService.lookupAccount), so showing the email there would
+	// hand the subscriber a username that cannot log in. mtproto has no username at all:
+	// the secret IS the credential.
+	details := []string{protocolLabel(inbound.Protocol)}
+	switch inbound.Protocol {
+	case model.MTPROTO:
+		if c.Secret != "" {
+			details = append(details, "secret="+c.Secret)
+		}
+	case model.SSH:
+		details = append(details, "user="+c.ID)
+		if c.Password != "" {
+			details = append(details, "pass="+c.Password)
+		}
+	default:
+		details = append(details, "user="+email)
+		if c.Password != "" {
+			details = append(details, "pass="+c.Password)
+		}
+	}
+
+	// The pre-shared key lives at the inbound level for the protocols that use one.
+	var settings map[string]any
+	_ = json.Unmarshal([]byte(inbound.Settings), &settings)
+	switch inbound.Protocol {
+	case model.L2TP:
+		if en, _ := settings["ipsecEnable"].(bool); en {
+			if psk, _ := settings["ipsecPsk"].(string); strings.TrimSpace(psk) != "" {
+				details = append(details, "psk="+psk)
+			}
+		}
+	case model.IKEV2:
+		if mode, _ := settings["authMode"].(string); mode == "psk" {
+			if psk, _ := settings["psk"].(string); strings.TrimSpace(psk) != "" {
+				details = append(details, "psk="+psk)
+			}
+		}
+	}
+
+	// No query params on purpose: `trojan://secret@host:port#name` is the shape every
+	// importer handles, and each extra parameter is one more thing a strict parser can
+	// reject. url.URL escapes the credential and the fragment (spaces as %20, not '+',
+	// which a fragment must have).
+	u := url.URL{
+		Scheme:   "trojan",
+		User:     url.User(secret),
+		Host:     net.JoinHostPort(server, strconv.Itoa(inbound.Port)),
+		Fragment: s.genRemark(inbound, email, strings.Join(details, " ")),
+	}
+	return u.String()
+}
+
+// genWireguardLink emits an importable wireguard:// link per device x endpoint for a wg-c
+// or awg account, in the same shape the panel already hands out for native WireGuard
+// inbounds (Inbound.getWireguardLink in web/assets/js/model/inbound.js): the client
+// private key as the userinfo, the server key/address/mtu as query params. The keys come
+// from the protocol service, which is the only thing that holds them.
+//
+// awg's obfuscation parameters have no place in this URI shape, so an awg link imports as
+// plain WireGuard; the Clash sub carries the amnezia-wg-option block for clients that
+// support it.
+func (s *SubService) genWireguardLink(inbound *model.Inbound, email string) string {
+	var params []service.WgcClientParams
+	var err error
+	switch inbound.Protocol {
+	case model.WGC:
+		params, err = s.wgcService.RenderClientParams(inbound, email, s.address)
+	case model.AWG:
+		var awgParams []service.AwgClientParams
+		awgParams, err = s.awgService.RenderClientParams(inbound, email, s.address)
+		for _, p := range awgParams {
+			params = append(params, p.WgcClientParams)
+		}
+	default:
+		return ""
+	}
+	if err != nil {
+		logger.Error("SubService - wireguard RenderClientParams:", err)
+		return ""
+	}
+
+	links := make([]string, 0, len(params))
+	for _, p := range params {
+		q := url.Values{}
+		q.Set("publickey", p.PublicKey)
+		if p.Address != "" {
+			q.Set("address", p.Address)
+		}
+		if p.MTU > 0 {
+			q.Set("mtu", strconv.Itoa(p.MTU))
+		}
+		if p.PreSharedKey != "" {
+			q.Set("presharedkey", p.PreSharedKey)
+		}
+		u := url.URL{
+			Scheme:   "wireguard",
+			User:     url.User(p.PrivateKey),
+			Host:     net.JoinHostPort(p.Host, strconv.Itoa(p.Port)),
+			RawQuery: q.Encode(),
+			Fragment: s.genRemark(inbound, email, p.Name),
+		}
+		links = append(links, u.String())
+	}
+	return strings.Join(links, "\n")
+}
+
+// protocolLabel is the human-facing name shown on a connection card.
+func protocolLabel(p model.Protocol) string {
+	switch p {
+	case model.OPENVPN:
+		return "OpenVPN"
+	case model.L2TP:
+		return "L2TP/IPsec"
+	case model.PPTP:
+		return "PPTP"
+	case model.IKEV2:
+		return "IKEv2"
+	case model.OPENCONNECT:
+		return "OpenConnect"
+	case model.SSTP:
+		return "SSTP"
+	case model.MTPROTO:
+		return "MTProto"
+	case model.SSH:
+		return "SSH"
+	}
+	return string(p)
 }
 
 // Protocol link generators are intentionally ordered as:
@@ -579,25 +911,23 @@ func applyShareNetworkParams(stream map[string]any, streamNetwork string, params
 		xhttp, _ := stream["xhttpSettings"].(map[string]any)
 		applyPathAndHostParams(xhttp, params)
 		params["mode"], _ = xhttp["mode"].(string)
-		applyXhttpPaddingParams(xhttp, params)
+		applyXhttpShareParams(xhttp, params)
 	}
 }
 
-func applyXhttpPaddingObj(xhttp map[string]any, obj map[string]any) {
-	// VMess base64 JSON supports arbitrary keys; copy the padding
-	// settings through so clients can match the server's xhttp
-	// xPaddingBytes range and, when the admin opted into obfs
-	// mode, the custom key / header / placement / method.
-	if xpb, ok := xhttp["xPaddingBytes"].(string); ok && len(xpb) > 0 {
-		obj["x_padding_bytes"] = xpb
-	}
-	if obfs, ok := xhttp["xPaddingObfsMode"].(bool); ok && obfs {
-		obj["xPaddingObfsMode"] = true
-		for _, field := range []string{"xPaddingKey", "xPaddingHeader", "xPaddingPlacement", "xPaddingMethod"} {
-			if v, ok := xhttp[field].(string); ok && len(v) > 0 {
-				obj[field] = v
-			}
+// applyXhttpShareObj is the VMess variant of applyXhttpShareParams: VMess
+// links are a base64-encoded JSON object, so the fields go straight into that
+// JSON instead of into a query string.
+func applyXhttpShareObj(xhttp map[string]any, obj map[string]any) {
+	for field, value := range collectXhttpShareFields(xhttp) {
+		if field == "xPaddingBytes" {
+			// The padding range has always ridden along under the flat
+			// sing-box style name here; keep it so clients already in the
+			// field keep reading it.
+			obj["x_padding_bytes"] = value
+			continue
 		}
+		obj[field] = value
 	}
 }
 
@@ -634,8 +964,20 @@ func applyVmessNetworkParams(stream map[string]any, network string, obj map[stri
 	case "xhttp":
 		xhttp, _ := stream["xhttpSettings"].(map[string]any)
 		applyPathAndHostObj(xhttp, obj)
-		obj["mode"], _ = xhttp["mode"].(string)
-		applyXhttpPaddingObj(xhttp, obj)
+		mode, _ := xhttp["mode"].(string)
+		obj["mode"] = mode
+		// The mode goes out under both names on purpose. This generator has
+		// always written it as `mode` (which is also the only name our own
+		// vmess importer, Outbound.fromVmessLink, reads), while the panel's
+		// copy-link button has always written it as `type` (where v2rayN-family
+		// clients read the per-network sub-type). Emitting both is the union of
+		// the two shipped behaviours, so the two links finally agree without
+		// regressing either client. Left as "none" when the blob carries no
+		// mode at all, so a mode-less inbound keeps the link it had.
+		if mode != "" {
+			obj["type"] = mode
+		}
+		applyXhttpShareObj(xhttp, obj)
 	}
 }
 
@@ -923,28 +1265,264 @@ func searchKey(data any, key string) (any, bool) {
 	return nil, false
 }
 
-// applyXhttpPaddingParams copies the xPadding* fields from an xhttpSettings
-// map into the URL query params of a vless:// / trojan:// / ss:// link.
+// xhttpModeledKeys are the xhttpSettings keys the panel form models
+// structurally. Anything else in the blob (a hand edit, xray's own nested
+// `extra` object, a key from a newer core) is passed through to the client
+// verbatim. Mirrors xHTTPStreamSettings.STRUCTURED_KEYS in
+// web/assets/js/model/inbound.js.
+var xhttpModeledKeys = map[string]struct{}{
+	"path": {}, "host": {}, "headers": {}, "scMaxBufferedPosts": {},
+	"scMaxEachPostBytes": {}, "scStreamUpServerSecs": {}, "noSSEHeader": {},
+	"xPaddingBytes": {}, "mode": {}, "xPaddingObfsMode": {}, "xPaddingKey": {},
+	"xPaddingHeader": {}, "xPaddingPlacement": {}, "xPaddingMethod": {},
+	"uplinkHTTPMethod": {}, "sessionPlacement": {}, "sessionKey": {},
+	"seqPlacement": {}, "seqKey": {}, "uplinkDataPlacement": {},
+	"uplinkDataKey": {}, "uplinkChunkSize": {}, "noGRPCHeader": {},
+	"scMinPostsIntervalMs": {}, "serverMaxHeaderBytes": {}, "xmux": {},
+	"downloadSettings": {},
+}
+
+// xhttpShareDefaults is the value the xhttp form starts each field on. A share
+// link only carries a field once the admin has actually moved it off this
+// default: a stock xhttp inbound has to keep producing a short link (QR codes
+// stop being scannable fast) and links handed out before this existed must not
+// change.
 //
-// Before this helper existed, only path / host / mode were propagated,
-// so a server configured with a non-default xPaddingBytes (e.g. 80-600)
-// or with xPaddingObfsMode=true + custom xPaddingKey / xPaddingHeader
-// would silently diverge from the client: the client kept defaults,
-// hit the server, and was rejected by its padding validation
-// ("invalid padding" in the inbound log) — the client-visible symptom
-// was "xhttp doesn't connect" on OpenWRT / sing-box.
+// Numbers are float64 because these come out of encoding/json, so a value that
+// is a string in the stored blob never compares equal to a numeric default and
+// is (correctly) shared. Mirrors XHTTP_SHARE_DEFAULTS in inbound.js.
 //
-// Two encodings are written so every popular client can read at least one:
+// SCALARS ONLY. The values here are compared against whatever the stored blob
+// holds, and comparing two `any` values that both carry the same uncomparable
+// dynamic type (a map, a slice) panics at runtime, which would take the whole
+// subscription endpoint down. xmux and downloadSettings are objects and are
+// therefore handled explicitly in collectXhttpShareFields, not from this table.
+var xhttpShareDefaults = map[string]any{
+	"scMaxBufferedPosts":   float64(30),
+	"scMaxEachPostBytes":   "1000000",
+	"scStreamUpServerSecs": "20-80",
+	"uplinkChunkSize":      float64(0),
+	"scMinPostsIntervalMs": "30",
+	"serverMaxHeaderBytes": float64(0),
+}
+
+// xhttpShareFields are the plain scalar xhttp settings copied through as-is
+// once they differ from xhttpShareDefaults (no default means "skip when
+// empty"). The xPadding* / headers / noSSEHeader / noGRPCHeader fields need
+// shaping and xmux / downloadSettings are objects, so collectXhttpShareFields
+// handles all of those explicitly instead.
+var xhttpShareFields = []string{
+	"scMaxBufferedPosts", "scMaxEachPostBytes", "scStreamUpServerSecs",
+	"uplinkHTTPMethod", "sessionPlacement", "sessionKey", "seqPlacement",
+	"seqKey", "uplinkDataPlacement", "uplinkDataKey", "uplinkChunkSize",
+	"scMinPostsIntervalMs", "serverMaxHeaderBytes",
+}
+
+// xhttpXmuxDefaults are xray's own xmux defaults, which are also what both
+// panel forms start on. Mirrors XHTTP_XMUX_DEFAULTS in
+// web/assets/js/model/inbound.js; the numbers are float64 for the same reason
+// as in xhttpShareDefaults (they arrive through encoding/json).
+var xhttpXmuxDefaults = map[string]any{
+	"maxConcurrency":   "16-32",
+	"maxConnections":   float64(0),
+	"cMaxReuseTimes":   float64(0),
+	"hMaxRequestTimes": "600-900",
+	"hMaxReusableSecs": "1800-3000",
+	"hKeepAlivePeriod": float64(0),
+}
+
+// normalizeXhttpXmux fills in every xmux key the stored blob left out, so the
+// client is handed the same six values the panel form shows.
 //
-//   - x_padding_bytes=<range>  — flat param, understood by sing-box and its
-//     derivatives (Podkop, OpenWRT sing-box, Karing, NekoBox, …).
-//   - extra=<url-encoded-json> — full xhttp settings blob, which is how
-//     xray-core clients (v2rayNG, Happ, Furious, Exclave, …) pick up the
-//     obfs-mode key / header / placement / method.
+// A key that is PRESENT but empty is kept as-is rather than pushed back to the
+// default. The core reads an empty Int32Range as 0 (ParseRangeString treats ""
+// as zero, it does not reject it), and 0 is the only way to say "this strategy
+// is off": clearing maxConcurrency is exactly how an admin switches to the
+// maxConnections strategy, and the two settings are mutually exclusive. Unknown
+// sub-keys (a newer core's cMaxLifetimeMs, a hand edit) ride along untouched.
 //
-// Anything that doesn't map to a non-empty value is skipped, so simple
-// inbounds (no custom padding) produce exactly the same URL as before.
-func applyXhttpPaddingParams(xhttp map[string]any, params map[string]string) {
+// Mirrors xHTTPStreamSettings.normalizeXmux in web/assets/js/model/inbound.js.
+func normalizeXhttpXmux(raw any) map[string]any {
+	out := make(map[string]any, len(xhttpXmuxDefaults))
+	for key, value := range xhttpXmuxDefaults {
+		out[key] = value
+	}
+	src, ok := raw.(map[string]any)
+	if !ok {
+		return out
+	}
+	for key, value := range src {
+		if value == nil {
+			continue
+		}
+		out[key] = value
+	}
+	return out
+}
+
+// normalizeXhttpDownloadSettings reduces downloadSettings to "a non-empty JSON
+// object, or nothing". A null, a scalar, an array or an empty object all mean
+// not set, and the key then has to be omitted entirely rather than shared
+// empty: xray builds a whole StreamConfig out of whatever is there, and an
+// empty one is not the same thing as none. Mirrors
+// xHTTPStreamSettings.normalizeDownloadSettings in inbound.js.
+func normalizeXhttpDownloadSettings(raw any) map[string]any {
+	obj, ok := raw.(map[string]any)
+	if !ok || len(obj) == 0 {
+		return nil
+	}
+	return obj
+}
+
+// collectXhttpShareFields gathers every xhttp setting a client has to match
+// the server on, minus path / host / mode which the link already carries as
+// its own top-level params.
+//
+// An xhttp client that guesses any of these wrong does not degrade, it fails.
+// Before this existed only path / host / mode plus the xPadding* subset were
+// propagated, so a server configured with a custom session/seq/uplink
+// placement, an uplink HTTP method or extra headers silently diverged from the
+// client: the client kept xray's defaults, hit the server and was rejected
+// (the padding case logs "invalid padding" on the inbound; the client-visible
+// symptom was "xhttp doesn't connect").
+//
+// Mirrored on the JS side by Inbound.collectXhttpShareFields in
+// web/assets/js/model/inbound.js. The two generators have to agree key for
+// key, because the panel's copy-link button and the subscription URL must not
+// hand out two different configs for one inbound.
+func collectXhttpShareFields(xhttp map[string]any) map[string]any {
+	out := map[string]any{}
+	if xhttp == nil {
+		return out
+	}
+
+	// Unmodeled keys ride through verbatim.
+	for key, value := range xhttp {
+		if _, modeled := xhttpModeledKeys[key]; modeled {
+			continue
+		}
+		out[key] = value
+	}
+
+	// xPaddingBytes is emitted even when it still holds the panel default,
+	// which is what this generator has always done. Clients already in the
+	// field read it, so narrowing it now would break working links.
+	if xpb, ok := xhttp["xPaddingBytes"].(string); ok && len(xpb) > 0 {
+		out["xPaddingBytes"] = xpb
+	}
+	if obfs, ok := xhttp["xPaddingObfsMode"].(bool); ok && obfs {
+		out["xPaddingObfsMode"] = true
+		// The obfs-mode-only fields: only populate the ones the admin
+		// actually set, so xray-core falls back to its own defaults for
+		// the rest instead of seeing spurious empty strings.
+		for _, field := range []string{"xPaddingKey", "xPaddingHeader", "xPaddingPlacement", "xPaddingMethod"} {
+			if v, ok := xhttp[field].(string); ok && len(v) > 0 {
+				out[field] = v
+			}
+		}
+	}
+
+	if headers := normalizeXhttpHeaders(xhttp["headers"]); len(headers) > 0 {
+		out["headers"] = headers
+	}
+	if noSSE, ok := xhttp["noSSEHeader"].(bool); ok && noSSE {
+		out["noSSEHeader"] = true
+	}
+	if noGRPC, ok := xhttp["noGRPCHeader"].(bool); ok && noGRPC {
+		out["noGRPCHeader"] = true
+	}
+
+	for _, field := range xhttpShareFields {
+		value, present := xhttp[field]
+		if !present || value == nil {
+			continue
+		}
+		if s, isStr := value.(string); isStr && s == "" {
+			continue
+		}
+		// reflect.DeepEqual and not ==: comparing two `any` values panics at
+		// runtime when both hold the same uncomparable dynamic type, and the
+		// values on the left come straight out of a stored blob that anyone
+		// with panel access can hand-edit into a map or a slice. A panic here
+		// takes the subscription endpoint down for every client, not just the
+		// one inbound, so the comparison has to be one that cannot panic.
+		if def, hasDefault := xhttpShareDefaults[field]; hasDefault && reflect.DeepEqual(value, def) {
+			continue
+		}
+		out[field] = value
+	}
+
+	// xmux and downloadSettings are objects, so they stay out of the scalar
+	// loop above and out of xhttpShareDefaults entirely (see the note there).
+	//
+	// xmux goes on the wire only once the admin has moved a knob off the stock
+	// set, and then it goes whole: a partial xmux would leave the client
+	// filling the gaps from its own defaults, which is the exact kind of silent
+	// server/client divergence this function exists to prevent.
+	if xmux := normalizeXhttpXmux(xhttp["xmux"]); !reflect.DeepEqual(xmux, xhttpXmuxDefaults) {
+		out["xmux"] = xmux
+	}
+
+	// downloadSettings has no default at all, so it rides verbatim whenever it
+	// is set. Except in stream-one mode, where the core rejects it outright
+	// (transport_internet.go: `Can not use "downloadSettings" in "stream-one"
+	// mode.`) and rejects the entire config with it. The panel will not save
+	// that combination, but a blob hand-edited outside the panel can still hold
+	// it, and a link no client can build is worse than a link that quietly
+	// drops one key.
+	if download := normalizeXhttpDownloadSettings(xhttp["downloadSettings"]); download != nil {
+		if mode, _ := xhttp["mode"].(string); mode != "stream-one" {
+			out["downloadSettings"] = download
+		}
+	}
+
+	return out
+}
+
+// normalizeXhttpHeaders flattens a stored headers map to the name -> single
+// string shape xray expects on the client side. The panel always writes that
+// shape, but an imported or hand-edited inbound can carry the multi-value
+// name -> [v1, v2] form; the panel form collapses that to the last value when
+// it loads (XrayCommonClass.toV2Headers), so do the same here rather than let
+// the two generators disagree. Entries with an empty name or value are
+// dropped, again matching toV2Headers.
+func normalizeXhttpHeaders(raw any) map[string]any {
+	headers, ok := raw.(map[string]any)
+	if !ok {
+		return nil
+	}
+	out := make(map[string]any, len(headers))
+	for name, value := range headers {
+		if name == "" {
+			continue
+		}
+		switch v := value.(type) {
+		case string:
+			if v != "" {
+				out[name] = v
+			}
+		case []any:
+			if len(v) == 0 {
+				continue
+			}
+			if last, isStr := v[len(v)-1].(string); isStr && last != "" {
+				out[name] = last
+			}
+		}
+	}
+	return out
+}
+
+// applyXhttpShareParams writes the xhttp settings into the URL query params of
+// a vless:// / trojan:// / ss:// link. Two encodings are used so every popular
+// client can read at least one:
+//
+//   - x_padding_bytes=<range>  flat param, understood by sing-box and its
+//     derivatives (Podkop, OpenWRT sing-box, Karing, NekoBox) which never
+//     look inside `extra`.
+//   - extra=<url-encoded-json> the whole xhttp object, which is how xray-core
+//     clients (v2rayNG, Happ, Furious, Exclave) pick it up.
+func applyXhttpShareParams(xhttp map[string]any, params map[string]string) {
 	if xhttp == nil {
 		return
 	}
@@ -953,27 +1531,28 @@ func applyXhttpPaddingParams(xhttp map[string]any, params map[string]string) {
 		params["x_padding_bytes"] = xpb
 	}
 
-	extra := map[string]any{}
-	if xpb, ok := xhttp["xPaddingBytes"].(string); ok && len(xpb) > 0 {
-		extra["xPaddingBytes"] = xpb
-	}
-	if obfs, ok := xhttp["xPaddingObfsMode"].(bool); ok && obfs {
-		extra["xPaddingObfsMode"] = true
-		// The obfs-mode-only fields: only populate the ones the admin
-		// actually set, so xray-core falls back to its own defaults for
-		// the rest instead of seeing spurious empty strings.
-		for _, field := range []string{"xPaddingKey", "xPaddingHeader", "xPaddingPlacement", "xPaddingMethod"} {
-			if v, ok := xhttp[field].(string); ok && len(v) > 0 {
-				extra[field] = v
-			}
-		}
-	}
-
+	extra := collectXhttpShareFields(xhttp)
 	if len(extra) > 0 {
-		if b, err := json.Marshal(extra); err == nil {
+		if b, err := marshalShareJSON(extra); err == nil {
 			params["extra"] = string(b)
 		}
 	}
+}
+
+// marshalShareJSON writes JSON the way JavaScript's JSON.stringify does.
+// encoding/json escapes the three HTML-significant characters (less-than,
+// greater-than, ampersand) into their \u form by default, which would make
+// this blob differ byte for byte from the one the panel's copy-link button
+// builds for the very same inbound. One header value carrying an ampersand
+// is enough to trigger it.
+func marshalShareJSON(v any) ([]byte, error) {
+	var buf bytes.Buffer
+	encoder := json.NewEncoder(&buf)
+	encoder.SetEscapeHTML(false)
+	if err := encoder.Encode(v); err != nil {
+		return nil, err
+	}
+	return bytes.TrimRight(buf.Bytes(), "\n"), nil
 }
 
 var kcpMaskToHeaderType = map[string]string{
@@ -1319,6 +1898,7 @@ type PageData struct {
 	SubJsonUrl   string
 	SubClashUrl  string
 	Result       []string
+	Configs      []SubConfigLink
 }
 
 // ResolveRequest extracts scheme and host info from request/headers consistently.

@@ -125,6 +125,11 @@
         });
       } else {
         this.inbound.genAllLinks(this.dbInbound.remark, app.remarkModel, client).forEach(l => {
+          // genLink returns '' for the protocols that have no raw share-link (the
+          // credential VPNs, wg-c/awg, ssh). They open this modal for their
+          // subscription QR alone, so drop the empty entry rather than drawing a
+          // blank QR under a green remark tag.
+          if (!l.link) return;
           this.qrcodes.push({
             remark: l.remark,
             link: l.link,

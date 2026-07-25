@@ -38,6 +38,27 @@ warn() { printf '%swarning:%s %s\n' "$B$YELLOW" "$R" "$*" >&2; }
 die()  { printf '%serror:%s %s\n'   "$B$RED" "$R" "$*" >&2; exit 1; }
 hr()   { printf '%s%s%s\n' "$D" "$(printf '%.0s-' {1..60})" "$R"; }
 
+# Byte counts the way a human reads them (one decimal from KB up). Shared by the
+# live download line and its final summary, so the two can never disagree about
+# units. Integer-only maths: no awk/bc dependency for something this small.
+fmt_bytes() {
+    local b="$1" div unit
+    if   (( b >= 1073741824 )); then div=1073741824; unit=GB
+    elif (( b >= 1048576    )); then div=1048576;    unit=MB
+    elif (( b >= 1024       )); then div=1024;       unit=KB
+    else printf '%d B' "$b"; return 0
+    fi
+    printf '%d.%d %s' "$(( b / div ))" "$(( b * 10 / div % 10 ))" "$unit"
+}
+
+# Compact durations for the ETA and the elapsed time: "45s", "2m07s".
+fmt_time() {
+    local s="$1"
+    if (( s >= 60 )); then printf '%dm%02ds' "$(( s / 60 ))" "$(( s % 60 ))"
+    else printf '%ds' "$s"
+    fi
+}
+
 # Real-SSL (Let's Encrypt via acme.sh) lives in ONE place: obtain_letsencrypt_cert
 # in vpn-ui.sh, which is sourced further below once the menu script is installed.
 # It used to be defined here and copied into the menu, which is exactly how two
@@ -95,18 +116,181 @@ else
     act "mode:   ${GREEN}fresh install${R}"
 fi
 
+# Millisecond clock for the transfer rates below. GNU date has %3N; a date
+# without it (busybox) falls back to whole seconds, which only coarsens the rate.
+now_ms() {
+    local t
+    t="$(date +%s%3N 2>/dev/null || true)"
+    [[ "$t" =~ ^[0-9]{13,}$ ]] || t="$(date +%s)000"
+    printf '%s' "$t"
+}
+
+# Best-effort Content-Length, so the progress line can show a percentage and an
+# ETA. GitHub redirects a release asset to its CDN, so follow the redirects and
+# keep the LAST length seen. A miss here is not fatal: the line simply drops the
+# percentage and the ETA and reports bytes plus rate.
+# Discarding the length when the probe itself failed (pipefail carries the -f /
+# --spider status out of the pipeline) is what stops a 404 page's own
+# Content-Length from being presented as the asset's size.
+remote_size() {
+    local url="$1" len=""
+    if [[ "$DL" == "curl" ]]; then
+        len="$(curl -fsIL --max-time 20 "$url" 2>/dev/null \
+               | grep -iE '^[[:space:]]*content-length:' | tail -n1 | tr -cd '0-9')" || len=""
+    else
+        len="$(wget --spider -S --tries=1 --timeout=20 "$url" 2>&1 \
+               | grep -iE '^[[:space:]]*content-length:' | tail -n1 | tr -cd '0-9')" || len=""
+    fi
+    [[ "$len" =~ ^[0-9]+$ ]] && printf '%s' "$len"
+    return 0
+}
+
+# One redraw of the live line. DL_LINE_LEN keeps the previous VISIBLE width so a
+# line that shrinks (the ETA counting down) is padded over instead of leaving a
+# tail behind; padding with blanks rather than an erase-to-end-of-line escape
+# keeps this honest for anyone who sets NO_COLOR.
+DL_BAR_FULL='####################'
+DL_BAR_EMPTY='--------------------'
+DL_LINE_LEN=0
+DL_COLS=80
+progress_line() {
+    local bytes="$1" total="$2" speed="$3"
+    local pct=0 pct_txt="" size_txt rate_txt eta_txt="" bar="" barlen=0 pad="" len
+    size_txt="$(fmt_bytes "$bytes")"
+    rate_txt="$(fmt_bytes "$speed")/s"
+    if (( total > 0 )); then
+        pct=$(( bytes * 100 / total ))
+        (( pct > 100 )) && pct=100
+        pct_txt="$(printf '%3d%%  ' "$pct")"
+        size_txt="$size_txt / $(fmt_bytes "$total")"
+        if (( speed > 0 && bytes < total )); then
+            eta_txt="   eta $(fmt_time "$(( (total - bytes) / speed ))")"
+        fi
+    fi
+    size_txt="$size_txt   "
+
+    # The bar is the first thing to go on a narrow terminal: the numbers matter
+    # more than the picture, and a wrapped line would break the \r redraw.
+    len=$(( 5 + ${#pct_txt} + ${#size_txt} + ${#rate_txt} + ${#eta_txt} ))
+    if (( total > 0 && DL_COLS - len >= 23 )); then
+        bar="[${TEAL}${DL_BAR_FULL:0:$(( pct * 20 / 100 ))}${R}${D}${DL_BAR_EMPTY:0:$(( 20 - pct * 20 / 100 ))}${R}] "
+        barlen=23
+    fi
+    len=$(( len + barlen ))
+    (( DL_LINE_LEN > len )) && pad="$(printf '%*s' "$(( DL_LINE_LEN - len ))" '')"
+    DL_LINE_LEN=$len
+    printf '\r  %s->%s %s%s%s%s%s%s%s%s' \
+        "$BLUE" "$R" "$bar" "$pct_txt" "$size_txt" "$GREEN" "$rate_txt" "$R" "$eta_txt" "$pad"
+}
+
+# Download $1 to $2 behind a progress line we render ourselves. curl and wget are
+# both run quietly and the line is drawn from the partial file's size, the one
+# signal the two tools share: that is what keeps the two paths looking identical,
+# and it is the only way to show a rate on the wget path, whose --show-progress
+# bar never printed one. Returns the transfer's REAL exit status (from wait, not
+# from the backgrounding), so a failed download still reaches die.
+fetch_asset() {
+    local url="$1" out="$2"
+    local total tick=0.2 rc=0 rated=0 live=0
+    local start now bytes=0 last_ms last_b=0 speed=0 elapsed
+    [[ -t 1 ]] && live=1     # a piped install (curl ... | sudo bash) gets no \r redraws
+
+    # Terminal width once per download: recomputing it per redraw would fork five
+    # times a second for a number that almost never changes.
+    if (( live )); then DL_COLS="$(tput cols 2>/dev/null || echo 80)"; fi
+    [[ "$DL_COLS" =~ ^[0-9]+$ ]] || DL_COLS=80
+    # Fractional sleeps are a coreutils extension. Where they are missing, redraw
+    # once a second instead of spinning on a failing sleep.
+    sleep 0.01 2>/dev/null || tick=1
+
+    total="$(remote_size "$url")"
+    [[ "$total" =~ ^[0-9]+$ ]] || total=0
+    # With no live line, the size is the only hint the log gives about how long
+    # the silence is going to last.
+    if (( ! live && total > 0 )); then act "size:   $(fmt_bytes "$total")"; fi
+
+    # Quiet, but NOT mute: -sS / -nv drop the built-in progress bars (we draw the
+    # line) while keeping each tool's own diagnosis, which is parked in DL_ERR and
+    # replayed only if the transfer fails.
+    DL_ERR="$(mktemp)"
+    if [[ "$DL" == "curl" ]]; then
+        curl -fL --retry 3 -sS -o "$out" "$url" 2>"$DL_ERR" &
+    else
+        wget --tries=3 -nv -O "$out" "$url" 2>"$DL_ERR" &
+    fi
+    DL_PID=$!
+
+    start="$(now_ms)"; last_ms="$start"
+    while kill -0 "$DL_PID" 2>/dev/null; do
+        sleep "$tick"
+        bytes="$(stat -c %s "$out" 2>/dev/null || echo 0)"
+        now="$(now_ms)"
+        if (( bytes < last_b )); then
+            # A --retry restart truncates the file. Re-seed the window rather
+            # than report a negative rate.
+            last_b="$bytes"; last_ms="$now"; speed=0
+        elif (( now - last_ms >= 800 )); then
+            # Rate over the last ~second, not over the whole transfer: that is
+            # what makes a stall visible instead of averaging it away.
+            speed=$(( (bytes - last_b) * 1000 / (now - last_ms) ))
+            last_b="$bytes"; last_ms="$now"; rated=1
+        elif (( ! rated && now > start )); then
+            speed=$(( bytes * 1000 / (now - start) ))
+        fi
+        if (( live )); then progress_line "$bytes" "$total" "$speed"; fi
+    done
+    wait "$DL_PID" || rc=$?
+    DL_PID=""
+
+    bytes="$(stat -c %s "$out" 2>/dev/null || echo 0)"
+    elapsed=$(( $(now_ms) - start ))
+    (( elapsed < 1 )) && elapsed=1
+    DL_BYTES="$bytes"
+    DL_SECS=$(( (elapsed + 500) / 1000 ))
+    DL_RATE=$(( bytes * 1000 / elapsed ))
+
+    if (( live )); then
+        if (( rc == 0 )); then
+            # Settle the line at 100% with the average rate, then free the row.
+            progress_line "$bytes" "$total" "$DL_RATE"
+            printf '\n'
+        elif (( DL_LINE_LEN > 0 )); then
+            printf '\r%*s\r' "$DL_LINE_LEN" ''   # wipe a half-drawn line before die
+        fi
+    fi
+    # Quiet mode swallowed curl's/wget's own diagnosis ("HTTP 404" and friends),
+    # which is exactly what an operator needs here, so replay it before we fail.
+    if (( rc != 0 )) && [[ -s "$DL_ERR" ]]; then warn "$(tail -n1 "$DL_ERR")"; fi
+    rm -f "$DL_ERR"; DL_ERR=""
+    return "$rc"
+}
+
 install -d -m 0755 "$DEST_DIR"
 tmp="$(mktemp "${DEST}.XXXXXX")"
-trap 'rm -f "$tmp"' EXIT
+DL_PID=""; DL_ERR=""
+# One teardown for everything the download owns: the partial file, the captured
+# stderr, and the transfer itself. Wired to INT/TERM as well as EXIT because a
+# background job in a non-interactive shell ignores the Ctrl-C that reaches us,
+# so without this it would keep downloading after the script is gone.
+dl_cleanup() {
+    if [[ -n "$DL_PID" ]] && kill -0 "$DL_PID" 2>/dev/null; then
+        kill "$DL_PID" 2>/dev/null || true
+        wait "$DL_PID" 2>/dev/null || true
+    fi
+    [[ -n "$DL_ERR" ]] && rm -f "$DL_ERR"
+    rm -f "$tmp"
+    return 0
+}
+trap 'dl_cleanup' EXIT
+trap 'dl_cleanup; exit 130' INT
+trap 'dl_cleanup; exit 143' TERM
 
 msg "Downloading ${ASSET}"
-if [[ "$DL" == "curl" ]]; then
-    curl -fL --retry 3 --progress-bar -o "$tmp" "$DL_URL" \
-        || die "download failed from $DL_URL — is there a published release with a '$ASSET' asset?"
-else
-    wget --tries=3 --show-progress -qO "$tmp" "$DL_URL" \
-        || die "download failed from $DL_URL — is there a published release with a '$ASSET' asset?"
-fi
+fetch_asset "$DL_URL" "$tmp" \
+    || die "download failed from $DL_URL — is there a published release with a '$ASSET' asset?"
+# Back to the plain tmp-file cleanup for the rest of the run: nothing below this
+# point owns a background job, so the download's signal handling ends here.
+trap - INT TERM
 
 # Sanity: non-empty and a real Linux ELF binary (not an HTML 404 page).
 [[ -s "$tmp" ]] || die "downloaded file is empty."
@@ -115,7 +299,7 @@ if command -v file >/dev/null 2>&1; then
 else
     [[ "$(head -c4 "$tmp")" == $'\x7fELF' ]] || die "downloaded file is not an ELF binary."
 fi
-ok "downloaded $(du -h "$tmp" | cut -f1)"
+ok "downloaded $(fmt_bytes "$DL_BYTES") in $(fmt_time "$DL_SECS")  (avg $(fmt_bytes "$DL_RATE")/s)"
 
 # Install the binary (stop the unit first if we're upgrading in place)
 if systemctl is-active --quiet "$UNIT" 2>/dev/null; then
@@ -177,6 +361,37 @@ fi
 # credentials (--random); updates DO NOT, so the operator's existing port, login
 # and web path survive the upgrade.
 if [[ "$MODE" == "install" ]]; then
+    # Optional migration: import an existing 3x-ui (or vpn-ui) backup database before
+    # the panel is configured, so an operator moving over keeps their inbounds,
+    # clients, traffic and admin logins. The import preserves THIS install's own
+    # port/path/TLS/secret, so only the operator's data comes across. Honour a preset
+    # IMPORT_DB for non-interactive installs; otherwise ask on the controlling
+    # terminal. A piped install with no IMPORT_DB set skips it and starts fresh.
+    imported=""
+    import_path="${IMPORT_DB:-}"
+    if [[ -z "$import_path" && -r /dev/tty ]]; then
+        {
+            printf '%s::%s %sExisting 3x-ui data%s\n' "$B$BLUE" "$R" "$WHITE" "$R"
+            printf '    Import inbounds, clients and traffic from a 3x-ui backup database?\n'
+            printf '    Enter the path to the .db file, or leave blank to start fresh.\n'
+            printf '  path: '
+        } > /dev/tty
+        read -r import_path < /dev/tty || import_path=""
+    fi
+    if [[ -n "$import_path" ]]; then
+        if [[ -r "$import_path" ]]; then
+            msg "Importing database from $import_path"
+            if "$DEST" import --from "$import_path"; then
+                imported="1"
+                ok "Imported existing data. You will log in with that panel's credentials."
+            else
+                warn "Import failed, continuing with a fresh database."
+            fi
+        else
+            warn "Cannot read '$import_path', continuing with a fresh database."
+        fi
+    fi
+
     # Panel transport: HTTP (default) or self-signed HTTPS. Honour PANEL_TLS when
     # preset (selfsign/https -> TLS; http -> plain); otherwise ask on the
     # controlling terminal. A piped, non-interactive install with no PANEL_TLS set
@@ -224,7 +439,11 @@ if [[ "$MODE" == "install" ]]; then
     # prompt nor installs empty credentials. The binary applies either choice with
     # the same work-safe stop/apply/restart envelope (--random / --user...--path).
     cred_mode="random"
-    if [[ -r /dev/tty ]]; then
+    if [[ "$imported" == "1" ]]; then
+        # The import brought its own admin login; randomizing now would throw it
+        # away. Keep it and just install the unit (the port was preserved too).
+        cred_mode="keep"
+    elif [[ -r /dev/tty ]]; then
         {
             printf '%s::%s %sPanel login / access%s\n' "$B$BLUE" "$R" "$WHITE" "$R"
             printf '    %s1)%s Randomize  (port, username, password, web path) %s[default]%s\n' "$GREEN" "$R" "$D" "$R"
@@ -235,7 +454,10 @@ if [[ "$MODE" == "install" ]]; then
         [[ "$_cans" == "2" ]] && cred_mode="custom"
     fi
 
-    if [[ "$cred_mode" == "custom" ]]; then
+    if [[ "$cred_mode" == "keep" ]]; then
+        msg "Installing systemd unit (keeping the imported panel's login)"
+        "$DEST" --systemd
+    elif [[ "$cred_mode" == "custom" ]]; then
         msg "Enter panel login / access details (leave a field blank to keep the default)"
         printf '  %susername%s: ' "$BLUE" "$R" > /dev/tty; read -r  C_USER < /dev/tty || C_USER=""
         printf '  %spassword%s: ' "$BLUE" "$R" > /dev/tty; read -rs C_PASS < /dev/tty || C_PASS=""; printf '\n' > /dev/tty
@@ -271,7 +493,9 @@ fi
 hr
 msg "Deploy complete"
 if [[ "$MODE" == "install" ]]; then
-    if [[ "${cred_mode:-random}" == "custom" ]]; then
+    if [[ "${cred_mode:-random}" == "keep" ]]; then
+        act "sign in with the username / password from the panel you imported"
+    elif [[ "${cred_mode:-random}" == "custom" ]]; then
         act "your custom login (port / user / password / web path) was applied — see above"
     else
         act "the randomized login (port / user / password / web path) is printed above"

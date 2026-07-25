@@ -42,13 +42,8 @@ var (
 )
 
 // Panel self-update. The panel binary ships as a single GitHub release asset
-// ("vpn-ui-amd64") — the same source deploy.sh installs from — so the overview
-// can both check for and apply updates in place.
-//
-// This MUST point at THIS fork, not upstream: this build carries the tunnel
-// integration, and pulling upstream's asset over it would silently replace the
-// running panel with one that has no Tunnels section at all (and no tunnelctl
-// bridge), i.e. the update button would uninstall the feature set.
+// (Sir-MmD/vpn-ui, "vpn-ui-amd64") — the same source deploy.sh installs from — so
+// the overview can both check for and apply updates in place.
 //
 // PanelAsset and PanelDownloadURL are exported because `vpn-ui-amd64 update` (the
 // CLI/menu updater in main.go) installs from the very same release asset. It
@@ -65,12 +60,27 @@ const (
 	PanelDownloadURL = "https://github.com/" + panelRepo + "/releases/latest/download/" + PanelAsset
 )
 
-// PanelUpdateInfo reports the running version vs. the latest published release.
+// PanelUpdateInfo reports the running version vs. the latest published release,
+// plus the release notes the overview shows before an operator commits to
+// installing.
 type PanelUpdateInfo struct {
 	Current   string `json:"current"`
 	Latest    string `json:"latest"`
 	Available bool   `json:"available"`
+	// Notes is the release body as published (Markdown). Empty when GitHub was
+	// unreachable or the release carries no notes; the dialog says so rather
+	// than pretending there was nothing to report.
+	Notes string `json:"notes"`
+	// PublishedAt is the release timestamp (RFC 3339, as GitHub sends it), and
+	// URL links to the release page for the full text.
+	PublishedAt string `json:"publishedAt"`
+	URL         string `json:"url"`
 }
+
+// panelNotesLimit caps how much release text is kept. The panel's own notes are
+// a few lines; anything beyond this is a release that pasted a changelog, and
+// the dialog is not where that belongs.
+const panelNotesLimit = 16 << 10
 
 // CheckPanelUpdate queries GitHub for the latest release tag and compares it to
 // the running version. Best-effort and short-timeout: it runs on every overview
@@ -110,6 +120,14 @@ func (s *ServerService) CheckPanelUpdate() (*PanelUpdateInfo, error) {
 		info.Latest = latest
 	}
 	info.Available = versionNewer(latest, cur)
+
+	notes := strings.TrimSpace(rel.Body)
+	if len(notes) > panelNotesLimit {
+		notes = notes[:panelNotesLimit] + "\n..."
+	}
+	info.Notes = notes
+	info.PublishedAt = rel.PublishedAt
+	info.URL = rel.HTMLURL
 	return info, nil
 }
 

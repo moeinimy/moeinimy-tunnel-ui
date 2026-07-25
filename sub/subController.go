@@ -84,6 +84,10 @@ func NewSUBController(
 func (a *SUBController) initRouter(g *gin.RouterGroup) {
 	gLink := g.Group(a.subPath)
 	gLink.GET(":subid", a.subs)
+	// Client config downloads offered by the subscriber page (OpenVPN .ovpn, wg-c/awg
+	// .conf). Under the raw sub path so it inherits the same host, port and base path,
+	// and so the subId stays the only credential involved.
+	gLink.GET(":subid/configs/:key", a.subConfig)
 	if a.jsonEnabled {
 		gJson := g.Group(a.subJsonPath)
 		gJson.GET(":subid", a.subJsons)
@@ -99,7 +103,11 @@ func (a *SUBController) subs(c *gin.Context) {
 	subId := c.Param("subid")
 	scheme, host, hostWithPort, hostHeader := a.subService.ResolveRequest(c)
 	subs, lastOnline, traffic, err := a.subService.GetSubs(subId, host)
-	if err != nil || len(subs) == 0 {
+	// An empty link list is NOT an error: an account whose only inbounds are wg-c/awg
+	// has real usage and a real expiry to report, but no single-line raw form (its
+	// config comes from the Clash sub). Erroring here would hide the traffic/days page
+	// from exactly those accounts. GetSubs already errors when the subId matches nothing.
+	if err != nil {
 		c.String(400, "Error!")
 	} else {
 		result := ""
@@ -132,6 +140,10 @@ func (a *SUBController) subs(c *gin.Context) {
 				basePathStr = strings.TrimRight(basePathStr, "/") + "/" + subId + "/"
 			}
 			page := a.subService.BuildPageData(subId, hostHeader, traffic, lastOnline, subs, subURL, subJsonURL, subClashURL, basePathStr)
+			// OpenVPN and WireGuard cannot be set up from a link: the page offers their
+			// config files as downloads. Rendered only for the browser view, since a
+			// subscription client has no use for them.
+			page.Configs = a.subService.ConfigLinks(subId, host, scheme, hostWithPort, a.subPath)
 			c.HTML(200, "subpage.html", gin.H{
 				"title":        "subscription.title",
 				"cur_ver":      config.GetVersion(),
@@ -153,6 +165,7 @@ func (a *SUBController) subs(c *gin.Context) {
 				"subJsonUrl":   page.SubJsonUrl,
 				"subClashUrl":  page.SubClashUrl,
 				"result":       page.Result,
+				"configs":      page.Configs,
 			})
 			return
 		}
@@ -171,6 +184,22 @@ func (a *SUBController) subs(c *gin.Context) {
 			c.String(200, result)
 		}
 	}
+}
+
+// subConfig serves one client config file (an OpenVPN .ovpn or a WireGuard/AmneziaWG
+// .conf) for the account behind the subId. The key names an inbound and variant; anything
+// that does not resolve to a config this subscription owns is a flat 404, so the route
+// says nothing about inbounds the caller has no subId for.
+func (a *SUBController) subConfig(c *gin.Context) {
+	subId := c.Param("subid")
+	_, host, _, _ := a.subService.ResolveRequest(c)
+	cfg, ok := a.subService.ConfigFile(subId, host, c.Param("key"))
+	if !ok {
+		c.String(404, "Not found")
+		return
+	}
+	c.Header("Content-Disposition", fmt.Sprintf("attachment; filename=%q", cfg.Filename))
+	c.Data(200, cfg.ContentType+"; charset=utf-8", []byte(cfg.Content))
 }
 
 // subJsons handles HTTP requests for JSON subscription configurations.

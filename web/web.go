@@ -103,21 +103,22 @@ type Server struct {
 	api   *controller.APIController
 	ws    *controller.WebSocketController
 
-	xrayService      service.XrayService
-	settingService   service.SettingService
-	radiusService    service.RadiusService
-	l2tpService      service.L2tpService
-	pptpService      service.PptpService
-	openvpnService   service.OpenVpnService
-	ocservService    service.OcservService
-	sstpService      service.SstpService
-	ikev2Service     service.Ikev2Service
-	wgcService       service.WgcService
-	awgService       service.AwgService
-	mtprotoService   service.MtprotoService
-	sshService       service.SshService
-	tgbotService     service.Tgbot
-	customGeoService *service.CustomGeoService
+	xrayService        service.XrayService
+	settingService     service.SettingService
+	radiusService      service.RadiusService
+	l2tpService        service.L2tpService
+	pptpService        service.PptpService
+	openvpnService     service.OpenVpnService
+	ocservService      service.OcservService
+	sstpService        service.SstpService
+	ikev2Service       service.Ikev2Service
+	wgcService         service.WgcService
+	awgService         service.AwgService
+	mtprotoService     service.MtprotoService
+	sshService         service.SshService
+	sshOutboundService service.SshOutboundService
+	tgbotService       service.Tgbot
+	customGeoService   *service.CustomGeoService
 
 	wsHub *websocket.Hub
 
@@ -341,6 +342,7 @@ func (s *Server) startTask() {
 	s.awgService.InitAwg()
 	s.mtprotoService.InitMtproto()
 	s.sshService.InitSsh()
+	s.sshOutboundService.InitSshOutbound()
 
 	s.customGeoService.EnsureOnStartup()
 	// Reap an orphaned Xray from a previous instance BEFORE starting ours — a panel
@@ -559,6 +561,7 @@ func (s *Server) Stop() error {
 	service.GetProcManager().StopAll()
 	// SSH is an in-binary listener, not a supervised child, so StopAll does not cover it.
 	s.sshService.StopServices()
+	s.sshOutboundService.StopAll()
 	s.radiusService.Stop()
 	s.xrayService.StopXray()
 	if s.cron != nil {

@@ -80,7 +80,8 @@ func SetBrand(b string) error {
 		}
 		return err
 	}
-	return os.WriteFile(brandFile(), []byte(b+"\n"), 0o644)
+	return os.WriteFile(brandFile(), []byte(b+"
+"), 0o644)
 }
 
 // GetLogLevel returns the current logging level based on environment variables or defaults to Info.

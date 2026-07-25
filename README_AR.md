@@ -6,6 +6,8 @@
 
 هذا المشروع هو نسخة مُطوّرة من لوحة **[3X-UI](https://github.com/MHSanaei/3x-ui)** (الإصدار 2.9.3). يهدف هذا المشروع إلى إضافة بروتوكولات مختلفة وتقديمه كلوحة شاملة مع دعم إمكانيات **Xray-core**.
 
+![نظرة عامة](https://raw.githubusercontent.com/Sir-MmD/vpn-ui/refs/heads/main/media/overview.png)
+
 ## البروتوكولات الجديدة
 
 - PPTP
@@ -22,9 +24,11 @@
 
 ## الميزات الجديدة
 
+- **تعدد المشرفين** بصلاحية لكل Inbound، فكل مشرف ما يشوفش غير الـ Inbounds اللي خصصتهالوه
+- حسابات **الموزّعين** برصيد ترافيك محسوب يشحنه المشرف، ما يتصرفش غير على الـ Inbounds اللي اتدّت له
 - إمكانية **Client to Client** حتى بصيغة **Cross Inbound** (اتصال داخلي بين مستخدم L2TP ومستخدم OpenVPN)
 - إضافة **Encryption** من نوعَي **AES-256-GCM** و **AES-128-GCM** إلى بروتوكول **Shadowsocks**
-- دعم **XHTTP Object** في **Outbound**
+- دعم **XHTTP Object** في **Inbound** و **Outbound**
 - سكربت التثبيت التلقائي لـ **[WARP-CLI](https://github.com/Sir-MmD/warp-cli)** (النسخة الرسمية من Cloudflare)
 - نواة [**Xray-core** المُعدَّلة](https://github.com/Sir-MmD/Xray-core) لإصلاح خطأ «Unsupported Cipher» في بروتوكول **Shadowsocks**
 - تجميع جميع الملفات (Geofile و Xray-core ونوى الـ Backend) داخل ملف ثنائي (binary) واحد
@@ -75,11 +79,6 @@ sudo /opt/vpn-ui/vpn-ui-amd64 --uninstall
 
 > [!NOTE]
 > تم تغيير مسار قاعدة البيانات وخدمة systemd وجميع المنافذ الافتراضية، لذا يمكنك تثبيت هذه اللوحة بجانب لوحاتك الأخرى دون أي مشكلة.
-
-## لقطات الشاشة
-
-![نظرة عامة](https://raw.githubusercontent.com/Sir-MmD/vpn-ui/refs/heads/main/media/overview.png)
-
 
 ## كيفية تفاعل البروتوكولات الجديدة مع نواة Xray-core
 

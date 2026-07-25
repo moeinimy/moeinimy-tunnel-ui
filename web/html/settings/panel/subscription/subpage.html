@@ -23,6 +23,44 @@
         margin-inline: auto;
     }
 
+    /* Config-file downloads. Secondary to the Android/iOS buttons (which stay the one
+       accent-filled action on the page), so these are a neutral surface with the accent
+       kept for the icon and hover. Tokens carry the theme, so there is no dark/light pair
+       to keep in sync. Labels can be long ("AmneziaWG Device 2 cdn (my-inbound)"), hence
+       wrapping and an auto height instead of ant's nowrap single line. */
+    .subscription-page .sub-config-btn {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        gap: var(--sp-2);
+        width: 100%;
+        max-width: 340px;
+        height: auto;
+        min-height: 40px;
+        padding: var(--sp-2) var(--sp-4);
+        white-space: normal;
+        line-height: var(--lh-tight);
+        text-align: center;
+        border-radius: var(--radius-sm);
+        background: var(--surface-2);
+        border: 1px solid var(--border);
+        color: var(--text);
+        box-shadow: none;
+        transition: background var(--dur-fast) var(--ease),
+            border-color var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
+    }
+
+    .subscription-page .sub-config-btn:hover,
+    .subscription-page .sub-config-btn:focus {
+        background: var(--surface);
+        border-color: var(--accent);
+        color: var(--accent);
+    }
+
+    .subscription-page .sub-config-btn .anticon {
+        color: var(--accent);
+    }
+
     .subscription-page .subscription-link-box {
         cursor: pointer;
         border-radius: 12px;
@@ -211,6 +249,25 @@
                         </div>
                     </div>
                     <br />
+
+                    <!-- Config files: OpenVPN and WireGuard/AmneziaWG cannot be set up
+                         from a link, so their profiles are offered as downloads. Rendered
+                         server-side (the list depends on inbound settings and external
+                         proxies), plain <a download> so the browser saves the file. -->
+                    {{ if .configs }}
+                    <a-divider>{{ i18n "subscription.configFiles" }}</a-divider>
+                    <a-row type="flex" justify="center" :gutter="[8,8]" style="width:100%; margin-bottom: 16px;">
+                        {{ range .configs }}
+                        <a-col :xs="24" :sm="12" style="text-align:center;">
+                            <a class="ant-btn sub-config-btn" href="{{ .Url }}"
+                                download="{{ .Filename }}" title="{{ .Filename }}">
+                                <a-icon type="download"></a-icon>
+                                <span>{{ .Label }}</span>
+                            </a>
+                        </a-col>
+                        {{ end }}
+                    </a-row>
+                    {{ end }}
 
                     <a-form layout="vertical">
                         <a-form-item>

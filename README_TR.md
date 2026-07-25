@@ -6,6 +6,8 @@
 
 Bu proje, **[3X-UI](https://github.com/MHSanaei/3x-ui)** panelinin (2.9.3 sürümü) geliştirilmiş bir versiyonudur. Projenin amacı; çeşitli protokoller eklemek ve **Xray-core** özelliklerini destekleyen kapsamlı bir panel olarak hayata geçirmektir.
 
+![Genel Görünüm](https://raw.githubusercontent.com/Sir-MmD/vpn-ui/refs/heads/main/media/overview.png)
+
 ## Yeni Protokoller
 
 - PPTP
@@ -22,9 +24,11 @@ Bu proje, **[3X-UI](https://github.com/MHSanaei/3x-ui)** panelinin (2.9.3 sürü
 
 ## Yeni Özellikler
 
+- Inbound bazlı erişimle **Çoklu Yönetici**: her yönetici yalnızca kendisine atadığınız Inbound'ları görür
+- Yöneticinin yüklediği ölçülü trafik bakiyesiyle **Bayi** hesapları, yalnızca kendisine verilen Inbound'larda harcanır
 - **Client to Client** özelliği, hatta **Cross Inbound** biçiminde bile (bir L2TP kullanıcısının bir OpenVPN kullanıcısına dahili bağlantısı)
 - **Shadowsocks** protokolüne **AES-256-GCM** ve **AES-128-GCM** **Encryption** yöntemlerinin eklenmesi
-- **Outbound** içinde **XHTTP Object** desteği
+- **Inbound** ve **Outbound** içinde **XHTTP Object** desteği
 - **[WARP-CLI](https://github.com/Sir-MmD/warp-cli)** (Cloudflare'in resmi sürümü) için otomatik kurulum betiği
 - **Shadowsocks** protokolündeki «Unsupported Cipher» hatasını gidermek için [yamalanmış **Xray-core**](https://github.com/Sir-MmD/Xray-core) çekirdeği
 - Tüm dosyaların (Geofile, Xray-core ve Backend çekirdekleri) tek bir binary dosyası içinde paketlenmesi
@@ -75,11 +79,6 @@ sudo /opt/vpn-ui/vpn-ui-amd64 --uninstall
 
 > [!NOTE]
 > Veritabanı yolu, systemd servisi ve tüm varsayılan portlar değiştirildi; bu yüzden bu paneli hiçbir sorun yaşamadan diğer panellerinizin yanına kurabilirsiniz.
-
-## Ekran Görüntüleri
-
-![Genel Görünüm](https://raw.githubusercontent.com/Sir-MmD/vpn-ui/refs/heads/main/media/overview.png)
-
 
 ## Yeni Protokollerin Xray-core Çekirdeği ile Etkileşimi
 

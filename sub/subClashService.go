@@ -15,6 +15,8 @@ import (
 
 type SubClashService struct {
 	inboundService service.InboundService
+	wgcService     service.WgcService
+	awgService     service.AwgService
 	SubService     *SubService
 }
 
@@ -116,6 +118,14 @@ func (s *SubClashService) GetClash(subId string, host string) (string, string, e
 }
 
 func (s *SubClashService) getProxies(inbound *model.Inbound, client model.Client, host string) []map[string]any {
+	// wg-c/awg carry key material and emit one proxy per device x endpoint, not the
+	// stream/externalProxy shape the rest of the protocols use.
+	switch inbound.Protocol {
+	case model.WGC:
+		return s.buildWireguardProxies(inbound, client, host, false)
+	case model.AWG:
+		return s.buildWireguardProxies(inbound, client, host, true)
+	}
 	stream := s.streamData(inbound.StreamSettings)
 	externalProxies, ok := stream["externalProxy"].([]any)
 	if !ok || len(externalProxies) == 0 {
@@ -154,6 +164,71 @@ func (s *SubClashService) getProxies(inbound *model.Inbound, client model.Client
 		if len(proxy) > 0 {
 			proxies = append(proxies, proxy)
 		}
+	}
+	return proxies
+}
+
+// buildWireguardProxies emits Clash `type: wireguard` proxies for a wg-c or awg client,
+// one per device x endpoint, from the protocol service's structured params (the key
+// material the stream-based builders do not carry). awg additionally emits mihomo's
+// `amnezia-wg-option` obfuscation block.
+//
+// NOTE: mihomo's wireguard field names have drifted across versions; verify the awg
+// output against the target client. wg-c uses only the stable, documented fields.
+func (s *SubClashService) buildWireguardProxies(inbound *model.Inbound, client model.Client, host string, awg bool) []map[string]any {
+	base := func(p service.WgcClientParams) map[string]any {
+		proxy := map[string]any{
+			"name":        s.SubService.genRemark(inbound, client.Email, p.Name),
+			"type":        "wireguard",
+			"server":      p.Host,
+			"port":        p.Port,
+			"udp":         true,
+			"ip":          strings.TrimSuffix(p.Address, "/32"),
+			"private-key": p.PrivateKey,
+			"public-key":  p.PublicKey,
+		}
+		if p.PreSharedKey != "" {
+			proxy["pre-shared-key"] = p.PreSharedKey
+		}
+		if p.MTU > 0 {
+			proxy["mtu"] = p.MTU
+		}
+		if len(p.DNS) > 0 {
+			proxy["dns"] = p.DNS
+		}
+		if len(p.AllowedIPs) > 0 {
+			proxy["allowed-ips"] = p.AllowedIPs
+		}
+		return proxy
+	}
+
+	if awg {
+		params, err := s.awgService.RenderClientParams(inbound, client.Email, host)
+		if err != nil {
+			logger.Error("SubClashService - awg RenderClientParams:", err)
+			return nil
+		}
+		proxies := make([]map[string]any, 0, len(params))
+		for _, p := range params {
+			proxy := base(p.WgcClientParams)
+			proxy["amnezia-wg-option"] = map[string]any{
+				"jc": p.Jc, "jmin": p.Jmin, "jmax": p.Jmax,
+				"s1": p.S1, "s2": p.S2,
+				"h1": p.H1, "h2": p.H2, "h3": p.H3, "h4": p.H4,
+			}
+			proxies = append(proxies, proxy)
+		}
+		return proxies
+	}
+
+	params, err := s.wgcService.RenderClientParams(inbound, client.Email, host)
+	if err != nil {
+		logger.Error("SubClashService - wgc RenderClientParams:", err)
+		return nil
+	}
+	proxies := make([]map[string]any, 0, len(params))
+	for _, p := range params {
+		proxies = append(proxies, base(p))
 	}
 	return proxies
 }

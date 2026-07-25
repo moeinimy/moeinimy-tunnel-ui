@@ -30,6 +30,7 @@
         </div>
       </div>
     </div>
+    {{ template "component/aSubBlock" "wgc" }}
   </a-spin>
 </a-modal>
 
@@ -53,10 +54,15 @@
     title: 'WireGuard Config',
     dbInboundId: 0,
     email: '',
+    // Declared here, not assigned only in show(): Vue makes the properties of this
+    // object reactive when the instance below is created, so a key added later would
+    // never drive the subscription block's v-if.
+    subId: '',
     devices: [],
     show: function (dbInboundId, client) {
       this.dbInboundId = dbInboundId;
       this.email = client && client.email ? client.email : '';
+      this.subId = client && client.subId ? client.subId : '';
       this.title = 'WireGuard Config' + (this.email ? ' - ' + this.email : '');
       this.devices = [];
       this.loading = true;
@@ -73,6 +79,29 @@
     el: '#wgc-config-modal',
     data: {
       wgcConfigModal: wgcConfigModal,
+    },
+    computed: {
+      // What component/aSubBlock reads. Empty unless the sub server is on and the
+      // account has a subId, which is also what hides the block.
+      //
+      // The account's subId is read FIRST and unconditionally: a computed only re-runs
+      // when a dependency it actually touched changes, so guarding on app.subSettings
+      // ahead of it short-circuited before Vue ever recorded subId as a dependency, and
+      // the cached '' from page load was never invalidated when a modal opened. The
+      // settings arrive from an API call, so at that first evaluation they are not there
+      // yet and the guard was always false.
+      subId() {
+        const subId = wgcConfigModal.subId;
+        const subEnabled = !!(typeof app !== 'undefined' && app.subSettings && app.subSettings.enable);
+        return subEnabled ? subId : '';
+      },
+      subLink() {
+        return this.subId ? app.subSettings.subURI + this.subId : '';
+      },
+      subJsonLink() {
+        return this.subId && app.subSettings.subJsonEnable
+          ? app.subSettings.subJsonURI + this.subId : '';
+      },
     },
     methods: {
       async fetchConfigs() {
@@ -111,21 +140,28 @@
         document.body.removeChild(a);
         URL.revokeObjectURL(url);
       },
+      // a-modal portals its body to the document root, so these are looked up on the
+      // document rather than through this.$el.
+      qr(selector, value) {
+        const el = document.querySelector(selector);
+        if (!el || !value) return;
+        new QRious({
+          element: el,
+          size: 360,
+          value: value,
+          background: 'white',
+          backgroundAlpha: 1,
+          foreground: 'black',
+          padding: 8,
+          level: 'L',
+        });
+      },
       renderQrs() {
         wgcConfigModal.devices.forEach((dev, index) => {
-          const el = document.querySelector('#wgcQr-' + index);
-          if (!el) return;
-          new QRious({
-            element: el,
-            size: 360,
-            value: dev.config,
-            background: 'white',
-            backgroundAlpha: 1,
-            foreground: 'black',
-            padding: 8,
-            level: 'L',
-          });
+          this.qr('#wgcQr-' + index, dev.config);
         });
+        this.qr('#wgc-sub-qr', this.subLink);
+        this.qr('#wgc-subjson-qr', this.subJsonLink);
       },
     },
     updated() {

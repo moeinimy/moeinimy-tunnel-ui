@@ -21,6 +21,37 @@ const Protocols = {
     SSH: 'ssh',
 };
 
+// The panel-wide client identity: the value that goes in the URL of
+// /panel/api/inbounds/updateClient/:clientId and /:id/delClient/:clientId.
+//
+// This MUST stay in lockstep with clientIdentityKey() in web/service/inbound.go. It
+// lives here, once, because the two template-local copies of this switch are exactly
+// how it drifted last time: openconnect/sstp/ikev2 were added to the browser's list
+// and not to the backend's, so an edit was keyed on the password while the server
+// looked the account up by id, and every edit came back "empty client ID".
+function getClientIdentity(protocol, client) {
+    switch (protocol) {
+        // Username+password VPN protocols: the password is the key, because the
+        // username is the field operators actually rename.
+        case Protocols.TROJAN:
+        case Protocols.L2TP:
+        case Protocols.PPTP:
+        case Protocols.OPENVPN:
+        case Protocols.OPENCONNECT:
+        case Protocols.SSTP:
+        case Protocols.IKEV2:
+            return client.password;
+        case Protocols.SHADOWSOCKS:
+            return client.email;
+        case Protocols.HYSTERIA:
+            return client.auth;
+        default:
+            // vmess/vless (uuid) and the email-identity protocols (wg-c, awg,
+            // mtproto, ssh), whose models expose id via a `get id()` returning email.
+            return client.id;
+    }
+}
+
 // Display labels for the protocol picker. The Add/Edit inbound dropdown shows
 // these while binding the lowercase Protocols VALUE (openvpn/http/openconnect/…),
 // which is what the backend parses — so the pretty text never reaches the server.
@@ -511,6 +542,67 @@ class HTTPUpgradeStreamSettings extends XrayCommonClass {
     }
 }
 
+// The value the xhttp form starts each field on. A share link only carries a
+// field once the admin has actually moved it off this default: a stock xhttp
+// inbound has to keep producing a short link (QR codes stop being scannable
+// fast) and links handed out before this existed must not change.
+//
+// xPaddingBytes is deliberately absent. It has always been put on the wire
+// even at its default value and clients in the field already read it, so that
+// exact behaviour is preserved in Inbound.collectXhttpShareFields instead.
+//
+// Mirrored on the Go side by xhttpShareDefaults in sub/subService.go.
+// xmux and downloadSettings are deliberately absent: both are objects, and this
+// table is compared by value. They are handled explicitly in
+// Inbound.collectXhttpShareFields instead (see xhttpShareDefaults in
+// sub/subService.go, where putting a map here would be an outright panic).
+const XHTTP_SHARE_DEFAULTS = {
+    scMaxBufferedPosts: 30,
+    scMaxEachPostBytes: "1000000",
+    scStreamUpServerSecs: "20-80",
+    uplinkChunkSize: 0,
+    scMinPostsIntervalMs: "30",
+    serverMaxHeaderBytes: 0,
+};
+Object.freeze(XHTTP_SHARE_DEFAULTS);
+
+// The plain scalar xhttp settings copied into a share link as-is once they
+// differ from XHTTP_SHARE_DEFAULTS (an absent default means "skip when empty").
+// The xPadding* / headers / noSSEHeader / noGRPCHeader fields need shaping and
+// xmux / downloadSettings are objects, so all of those are handled explicitly
+// rather than from this list.
+const XHTTP_SHARE_FIELDS = [
+    "scMaxBufferedPosts",
+    "scMaxEachPostBytes",
+    "scStreamUpServerSecs",
+    "uplinkHTTPMethod",
+    "sessionPlacement",
+    "sessionKey",
+    "seqPlacement",
+    "seqKey",
+    "uplinkDataPlacement",
+    "uplinkDataKey",
+    "uplinkChunkSize",
+    "scMinPostsIntervalMs",
+    "serverMaxHeaderBytes",
+];
+Object.freeze(XHTTP_SHARE_FIELDS);
+
+// xray's own xmux defaults, which are also what the outbound form starts on
+// (web/assets/js/model/outbound.js, class xHTTPStreamSettings). The inbound and
+// the outbound have to agree here: an admin who reads "16-32" on one form and a
+// blank on the other has no way to tell which side is actually in force.
+// Mirrored on the Go side by xhttpXmuxDefaults in sub/subService.go.
+const XHTTP_XMUX_DEFAULTS = {
+    maxConcurrency: "16-32",
+    maxConnections: 0,
+    cMaxReuseTimes: 0,
+    hMaxRequestTimes: "600-900",
+    hMaxReusableSecs: "1800-3000",
+    hKeepAlivePeriod: 0,
+};
+Object.freeze(XHTTP_XMUX_DEFAULTS);
+
 class xHTTPStreamSettings extends XrayCommonClass {
     constructor(
         path = '/',
@@ -535,6 +627,12 @@ class xHTTPStreamSettings extends XrayCommonClass {
         uplinkDataPlacement = '',
         uplinkDataKey = '',
         uplinkChunkSize = 0,
+        noGRPCHeader = false,
+        scMinPostsIntervalMs = "30",
+        serverMaxHeaderBytes = 0,
+        xmux = undefined,
+        downloadSettings = undefined,
+        extra = {},
     ) {
         super();
         this.path = path;
@@ -559,6 +657,29 @@ class xHTTPStreamSettings extends XrayCommonClass {
         this.uplinkDataPlacement = uplinkDataPlacement;
         this.uplinkDataKey = uplinkDataKey;
         this.uplinkChunkSize = uplinkChunkSize;
+        this.noGRPCHeader = noGRPCHeader;
+        this.scMinPostsIntervalMs = scMinPostsIntervalMs;
+        this.serverMaxHeaderBytes = serverMaxHeaderBytes;
+        // Always a full six-key object so every control in the form has
+        // something to bind to, even for an inbound saved before xmux existed
+        // or one whose stored blob only carries a subset.
+        this.xmux = xHTTPStreamSettings.normalizeXmux(xmux);
+        // downloadSettings is a whole nested stream-settings object (the client
+        // fetches the downlink over a different transport). The form edits it as
+        // raw JSON rather than modelling its internals, so keep the parsed
+        // object and the text the admin is typing side by side: a half-typed
+        // blob has to stay on screen to be fixed instead of being swallowed.
+        this.downloadSettings = xHTTPStreamSettings.normalizeDownloadSettings(downloadSettings);
+        this.downloadSettingsRaw = this.downloadSettings
+            ? JSON.stringify(this.downloadSettings, null, 2)
+            : '';
+        this.downloadSettingsError = '';
+        // Any xhttp key this form does not model structurally is kept verbatim
+        // here: a hand-edited xhttpSettings blob (xray's own nested `extra`
+        // object, a key from a newer core) must survive being opened and saved
+        // in the panel instead of being silently dropped. Mirrors the same bag
+        // on the outbound xHTTPStreamSettings.
+        this.extra = extra && typeof extra === 'object' ? extra : {};
     }
 
     addHeader(name, value) {
@@ -569,7 +690,227 @@ class xHTTPStreamSettings extends XrayCommonClass {
         this.headers.splice(index, 1);
     }
 
+    // Fill in every xmux key the stored blob left out, so all six controls have
+    // something to bind to.
+    //
+    // A key that is PRESENT but empty is kept as-is rather than pushed back to
+    // the default. The core reads an empty Int32Range as 0 (ParseRangeString
+    // treats "" as zero, it does not reject it), and 0 is the only way to say
+    // "this strategy is off": clearing maxConcurrency is exactly how an admin
+    // switches to the maxConnections strategy, so restoring the default here
+    // would make that combination unreachable and leave a conflict error the
+    // admin has no way to clear. Unknown sub-keys (a newer core's
+    // cMaxLifetimeMs, a hand edit) ride along untouched.
+    //
+    // Mirrored on the Go side by normalizeXhttpXmux in sub/subService.go.
+    static normalizeXmux(raw) {
+        const out = Object.assign({}, XHTTP_XMUX_DEFAULTS);
+        if (!raw || typeof raw !== 'object') return out;
+        Object.keys(raw).forEach(k => {
+            const v = raw[k];
+            if (v === undefined || v === null) return;
+            out[k] = v;
+        });
+        return out;
+    }
+
+    // Whether an xmux knob carries a real value, the way the core reads it. All
+    // six are Int32Range, and the checks in transport_internet.go are on the
+    // range's upper end (`.To > 0`), so a range string counts as set when its
+    // larger end is positive.
+    static xmuxIsSet(value) {
+        if (typeof value === 'number') return Number.isFinite(value) && value > 0;
+        if (typeof value !== 'string') return false;
+        const nums = (value.match(/-?\d+/g) || []).map(Number).filter(Number.isFinite);
+        return nums.length > 0 && Math.max(...nums) > 0;
+    }
+
+    // maxConnections and maxConcurrency are two different multiplexing
+    // strategies and the core refuses to build a config that sets both
+    // (transport_internet.go: `maxConnections cannot be specified together with
+    // maxConcurrency`). It refuses the WHOLE config, so an inbound saved this
+    // way would stop xray from starting rather than just misbehave. The stock
+    // pair (maxConcurrency "16-32", maxConnections 0) is the one-strategy case
+    // and is fine.
+    hasXmuxConflict() {
+        if (!this.xmux) return false;
+        return xHTTPStreamSettings.xmuxIsSet(this.xmux.maxConnections)
+            && xHTTPStreamSettings.xmuxIsSet(this.xmux.maxConcurrency);
+    }
+
+    // ---- the rest of the core's xhttp rules --------------------------------
+    // Every check below mirrors a hard rejection in SplitHTTPConfig.Build()
+    // (third_party/Xray-core/infra/conf/transport_internet.go). They all refuse
+    // the WHOLE config rather than the offending key, so an inbound saved in any
+    // of these shapes leaves xray refusing to start, which surfaces as a panel
+    // that saved happily and a service that never comes up.
+    //
+    // These were checked against the shipping binary, not read off the source,
+    // and the rules that LOOK like they belong here are deliberately absent: an
+    // empty sessionKey / seqKey / uplinkDataKey alongside a non-default
+    // placement is accepted, because the core fills each one in itself
+    // (x_session/X-Session, x_seq/X-Seq, x_data/X-Data) on both ends. Requiring
+    // them here would block a config the core is happy with.
+
+    // The core matches this case-insensitively and rejects any casing of "host";
+    // the host header has its own field on this form.
+    hasHostHeader() {
+        return (this.headers || []).some(h => h && typeof h.name === 'string'
+            && h.name.trim().toLowerCase() === 'host');
+    }
+
+    // Two separate rejections live here. A range the core cannot parse at all
+    // ("Invalid integer range"), and "xPaddingBytes cannot be disabled": once
+    // the range carries anything, BOTH ends have to be above zero. An all-zero
+    // range, which is what a blank field parses to, is the untouched case and is
+    // accepted.
+    hasPaddingBytesProblem() {
+        const value = this.xPaddingBytes;
+        if (value === undefined || value === null) return false;
+        const range = xHTTPStreamSettings.parseRange(value);
+        if (!range) return true;
+        if (range.from === 0 && range.to === 0) return false;
+        return range.from <= 0 || range.to <= 0;
+    }
+
+    // cookie and header are packet-up only; query is not a placement this
+    // transport takes at all, in any mode. An inbound saved before this was
+    // checked can still be carrying either, so validate rather than trust the
+    // select's options.
+    uplinkDataPlacementProblem() {
+        const placement = this.uplinkDataPlacement;
+        if (!placement || placement === 'body' || placement === 'auto') return '';
+        if (placement !== 'cookie' && placement !== 'header') return 'unsupported';
+        return this.mode === MODE_OPTION.PACKET_UP ? '' : 'mode';
+    }
+
+    // GET carries the uplink in the query string, which only packet-up does.
+    hasUplinkMethodProblem() {
+        return String(this.uplinkHTTPMethod || '').toUpperCase() === 'GET'
+            && this.mode !== MODE_OPTION.PACKET_UP;
+    }
+
+    // "invalid negative value of maxHeaderBytes". The input carries :min="0", so
+    // this only catches a value that arrived from an imported or hand-edited blob.
+    hasServerMaxHeaderBytesProblem() {
+        const value = this.serverMaxHeaderBytes;
+        return typeof value === 'number' && Number.isFinite(value) && value < 0;
+    }
+
+    // The uplink data controls are the only ones the mode hides, so a value left
+    // behind by a mode change would otherwise block the save with nothing on
+    // screen to explain it. The uplink HTTP method select is always visible, so
+    // it can carry its own error and is not listed here.
+    hasHiddenUplinkProblem() {
+        return this.uplinkDataPlacementProblem() === 'mode';
+    }
+
+    // Anything here means the core would reject the config outright, so the
+    // modal's OK button stays disabled (modalFormValid in
+    // web/html/modals/inbound_modal.html).
+    hasCoreConfigProblem() {
+        return this.hasXmuxConflict()
+            || this.hasHostHeader()
+            || this.hasPaddingBytesProblem()
+            || this.uplinkDataPlacementProblem() !== ''
+            || this.hasUplinkMethodProblem()
+            || this.hasServerMaxHeaderBytesProblem()
+            || !!this.downloadSettingsError
+            || (this.mode === MODE_OPTION.STREAM_ONE && !!this.downloadSettingsText);
+    }
+
+    // Drop the uplink data placement the current mode has made illegal, for the
+    // clear button the form shows next to that error.
+    clearUplinkDataPlacement() {
+        this.uplinkDataPlacement = '';
+        this.uplinkDataKey = '';
+    }
+
+    // Both ends of an xray Int32Range, or null when the value is absent. Mirrors
+    // ParseRangeString: a plain number is a one-point range, "" is zero, and
+    // "a-b" is the pair (with the negative-aware split the core uses).
+    static parseRange(value) {
+        if (typeof value === 'number') {
+            return Number.isFinite(value) ? { from: value, to: value } : null;
+        }
+        if (typeof value !== 'string') return null;
+        const str = value.trim();
+        if (str === '') return { from: 0, to: 0 };
+        if (/^-?\d+$/.test(str)) {
+            const n = Number(str);
+            return { from: n, to: n };
+        }
+        const parts = str.startsWith('-')
+            ? str.slice(1).split('-').map((p, i) => (i === 0 ? '-' + p : p))
+            : str.split('-');
+        if (parts.length < 2) return null;
+        const left = Number(parts[0]);
+        const right = Number(parts.slice(1).join('-'));
+        if (!Number.isFinite(left) || !Number.isFinite(right)) return null;
+        return left > right ? { from: right, to: left } : { from: left, to: right };
+    }
+
+    // True while xmux still sits exactly on the stock set, which is what keeps
+    // it out of the share link for an inbound nobody has touched.
+    static isStockXmux(xmux) {
+        if (!xmux || typeof xmux !== 'object') return true;
+        const keys = Object.keys(xmux);
+        if (keys.length !== Object.keys(XHTTP_XMUX_DEFAULTS).length) return false;
+        return keys.every(k => XHTTP_XMUX_DEFAULTS[k] === xmux[k]);
+    }
+
+    // downloadSettings is only meaningful as a non-empty JSON object. A null, an
+    // array or an empty object all mean "not set", and the key then has to be
+    // omitted entirely rather than emitted empty: xray builds a whole
+    // StreamConfig out of whatever is there, and an empty one is not the same
+    // thing as none.
+    static normalizeDownloadSettings(value) {
+        if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+        return Object.keys(value).length > 0 ? value : undefined;
+    }
+
+    // The textarea buffer for downloadSettings. Defined on the prototype rather
+    // than as an own field so Vue's observer leaves it alone; it reads and
+    // writes the reactive own fields underneath, so the binding stays live.
+    get downloadSettingsText() {
+        return this.downloadSettingsRaw;
+    }
+
+    set downloadSettingsText(text) {
+        this.downloadSettingsRaw = typeof text === 'string' ? text : '';
+        const trimmed = this.downloadSettingsRaw.trim();
+        if (trimmed === '') {
+            this.downloadSettings = undefined;
+            this.downloadSettingsError = '';
+            return;
+        }
+        try {
+            const parsed = JSON.parse(trimmed);
+            const normalized = xHTTPStreamSettings.normalizeDownloadSettings(parsed);
+            if (normalized === undefined) throw new Error('expected a non-empty JSON object');
+            this.downloadSettings = normalized;
+            this.downloadSettingsError = '';
+        } catch (e) {
+            // Drop the value rather than keep a stale parse that no longer
+            // matches what is on screen. Saving is blocked for as long as the
+            // error is set (modalFormValid in
+            // web/html/modals/inbound_modal.html), so the admin is told about it
+            // instead of quietly losing the block.
+            this.downloadSettings = undefined;
+            this.downloadSettingsError = e && e.message ? e.message : String(e);
+        }
+    }
+
+    clearDownloadSettings() {
+        this.downloadSettingsText = '';
+    }
+
     static fromJson(json = {}) {
+        // Everything the structured fields don't own is kept verbatim.
+        const extra = {};
+        Object.keys(json).forEach(k => {
+            if (!xHTTPStreamSettings.STRUCTURED_KEYS.has(k)) extra[k] = json[k];
+        });
         return new xHTTPStreamSettings(
             json.path,
             json.host,
@@ -593,11 +934,21 @@ class xHTTPStreamSettings extends XrayCommonClass {
             json.uplinkDataPlacement,
             json.uplinkDataKey,
             json.uplinkChunkSize,
+            json.noGRPCHeader,
+            json.scMinPostsIntervalMs,
+            json.serverMaxHeaderBytes,
+            json.xmux,
+            json.downloadSettings,
+            extra,
         );
     }
 
     toJson() {
-        return {
+        // Start from the preserved passthrough so unmodeled keys survive; the
+        // structured fields below then overwrite their own keys. For an xhttp
+        // object that only uses modeled keys `extra` is empty, so the output
+        // stays byte-identical to what this returned before.
+        const o = Object.assign({}, this.extra, {
             path: this.path,
             host: this.host,
             headers: XrayCommonClass.toV2Headers(this.headers, false),
@@ -620,9 +971,52 @@ class xHTTPStreamSettings extends XrayCommonClass {
             uplinkDataPlacement: this.uplinkDataPlacement,
             uplinkDataKey: this.uplinkDataKey,
             uplinkChunkSize: this.uplinkChunkSize,
-        };
+            noGRPCHeader: this.noGRPCHeader,
+            // Spread the live xmux so any sub-key beyond the six the form knows
+            // about (a newer core's, a hand edit) rides along instead of being
+            // flattened away. Same treatment as the outbound form.
+            xmux: Object.assign({}, this.xmux),
+        });
+        // The remaining three only go in when they carry a real value, because
+        // for all three "absent" is what selects the core's own behaviour:
+        // scMinPostsIntervalMs falls back to its default when the range is zero,
+        // serverMaxHeaderBytes falls back when it is not positive, and
+        // downloadSettings is a pointer whose absence is what says "use this
+        // transport for the downlink too". Omitting is therefore exactly what an
+        // emptied control should mean, and it keeps the stored blob smaller.
+        if (typeof this.scMinPostsIntervalMs === 'string' && this.scMinPostsIntervalMs !== '') {
+            o.scMinPostsIntervalMs = this.scMinPostsIntervalMs;
+        } else if (typeof this.scMinPostsIntervalMs === 'number' && Number.isFinite(this.scMinPostsIntervalMs)) {
+            o.scMinPostsIntervalMs = this.scMinPostsIntervalMs;
+        }
+        if (Number.isFinite(this.serverMaxHeaderBytes) && this.serverMaxHeaderBytes > 0) {
+            o.serverMaxHeaderBytes = this.serverMaxHeaderBytes;
+        }
+        // stream-one is the one mode where the core refuses downloadSettings
+        // outright (transport_internet.go: `Can not use "downloadSettings" in
+        // "stream-one" mode.`), and it refuses the whole config, not just the
+        // key. The form blocks saving that combination, but drop it here too so
+        // an inbound whose mode was changed elsewhere can never emit a blob that
+        // stops xray from starting.
+        const download = xHTTPStreamSettings.normalizeDownloadSettings(this.downloadSettings);
+        if (download && this.mode !== MODE_OPTION.STREAM_ONE) {
+            o.downloadSettings = download;
+        }
+        return o;
     }
 }
+// Keys the structured constructor/toJson own; everything else is preserved
+// verbatim in `extra` so any xhttp object shape round-trips losslessly.
+// Mirrored on the Go side by xhttpModeledKeys in sub/subService.go.
+xHTTPStreamSettings.STRUCTURED_KEYS = new Set([
+    'path', 'host', 'headers', 'scMaxBufferedPosts', 'scMaxEachPostBytes',
+    'scStreamUpServerSecs', 'noSSEHeader', 'xPaddingBytes', 'mode',
+    'xPaddingObfsMode', 'xPaddingKey', 'xPaddingHeader', 'xPaddingPlacement',
+    'xPaddingMethod', 'uplinkHTTPMethod', 'sessionPlacement', 'sessionKey',
+    'seqPlacement', 'seqKey', 'uplinkDataPlacement', 'uplinkDataKey',
+    'uplinkChunkSize', 'noGRPCHeader', 'scMinPostsIntervalMs',
+    'serverMaxHeaderBytes', 'xmux', 'downloadSettings',
+]);
 
 class HysteriaStreamSettings extends XrayCommonClass {
     constructor(
@@ -1564,58 +1958,149 @@ class Inbound extends XrayCommonClass {
         return this.clientStats;
     }
 
-    // Copy the xPadding* settings into the query-string of a vless/trojan/ss
-    // link. Without this, the admin's custom xPaddingBytes range and (in
-    // obfs mode) the custom xPaddingKey / xPaddingHeader / placement /
-    // method never reach the client — the client keeps xray / sing-box's
-    // internal defaults and the server rejects every handshake with
-    // `invalid padding (...) length: 0`.
+    // Gather every xhttp setting a client has to match the server on, minus
+    // path / host / mode which the link already carries as its own top-level
+    // params. An xhttp client that guesses any of these wrong does not
+    // degrade, it fails: the wrong xPaddingBytes range alone is enough for
+    // the server to reject every handshake with `invalid padding (...)
+    // length: 0`, and the same goes for a session/seq/uplink placement or an
+    // uplink HTTP method the two sides disagree on.
     //
-    // Two encodings are emitted so each client family can pick at least
-    // one up:
+    // Only what the admin actually supplied is returned. Empty strings, false
+    // booleans, empty header lists and anything still sitting on its
+    // XHTTP_SHARE_DEFAULTS value are skipped, so a stock inbound keeps
+    // producing the same short link it produced before this existed.
+    //
+    // Mirrored on the Go side by collectXhttpShareFields in sub/subService.go;
+    // the two generators have to agree key for key, because the panel's
+    // copy-link button and the subscription URL must not hand out two
+    // different configs for one inbound.
+    static collectXhttpShareFields(xhttp) {
+        const out = {};
+        if (!xhttp) return out;
+
+        // Unmodeled keys first so a structurally modeled key always wins if a
+        // hand-edited blob somehow carries both. Insertion order only matters
+        // for the VMess object; the query-string blob is emitted sorted.
+        const passthrough = xhttp.extra;
+        if (passthrough && typeof passthrough === 'object') {
+            Object.keys(passthrough).forEach(k => {
+                if (xHTTPStreamSettings.STRUCTURED_KEYS.has(k)) return;
+                out[k] = passthrough[k];
+            });
+        }
+
+        // xPaddingBytes is emitted even when it still holds the panel default,
+        // which is what this generator has always done. Clients already in the
+        // field read it, so narrowing it now would break working links.
+        if (typeof xhttp.xPaddingBytes === 'string' && xhttp.xPaddingBytes.length > 0) {
+            out.xPaddingBytes = xhttp.xPaddingBytes;
+        }
+        if (xhttp.xPaddingObfsMode === true) {
+            out.xPaddingObfsMode = true;
+            // Obfs-mode-only fields: only the ones the admin actually set, so
+            // xray-core keeps its own defaults for the rest instead of seeing
+            // spurious empty strings.
+            ["xPaddingKey", "xPaddingHeader", "xPaddingPlacement", "xPaddingMethod"].forEach(k => {
+                if (typeof xhttp[k] === 'string' && xhttp[k].length > 0) {
+                    out[k] = xhttp[k];
+                }
+            });
+        }
+
+        // The panel keeps headers as [{name, value}]; xray wants a name->value
+        // map. Empty names/values are dropped by toV2Headers.
+        const headers = XrayCommonClass.toV2Headers(xhttp.headers ?? [], false);
+        if (Object.keys(headers).length > 0) {
+            out.headers = headers;
+        }
+        if (xhttp.noSSEHeader === true) {
+            out.noSSEHeader = true;
+        }
+        if (xhttp.noGRPCHeader === true) {
+            out.noGRPCHeader = true;
+        }
+
+        XHTTP_SHARE_FIELDS.forEach(k => {
+            const value = xhttp[k];
+            if (value === undefined || value === null || value === '') return;
+            if (value === XHTTP_SHARE_DEFAULTS[k]) return;
+            out[k] = value;
+        });
+
+        // xmux and downloadSettings are objects, so they cannot ride in the
+        // scalar loop above (it compares against its defaults by value).
+        //
+        // xmux goes on the wire only once the admin has moved a knob off the
+        // stock set, and then it goes whole: a partial xmux would leave the
+        // client filling the gaps from its own defaults, which is the exact kind
+        // of silent server/client divergence this function exists to prevent.
+        const xmux = xHTTPStreamSettings.normalizeXmux(xhttp.xmux);
+        if (!xHTTPStreamSettings.isStockXmux(xmux)) {
+            out.xmux = xmux;
+        }
+
+        // downloadSettings has no default at all, so it rides verbatim whenever
+        // it is set. Except in stream-one mode, where the core rejects it
+        // outright (transport_internet.go: `Can not use "downloadSettings" in
+        // "stream-one" mode.`) and rejects the entire config with it. The panel
+        // will not save that combination, but a blob hand-edited outside the
+        // panel can still hold it, and a link that no client can build is worse
+        // than a link that quietly drops one key.
+        const download = xHTTPStreamSettings.normalizeDownloadSettings(xhttp.downloadSettings);
+        if (download && xhttp.mode !== MODE_OPTION.STREAM_ONE) {
+            out.downloadSettings = download;
+        }
+
+        return out;
+    }
+
+    // JSON with object keys sorted, recursively. Go's encoding/json always
+    // writes map keys sorted, so sorting here is what keeps the panel and the
+    // Go subscription generator from handing out two textually different
+    // `extra=` blobs for the very same inbound.
+    static stableJsonStringify(value) {
+        const sort = v => {
+            if (Array.isArray(v)) return v.map(sort);
+            if (v && typeof v === 'object') {
+                const sorted = {};
+                Object.keys(v).sort().forEach(k => { sorted[k] = sort(v[k]); });
+                return sorted;
+            }
+            return v;
+        };
+        return JSON.stringify(sort(value));
+    }
+
+    // Copy the xhttp settings into the query-string of a vless/trojan/ss link.
+    // Two encodings are emitted so each client family can pick at least one up:
     //   - x_padding_bytes=<range>       flat, for sing-box-family clients
-    //   - extra=<url-encoded-json>       full blob, for xray-core clients
-    //
-    // Fields are only included when they actually have a value, so a
-    // default inbound yields the same URL it did before this helper.
-    static applyXhttpPaddingToParams(xhttp, params) {
+    //     (Podkop, OpenWRT sing-box, Karing, NekoBox) which never look inside
+    //     `extra`.
+    //   - extra=<url-encoded-json>      the whole xhttp object, which is how
+    //     xray-core clients (v2rayNG, Happ, Furious, Exclave) pick it up.
+    static applyXhttpShareParams(xhttp, params) {
         if (!xhttp) return;
         if (typeof xhttp.xPaddingBytes === 'string' && xhttp.xPaddingBytes.length > 0) {
             params.set("x_padding_bytes", xhttp.xPaddingBytes);
         }
-        const extra = {};
-        if (typeof xhttp.xPaddingBytes === 'string' && xhttp.xPaddingBytes.length > 0) {
-            extra.xPaddingBytes = xhttp.xPaddingBytes;
-        }
-        if (xhttp.xPaddingObfsMode === true) {
-            extra.xPaddingObfsMode = true;
-            ["xPaddingKey", "xPaddingHeader", "xPaddingPlacement", "xPaddingMethod"].forEach(k => {
-                if (typeof xhttp[k] === 'string' && xhttp[k].length > 0) {
-                    extra[k] = xhttp[k];
-                }
-            });
-        }
+        const extra = Inbound.collectXhttpShareFields(xhttp);
         if (Object.keys(extra).length > 0) {
-            params.set("extra", JSON.stringify(extra));
+            params.set("extra", Inbound.stableJsonStringify(extra));
         }
     }
 
-    // VMess variant: VMess links are a base64-encoded JSON object, so we
-    // copy the padding fields directly into the JSON instead of building
-    // a query string.
-    static applyXhttpPaddingToObj(xhttp, obj) {
+    // VMess variant: VMess links are a base64-encoded JSON object, so the
+    // fields go straight into that JSON instead of into a query string.
+    static applyXhttpShareObj(xhttp, obj) {
         if (!xhttp || !obj) return;
-        if (typeof xhttp.xPaddingBytes === 'string' && xhttp.xPaddingBytes.length > 0) {
-            obj.x_padding_bytes = xhttp.xPaddingBytes;
-        }
-        if (xhttp.xPaddingObfsMode === true) {
-            obj.xPaddingObfsMode = true;
-            ["xPaddingKey", "xPaddingHeader", "xPaddingPlacement", "xPaddingMethod"].forEach(k => {
-                if (typeof xhttp[k] === 'string' && xhttp[k].length > 0) {
-                    obj[k] = xhttp[k];
-                }
-            });
-        }
+        const fields = Inbound.collectXhttpShareFields(xhttp);
+        Object.keys(fields).forEach(k => {
+            // The padding range has always ridden along under the flat
+            // sing-box style name here; keep it so clients already in the
+            // field keep reading it.
+            obj[k === 'xPaddingBytes' ? 'x_padding_bytes' : k] = fields[k];
+        });
     }
 
     static hasShareableFinalMaskValue(value) {
@@ -1888,8 +2373,16 @@ class Inbound extends XrayCommonClass {
             const xhttp = this.stream.xhttp;
             obj.path = xhttp.path;
             obj.host = xhttp.host?.length > 0 ? xhttp.host : this.getHeader(xhttp, 'host');
+            // The mode goes out under both names on purpose. This generator has
+            // always written it as `type` (where v2rayN-family clients read the
+            // per-network sub-type), the Go subscription generator has always
+            // written it as `mode`, and our own vmess importer
+            // (Outbound.fromVmessLink) only reads `mode`. Emitting both is the
+            // union of the two shipped behaviours, so the panel link and the
+            // subscription link finally agree without regressing either client.
             obj.type = xhttp.mode;
-            Inbound.applyXhttpPaddingToObj(xhttp, obj);
+            obj.mode = xhttp.mode;
+            Inbound.applyXhttpShareObj(xhttp, obj);
         }
 
         Inbound.applyFinalMaskToObj(this.stream.finalmask, obj);
@@ -1958,7 +2451,7 @@ class Inbound extends XrayCommonClass {
                 params.set("path", xhttp.path);
                 params.set("host", xhttp.host?.length > 0 ? xhttp.host : this.getHeader(xhttp, 'host'));
                 params.set("mode", xhttp.mode);
-                Inbound.applyXhttpPaddingToParams(xhttp, params);
+                Inbound.applyXhttpShareParams(xhttp, params);
                 break;
         }
 
@@ -2063,7 +2556,7 @@ class Inbound extends XrayCommonClass {
                 params.set("path", xhttp.path);
                 params.set("host", xhttp.host?.length > 0 ? xhttp.host : this.getHeader(xhttp, 'host'));
                 params.set("mode", xhttp.mode);
-                Inbound.applyXhttpPaddingToParams(xhttp, params);
+                Inbound.applyXhttpShareParams(xhttp, params);
                 break;
         }
 
@@ -2144,7 +2637,7 @@ class Inbound extends XrayCommonClass {
                 params.set("path", xhttp.path);
                 params.set("host", xhttp.host?.length > 0 ? xhttp.host : this.getHeader(xhttp, 'host'));
                 params.set("mode", xhttp.mode);
-                Inbound.applyXhttpPaddingToParams(xhttp, params);
+                Inbound.applyXhttpShareParams(xhttp, params);
                 break;
         }
 
@@ -3058,11 +3551,12 @@ Inbound.L2tpSettings.L2tpUser = class extends XrayCommonClass {
     enable = true,
     expiryTime = 0,
     tgId = "",
-    subId = "",
+    subId = RandomUtil.randomLowerAndNum(16),
     comment = "",
     totalGB = 0,
     limitIp = 0,
     reset = 0,
+    slot = undefined,
     created_at = undefined,
     updated_at = undefined,
   ) {
@@ -3078,6 +3572,13 @@ Inbound.L2tpSettings.L2tpUser = class extends XrayCommonClass {
     this.totalGB = totalGB;
     this.limitIp = limitIp;
     this.reset = reset;
+    // MUST round-trip: the backend allocates clients[].slot (the account's index into
+    // the inbound's address pool) and every save posts the whole client back, so a model
+    // that forgets it deletes it — and the account's tunnel address would fall back to
+    // its position in the list, which is what moved everyone's address when an earlier
+    // account was deleted. The browser NEVER invents one: undefined means "server
+    // allocates".
+    this.slot = slot;
     this.created_at = created_at;
     this.updated_at = updated_at;
   }
@@ -3098,6 +3599,7 @@ Inbound.L2tpSettings.L2tpUser = class extends XrayCommonClass {
           j.totalGB ?? 0,
           j.limitIp ?? j.ipLimit ?? 0,
           j.reset ?? 0,
+          j.slot,
           j.created_at,
           j.updated_at,
         ),
@@ -3121,6 +3623,7 @@ Inbound.L2tpSettings.L2tpUser = class extends XrayCommonClass {
       totalGB: this.totalGB,
       limitIp: this.limitIp,
       reset: this.reset,
+      slot: this.slot,
       created_at: this.created_at,
       updated_at: this.updated_at,
     };
@@ -3228,11 +3731,12 @@ Inbound.PptpSettings.PptpUser = class extends XrayCommonClass {
     enable = true,
     expiryTime = 0,
     tgId = "",
-    subId = "",
+    subId = RandomUtil.randomLowerAndNum(16),
     comment = "",
     totalGB = 0,
     limitIp = 0,
     reset = 0,
+    slot = undefined,
     created_at = undefined,
     updated_at = undefined,
   ) {
@@ -3248,6 +3752,13 @@ Inbound.PptpSettings.PptpUser = class extends XrayCommonClass {
     this.totalGB = totalGB;
     this.limitIp = limitIp;
     this.reset = reset;
+    // MUST round-trip: the backend allocates clients[].slot (the account's index into
+    // the inbound's address pool) and every save posts the whole client back, so a model
+    // that forgets it deletes it — and the account's tunnel address would fall back to
+    // its position in the list, which is what moved everyone's address when an earlier
+    // account was deleted. The browser NEVER invents one: undefined means "server
+    // allocates".
+    this.slot = slot;
     this.created_at = created_at;
     this.updated_at = updated_at;
   }
@@ -3268,6 +3779,7 @@ Inbound.PptpSettings.PptpUser = class extends XrayCommonClass {
           j.totalGB ?? 0,
           j.limitIp ?? j.ipLimit ?? 0,
           j.reset ?? 0,
+          j.slot,
           j.created_at,
           j.updated_at,
         ),
@@ -3291,6 +3803,7 @@ Inbound.PptpSettings.PptpUser = class extends XrayCommonClass {
       totalGB: this.totalGB,
       limitIp: this.limitIp,
       reset: this.reset,
+      slot: this.slot,
       created_at: this.created_at,
       updated_at: this.updated_at,
     };
@@ -3530,11 +4043,12 @@ Inbound.OpenvpnSettings.OpenvpnUser = class extends XrayCommonClass {
     enable = true,
     expiryTime = 0,
     tgId = "",
-    subId = "",
+    subId = RandomUtil.randomLowerAndNum(16),
     comment = "",
     totalGB = 0,
     limitIp = 0,
     reset = 0,
+    slot = undefined,
     created_at = undefined,
     updated_at = undefined,
   ) {
@@ -3550,6 +4064,13 @@ Inbound.OpenvpnSettings.OpenvpnUser = class extends XrayCommonClass {
     this.totalGB = totalGB;
     this.limitIp = limitIp;
     this.reset = reset;
+    // MUST round-trip: the backend allocates clients[].slot (the account's index into
+    // the inbound's address pool) and every save posts the whole client back, so a model
+    // that forgets it deletes it — and the account's tunnel address would fall back to
+    // its position in the list, which is what moved everyone's address when an earlier
+    // account was deleted. The browser NEVER invents one: undefined means "server
+    // allocates".
+    this.slot = slot;
     this.created_at = created_at;
     this.updated_at = updated_at;
   }
@@ -3571,6 +4092,7 @@ Inbound.OpenvpnSettings.OpenvpnUser = class extends XrayCommonClass {
           j.totalGB ?? 0,
           j.limitIp ?? j.ipLimit ?? 0,
           j.reset ?? 0,
+          j.slot,
           j.created_at,
           j.updated_at,
         ),
@@ -3594,6 +4116,7 @@ Inbound.OpenvpnSettings.OpenvpnUser = class extends XrayCommonClass {
       totalGB: this.totalGB,
       limitIp: this.limitIp,
       reset: this.reset,
+      slot: this.slot,
       created_at: this.created_at,
       updated_at: this.updated_at,
     };
@@ -3726,11 +4249,12 @@ Inbound.OcservSettings.OcservUser = class extends XrayCommonClass {
     enable = true,
     expiryTime = 0,
     tgId = "",
-    subId = "",
+    subId = RandomUtil.randomLowerAndNum(16),
     comment = "",
     totalGB = 0,
     limitIp = 0,
     reset = 0,
+    slot = undefined,
     created_at = undefined,
     updated_at = undefined,
   ) {
@@ -3746,6 +4270,13 @@ Inbound.OcservSettings.OcservUser = class extends XrayCommonClass {
     this.totalGB = totalGB;
     this.limitIp = limitIp;
     this.reset = reset;
+    // MUST round-trip: the backend allocates clients[].slot (the account's index into
+    // the inbound's address pool) and every save posts the whole client back, so a model
+    // that forgets it deletes it — and the account's tunnel address would fall back to
+    // its position in the list, which is what moved everyone's address when an earlier
+    // account was deleted. The browser NEVER invents one: undefined means "server
+    // allocates".
+    this.slot = slot;
     this.created_at = created_at;
     this.updated_at = updated_at;
   }
@@ -3767,6 +4298,7 @@ Inbound.OcservSettings.OcservUser = class extends XrayCommonClass {
           j.totalGB ?? 0,
           j.limitIp ?? j.ipLimit ?? 0,
           j.reset ?? 0,
+          j.slot,
           j.created_at,
           j.updated_at,
         ),
@@ -3790,6 +4322,7 @@ Inbound.OcservSettings.OcservUser = class extends XrayCommonClass {
       totalGB: this.totalGB,
       limitIp: this.limitIp,
       reset: this.reset,
+      slot: this.slot,
       created_at: this.created_at,
       updated_at: this.updated_at,
     };
@@ -3920,11 +4453,12 @@ Inbound.SstpSettings.SstpUser = class extends XrayCommonClass {
     enable = true,
     expiryTime = 0,
     tgId = "",
-    subId = "",
+    subId = RandomUtil.randomLowerAndNum(16),
     comment = "",
     totalGB = 0,
     limitIp = 0,
     reset = 0,
+    slot = undefined,
     created_at = undefined,
     updated_at = undefined,
   ) {
@@ -3940,6 +4474,13 @@ Inbound.SstpSettings.SstpUser = class extends XrayCommonClass {
     this.totalGB = totalGB;
     this.limitIp = limitIp;
     this.reset = reset;
+    // MUST round-trip: the backend allocates clients[].slot (the account's index into
+    // the inbound's address pool) and every save posts the whole client back, so a model
+    // that forgets it deletes it — and the account's tunnel address would fall back to
+    // its position in the list, which is what moved everyone's address when an earlier
+    // account was deleted. The browser NEVER invents one: undefined means "server
+    // allocates".
+    this.slot = slot;
     this.created_at = created_at;
     this.updated_at = updated_at;
   }
@@ -3961,6 +4502,7 @@ Inbound.SstpSettings.SstpUser = class extends XrayCommonClass {
           j.totalGB ?? 0,
           j.limitIp ?? j.ipLimit ?? 0,
           j.reset ?? 0,
+          j.slot,
           j.created_at,
           j.updated_at,
         ),
@@ -3984,6 +4526,7 @@ Inbound.SstpSettings.SstpUser = class extends XrayCommonClass {
       totalGB: this.totalGB,
       limitIp: this.limitIp,
       reset: this.reset,
+      slot: this.slot,
       created_at: this.created_at,
       updated_at: this.updated_at,
     };
@@ -4134,11 +4677,12 @@ Inbound.Ikev2Settings.Ikev2User = class extends XrayCommonClass {
     enable = true,
     expiryTime = 0,
     tgId = "",
-    subId = "",
+    subId = RandomUtil.randomLowerAndNum(16),
     comment = "",
     totalGB = 0,
     limitIp = 0,
     reset = 0,
+    slot = undefined,
     created_at = undefined,
     updated_at = undefined,
   ) {
@@ -4154,6 +4698,13 @@ Inbound.Ikev2Settings.Ikev2User = class extends XrayCommonClass {
     this.totalGB = totalGB;
     this.limitIp = limitIp;
     this.reset = reset;
+    // MUST round-trip: the backend allocates clients[].slot (the account's index into
+    // the inbound's address pool) and every save posts the whole client back, so a model
+    // that forgets it deletes it — and the account's tunnel address would fall back to
+    // its position in the list, which is what moved everyone's address when an earlier
+    // account was deleted. The browser NEVER invents one: undefined means "server
+    // allocates".
+    this.slot = slot;
     this.created_at = created_at;
     this.updated_at = updated_at;
   }
@@ -4175,6 +4726,7 @@ Inbound.Ikev2Settings.Ikev2User = class extends XrayCommonClass {
           j.totalGB ?? 0,
           j.limitIp ?? j.ipLimit ?? 0,
           j.reset ?? 0,
+          j.slot,
           j.created_at,
           j.updated_at,
         ),
@@ -4198,6 +4750,7 @@ Inbound.Ikev2Settings.Ikev2User = class extends XrayCommonClass {
       totalGB: this.totalGB,
       limitIp: this.limitIp,
       reset: this.reset,
+      slot: this.slot,
       created_at: this.created_at,
       updated_at: this.updated_at,
     };
@@ -4324,13 +4877,15 @@ Inbound.WgcSettings.WgUser = class extends XrayCommonClass {
     privKey = "",
     pubKey = "",
     psk = "",
+    devices = [],
     expiryTime = 0,
     tgId = "",
-    subId = "",
+    subId = RandomUtil.randomLowerAndNum(16),
     comment = "",
     totalGB = 0,
     limitIp = 0,
     reset = 0,
+    slot = undefined,
     created_at = undefined,
     updated_at = undefined,
   ) {
@@ -4341,6 +4896,13 @@ Inbound.WgcSettings.WgUser = class extends XrayCommonClass {
     this.privKey = privKey;
     this.pubKey = pubKey;
     this.psk = psk;
+    // Per-device keypairs, one slot per User Limit device, minted server-side.
+    // MUST round-trip: the backend stores clients[].devices, but this model used to
+    // drop the field, so every save posted the account back WITHOUT it. ReconcileKeys
+    // then rebuilt device 0 from the legacy privKey mirror below and MINTED FRESH KEYS
+    // for devices 2..K, silently invalidating every config already downloaded for
+    // them. Invisible at User Limit 1 (the default), which is why it survived.
+    this.devices = Array.isArray(devices) ? devices : [];
     this.expiryTime = expiryTime;
     this.tgId = tgId;
     this.subId = subId;
@@ -4348,6 +4910,13 @@ Inbound.WgcSettings.WgUser = class extends XrayCommonClass {
     this.totalGB = totalGB;
     this.limitIp = limitIp;
     this.reset = reset;
+    // MUST round-trip: the backend allocates clients[].slot (the account's index into
+    // the inbound's address pool) and every save posts the whole client back, so a model
+    // that forgets it deletes it — and the account's tunnel address would fall back to
+    // its position in the list, which is what moved everyone's address when an earlier
+    // account was deleted. The browser NEVER invents one: undefined means "server
+    // allocates".
+    this.slot = slot;
     this.created_at = created_at;
     this.updated_at = updated_at;
   }
@@ -4370,6 +4939,7 @@ Inbound.WgcSettings.WgUser = class extends XrayCommonClass {
           j.privKey ?? "",
           j.pubKey ?? "",
           j.psk ?? "",
+          Array.isArray(j.devices) ? j.devices : [],
           j.expiryTime ?? 0,
           j.tgId ?? "",
           j.subId ?? "",
@@ -4377,6 +4947,7 @@ Inbound.WgcSettings.WgUser = class extends XrayCommonClass {
           j.totalGB ?? 0,
           j.limitIp ?? j.ipLimit ?? 0,
           j.reset ?? 0,
+          j.slot,
           j.created_at,
           j.updated_at,
         ),
@@ -4395,6 +4966,7 @@ Inbound.WgcSettings.WgUser = class extends XrayCommonClass {
       privKey: this.privKey,
       pubKey: this.pubKey,
       psk: this.psk,
+      devices: this.devices,
       expiryTime: this.expiryTime,
       tgId: this.tgId,
       subId: this.subId,
@@ -4402,6 +4974,7 @@ Inbound.WgcSettings.WgUser = class extends XrayCommonClass {
       totalGB: this.totalGB,
       limitIp: this.limitIp,
       reset: this.reset,
+      slot: this.slot,
       created_at: this.created_at,
       updated_at: this.updated_at,
     };
@@ -4570,13 +5143,15 @@ Inbound.AwgSettings.AwgUser = class extends XrayCommonClass {
     privKey = "",
     pubKey = "",
     psk = "",
+    devices = [],
     expiryTime = 0,
     tgId = "",
-    subId = "",
+    subId = RandomUtil.randomLowerAndNum(16),
     comment = "",
     totalGB = 0,
     limitIp = 0,
     reset = 0,
+    slot = undefined,
     created_at = undefined,
     updated_at = undefined,
   ) {
@@ -4587,6 +5162,13 @@ Inbound.AwgSettings.AwgUser = class extends XrayCommonClass {
     this.privKey = privKey;
     this.pubKey = pubKey;
     this.psk = psk;
+    // Per-device keypairs, one slot per User Limit device, minted server-side.
+    // MUST round-trip: the backend stores clients[].devices, but this model used to
+    // drop the field, so every save posted the account back WITHOUT it. ReconcileKeys
+    // then rebuilt device 0 from the legacy privKey mirror below and MINTED FRESH KEYS
+    // for devices 2..K, silently invalidating every config already downloaded for
+    // them. Invisible at User Limit 1 (the default), which is why it survived.
+    this.devices = Array.isArray(devices) ? devices : [];
     this.expiryTime = expiryTime;
     this.tgId = tgId;
     this.subId = subId;
@@ -4594,6 +5176,13 @@ Inbound.AwgSettings.AwgUser = class extends XrayCommonClass {
     this.totalGB = totalGB;
     this.limitIp = limitIp;
     this.reset = reset;
+    // MUST round-trip: the backend allocates clients[].slot (the account's index into
+    // the inbound's address pool) and every save posts the whole client back, so a model
+    // that forgets it deletes it — and the account's tunnel address would fall back to
+    // its position in the list, which is what moved everyone's address when an earlier
+    // account was deleted. The browser NEVER invents one: undefined means "server
+    // allocates".
+    this.slot = slot;
     this.created_at = created_at;
     this.updated_at = updated_at;
   }
@@ -4616,6 +5205,7 @@ Inbound.AwgSettings.AwgUser = class extends XrayCommonClass {
           j.privKey ?? "",
           j.pubKey ?? "",
           j.psk ?? "",
+          Array.isArray(j.devices) ? j.devices : [],
           j.expiryTime ?? 0,
           j.tgId ?? "",
           j.subId ?? "",
@@ -4623,6 +5213,7 @@ Inbound.AwgSettings.AwgUser = class extends XrayCommonClass {
           j.totalGB ?? 0,
           j.limitIp ?? j.ipLimit ?? 0,
           j.reset ?? 0,
+          j.slot,
           j.created_at,
           j.updated_at,
         ),
@@ -4641,6 +5232,7 @@ Inbound.AwgSettings.AwgUser = class extends XrayCommonClass {
       privKey: this.privKey,
       pubKey: this.pubKey,
       psk: this.psk,
+      devices: this.devices,
       expiryTime: this.expiryTime,
       tgId: this.tgId,
       subId: this.subId,
@@ -4648,6 +5240,7 @@ Inbound.AwgSettings.AwgUser = class extends XrayCommonClass {
       totalGB: this.totalGB,
       limitIp: this.limitIp,
       reset: this.reset,
+      slot: this.slot,
       created_at: this.created_at,
       updated_at: this.updated_at,
     };
@@ -4747,7 +5340,7 @@ Inbound.MtprotoSettings.MtprotoUser = class extends XrayCommonClass {
     externalProxy = [],
     expiryTime = 0,
     tgId = "",
-    subId = "",
+    subId = RandomUtil.randomLowerAndNum(16),
     comment = "",
     totalGB = 0,
     limitIp = 0,
@@ -5003,7 +5596,7 @@ Inbound.SshSettings.SshUser = class extends XrayCommonClass {
     enable = true,
     expiryTime = 0,
     tgId = "",
-    subId = "",
+    subId = RandomUtil.randomLowerAndNum(16),
     comment = "",
     totalGB = 0,
     limitIp = 0,

@@ -164,6 +164,15 @@ func (s *SubJsonService) GetJson(subId string, host string) (string, string, err
 }
 
 func (s *SubJsonService) getConfig(inbound *model.Inbound, client model.Client, host string) []json_util.RawMessage {
+	// The Xray-JSON sub can only carry protocols Xray-core has an outbound for. The new
+	// protocols (mtproto/ssh/wg-c/awg + the credential VPNs) have no such outbound, so
+	// they are delivered via the raw and Clash subs and skipped here rather than emitting
+	// a JSON config with no working outbound.
+	switch inbound.Protocol {
+	case "vmess", "vless", "trojan", "shadowsocks", "hysteria", "hysteria2":
+	default:
+		return nil
+	}
 	var newJsonArray []json_util.RawMessage
 	stream := s.streamData(inbound.StreamSettings)
 

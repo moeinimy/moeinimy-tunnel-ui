@@ -18,12 +18,14 @@ import tomllib
 import traceback
 
 from . import (abort, provision, server_setup, protocols, bulkops, backup_test,
-               warp_test, random_test, systemd_test, uninstall_test, style)
+               subscription_test, warp_test, random_test, systemd_test,
+               uninstall_test, style)
 from .console import Console
 from .clients.base import Client
 from .incus import Incus, image_exists, IncusError
 from .model import (JobResult, SubTest, Status, ALL_PHASES, PHASE_CORE, PHASE_SETUP,
-                    PHASE_OPENVPN, PHASE_BULK, PHASE_BACKUP, PHASE_WARP, PHASE_RANDOM,
+                    PHASE_OPENVPN, PHASE_BULK, PHASE_BACKUP, PHASE_SUBSCRIPTION,
+                    PHASE_WARP, PHASE_RANDOM,
                     PHASE_SYSTEMD, PHASE_UNINSTALL,
                     IKEV2_MODE_PHASES, IKEV2_PHASE_BY_MODE,
                     MTPROTO_MODE_PHASES, MTPROTO_PHASE_BY_MODE,
@@ -154,7 +156,8 @@ def run_job(spec: dict, index: int, cfg: dict,
                                          "mtproto", "mtproto-classic", "mtproto-secure", "mtproto-tls",
                                          "mtproto-toggle", "ssh", "ssh-udp"))
     need_setup = (need_clients or _sel(PHASE_SETUP)
-                  or _sel(PHASE_BULK) or _sel(PHASE_BACKUP))
+                  or _sel(PHASE_BULK) or _sel(PHASE_BACKUP)
+                  or _sel(PHASE_SUBSCRIPTION))
 
     try:
         nclients = 3 if need_clients else 0
@@ -402,6 +405,17 @@ def run_job(spec: dict, index: int, cfg: dict,
             except Exception as e:  # noqa: BLE001
                 result.phase(PHASE_BACKUP).add(
                     SubTest("backup-restore-driver", Status.ERROR, str(e)[:200],
+                            traceback.format_exc()[-1500:]))
+
+        # --- subscription: sub links / JSON / Clash + remaining-days/traffic stats
+        #     for every protocol (pure panel + sub-server HTTP; enables the sub server
+        #     and restarts the panel, so after backup and before warp). ---
+        if not _aborting() and _sel(PHASE_SUBSCRIPTION):
+            try:
+                subscription_test.run(panel, sc, cfg, result, log=log)
+            except Exception as e:  # noqa: BLE001
+                result.phase(PHASE_SUBSCRIPTION).add(
+                    SubTest("subscription-driver", Status.ERROR, str(e)[:200],
                             traceback.format_exc()[-1500:]))
 
         # --- Cloudflare warp-cli SOCKS5 install (pure panel API, server-side

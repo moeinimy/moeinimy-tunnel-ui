@@ -276,8 +276,12 @@ class Panel:
         target["totalGB"] = int(total_bytes)
         target["enable"] = True
         proto = ib.get("protocol", "")
-        # UpdateInboundClient matches clientId by password for l2tp/pptp/openvpn/trojan.
-        if proto in ("l2tp", "pptp", "openvpn", "trojan"):
+        # UpdateInboundClient matches clientId by the protocol's identity field
+        # (clientIdentityKey in web/service/inbound.go): the username/password VPNs
+        # — l2tp/pptp/openvpn/trojan AND openconnect/sstp/ikev2 — are keyed on the
+        # PASSWORD (sending the id/email mis-keys them -> "empty client ID").
+        if proto in ("l2tp", "pptp", "openvpn", "trojan",
+                     "openconnect", "sstp", "ikev2"):
             client_id = target.get("password", "")
         elif proto == "shadowsocks":
             client_id = target.get("email", "")
@@ -509,3 +513,91 @@ class Panel:
             timeout=self.timeout,
         )
         return self._envelope(r, "/panel/api/server/importDB")
+
+    # ---- subscription (E2E) --------------------------------------------
+    def get_all_settings(self) -> dict:
+        """POST /panel/setting/all -> the full AllSetting object (every setting except
+        xrayTemplateConfig). The panel serves this as POST, not GET."""
+        return self._post("/panel/setting/all", {}).get("obj", {}) or {}
+
+    def update_all_settings(self, settings: dict) -> dict:
+        """POST the complete AllSetting back. updateAllSetting binds a fresh struct and
+        saves every field it carries, so a COMPLETE dict must be passed (get it via
+        get_all_settings, mutate, hand back). Values are stringified for form binding;
+        Go's ParseBool accepts 'true'/'false'."""
+        body = {}
+        for k, v in settings.items():
+            if isinstance(v, bool):
+                body[k] = "true" if v else "false"
+            elif v is None:
+                body[k] = ""
+            else:
+                body[k] = str(v)
+        return self._post("/panel/setting/update", body)
+
+    def enable_subscription(self) -> dict:
+        """Turn the subscription server on (raw + JSON + Clash), plaintext (no base64)
+        so the raw sub is greppable. Returns the merged settings (carries subPort +
+        subPath/subJsonPath/subClashPath). The sub server only binds on a panel restart,
+        so the caller must restart_panel_service() + wait_up() + login() after."""
+        s = self.get_all_settings()
+        s["subEnable"] = True
+        s["subJsonEnable"] = True
+        s["subClashEnable"] = True
+        s["subShowInfo"] = True
+        s["subEncrypt"] = False
+        self.update_all_settings(s)
+        return s
+
+    def restart_panel_service(self):
+        """POST /panel/setting/restartPanel — SIGHUPs the panel, which re-creates the
+        sub server with the new subEnable. Caller must wait_up + login afterwards."""
+        return self._post("/panel/setting/restartPanel", {})
+
+    def set_client_subscription(self, inbound_id: int, sub_id: str,
+                                total_bytes: int, expiry_ms: int) -> str:
+        """Give an inbound's FIRST client a subId + quota + expiry so it groups into a
+        subscription with real stats. Uses the updateClient endpoint (NOT a whole-inbound
+        update) so the panel runs UpdateClientStat and syncs client_traffics.total/expiry
+        — the table GetSubs reads for the Subscription-Userinfo header; a whole-inbound
+        update leaves those 0. Preserves the client's protocol-specific fields. Returns
+        the client email."""
+        ib = self.get_inbound(inbound_id) or {}
+        settings = json.loads(ib.get("settings") or "{}")
+        clients = settings.get("clients") or []
+        if not clients:
+            raise PanelError(f"inbound {inbound_id} has no clients")
+        target = dict(clients[0])
+        target["subId"] = sub_id
+        target["totalGB"] = int(total_bytes)
+        target["expiryTime"] = int(expiry_ms)
+        target["enable"] = True
+        proto = ib.get("protocol", "")
+        # clientId key per protocol (clientIdentityKey in web/service/inbound.go), same
+        # mapping as set_client_total.
+        if proto in ("l2tp", "pptp", "openvpn", "trojan",
+                     "openconnect", "sstp", "ikev2"):
+            client_id = target.get("password", "")
+        elif proto == "shadowsocks":
+            client_id = target.get("email", "")
+        else:
+            client_id = target.get("id", "") or target.get("email", "")
+        self._post(f"/panel/api/inbounds/updateClient/{client_id}", {
+            "id": str(inbound_id),
+            "remark": ib.get("remark", ""),
+            "enable": "true",
+            "listen": ib.get("listen", "") or "",
+            "port": str(ib.get("port", 0)),
+            "protocol": proto,
+            "settings": json.dumps({"clients": [target]}),
+            "streamSettings": "{}",
+            "sniffing": "{}",
+        })
+        return target.get("email", "")
+
+    def fetch_sub(self, server_ip: str, sub_port: int, path: str, sub_id: str):
+        """GET a subscription off the dedicated sub server (public, no auth). Returns
+        (status_code, text, headers). path is subPath / subJsonPath / subClashPath."""
+        url = f"http://{server_ip}:{sub_port}{path}{sub_id}"
+        r = requests.get(url, timeout=self.timeout)
+        return r.status_code, r.text, r.headers

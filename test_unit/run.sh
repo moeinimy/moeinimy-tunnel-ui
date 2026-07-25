@@ -77,6 +77,7 @@ Tests (ids mirror harness/model.py:ALL_PHASES; always run in this fixed order):
   ssh-udp         UDP over the badvpn-udpgw path through the SSH tunnel (+notcp DNS + accounting)
   bulk-ops        bulk client add/sub/enable/disable + TXT/PDF export via API
   backup-restore  DB export + import round-trip
+  subscription    sub links / JSON / Clash + remaining-days/traffic stats, every protocol
   warp-socks      Cloudflare warp-cli SOCKS install + egress
   random-cfg      --random switch: randomize port + creds + webpath, then restore
   systemd         --systemd switch: install + run the panel as a systemd unit

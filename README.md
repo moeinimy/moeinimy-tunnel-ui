@@ -7,7 +7,7 @@ instead of SSH**:
 
 - **Base panel:** [vpn-ui](https://github.com/Sir-MmD/vpn-ui) — an enhanced Go
   fork of [3X-UI](https://github.com/MHSanaei/3x-ui) (all credit to the upstream
-  authors). Tracks upstream **v1.8.0**.
+  authors). Tracks upstream **v1.8.3**.
 - **Tunnel backend:** [tunnel-manager](https://github.com/moeinimy/tunnel-manager)
   (`tunnelctl`), vendored under [`tunnel/`](tunnel/) — GRE, Paqet, BackPack,
   GOST, Backhaul, Rathole, FRP, Hysteria tunnels. Tracks **v3.5.1**.
@@ -43,6 +43,8 @@ See **[INTEGRATION.md](INTEGRATION.md)** for architecture and the API surface.
 
 The panel below is an enhanced version of the **[3X-UI](https://github.com/MHSanaei/3x-ui)** panel (version 2.9.3). The goal of this project is to add various protocols and set it up as an all-in-one panel with support for **Xray-core** features.
 
+![Overview](https://raw.githubusercontent.com/Sir-MmD/vpn-ui/refs/heads/main/media/overview.png)
+
 ## New Protocols
 
 - PPTP
@@ -59,9 +61,11 @@ The panel below is an enhanced version of the **[3X-UI](https://github.com/MHSan
 
 ## New Features
 
+- **Multi-Admin** with per-inbound access, so each admin only sees the inbounds you assign it
+- **Reseller** accounts with a metered traffic balance an admin recharges, spent only on the inbounds it was given
 - **Client to Client** support, even as **Cross Inbound** (an internal connection between an L2TP user and an OpenVPN user)
 - Added **AES-256-GCM** and **AES-128-GCM** **Encryption** to the **Shadowsocks** protocol
-- Support for **XHTTP Object** in **Outbound**
+- Support for **XHTTP Object** in **Inbound** and **Outbound**
 - Automatic installation script for **[WARP-CLI](https://github.com/Sir-MmD/warp-cli)** (Cloudflare's official version)
 - A [patched **Xray-core**](https://github.com/Sir-MmD/Xray-core) that fixes the "Unsupported Cipher" error in the **Shadowsocks** protocol
 - Bundling all files (**Geofile**, **Xray-core**, and **Backend** cores) into a single binary
@@ -112,11 +116,6 @@ sudo /opt/vpn-ui/vpn-ui-amd64 --uninstall
 
 > [!NOTE]
 > The database path, the **systemd** service, and all default ports have been changed, so you can install this panel alongside your other panels without any issues.
-
-## Screenshots
-
-![Overview](https://raw.githubusercontent.com/Sir-MmD/vpn-ui/refs/heads/main/media/overview.png)
-
 
 ## How the New Protocols Interact with Xray-core
 

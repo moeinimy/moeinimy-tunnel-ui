@@ -20,6 +20,7 @@ type XraySettingController struct {
 	XrayService        service.XrayService
 	WarpService        service.WarpService
 	NordService        service.NordService
+	SshOutboundService service.SshOutboundService
 }
 
 // NewXraySettingController creates a new XraySettingController and initializes its routes.
@@ -40,6 +41,7 @@ func (a *XraySettingController) initRouter(g *gin.RouterGroup) {
 	g.POST("/", a.getXraySetting)
 	g.POST("/warp/:action", a.warp)
 	g.POST("/warpsocks/:action", a.warpsocks)
+	g.POST("/sshoutbound/:action", a.sshoutbound)
 	g.POST("/nord/:action", a.nord)
 	g.POST("/update", a.updateSetting)
 	g.POST("/resetOutboundsTraffic", a.resetOutboundsTraffic)
@@ -166,6 +168,31 @@ func (a *XraySettingController) warpsocks(c *gin.Context) {
 		jsonObj(c, gin.H{"installed": service.WarpSocksInstalled()}, nil)
 	default:
 		jsonObj(c, service.WarpSocksState(), nil)
+	}
+}
+
+// sshoutbound drives operator-configured SSH egress tunnels (list/save/delete/status).
+// Each tunnel is backed by a synthesized tagged `socks` outbound the operator adds to the
+// template, so it is reverse/routing-selectable purely by that tag. Form-urlencoded, per
+// the panel convention (no JSON binding).
+func (a *XraySettingController) sshoutbound(c *gin.Context) {
+	switch c.Param("action") {
+	case "list":
+		jsonObj(c, a.SshOutboundService.List(), nil)
+	case "save":
+		var cfg service.SshOutboundConfig
+		if err := c.ShouldBind(&cfg); err != nil {
+			jsonMsg(c, I18nWeb(c, "somethingWentWrong"), err)
+			return
+		}
+		jsonMsg(c, I18nWeb(c, "pages.settings.toasts.modifySettings"), a.SshOutboundService.Save(cfg))
+	case "delete":
+		jsonMsg(c, I18nWeb(c, "pages.settings.toasts.modifySettings"), a.SshOutboundService.Delete(c.PostForm("tag")))
+	case "status":
+		up, log := a.SshOutboundService.Status(c.PostForm("tag"))
+		jsonObj(c, gin.H{"running": up, "log": log}, nil)
+	default:
+		jsonObj(c, a.SshOutboundService.List(), nil)
 	}
 }
 

@@ -229,6 +229,12 @@
 :is(.bo-shell,.login-app,.ant-modal,.ant-drawer,.ant-select-dropdown,.ant-dropdown,.ant-popover) .ant-form-item-label > label { color:var(--text-2); font-weight:var(--fw-medium); }
 :is(.bo-shell,.login-app,.ant-modal,.ant-drawer,.ant-select-dropdown,.ant-dropdown,.ant-popover) .ant-form-item { margin-bottom:14px; }
 :is(.bo-shell,.login-app,.ant-modal,.ant-drawer,.ant-select-dropdown,.ant-dropdown,.ant-popover) .ant-form-explain { color:var(--text-3); font-size:var(--fs-xs); }
+/* antd renders a field's description and its validation error in the same
+   .ant-form-explain slot, so the muted colour above (right for a description)
+   was also swallowing the errors: a message saying the form cannot be saved
+   read as a hint. Put the error colour back for fields actually in the error
+   state; has-error is only set by :validate-status="error". */
+:is(.bo-shell,.login-app,.ant-modal,.ant-drawer,.ant-select-dropdown,.ant-dropdown,.ant-popover) .has-error .ant-form-explain { color:var(--error); }
 
 :is(.bo-shell,.login-app,.ant-modal,.ant-drawer,.ant-select-dropdown,.ant-dropdown,.ant-popover) .ant-switch { background:var(--off); }
 :is(.bo-shell,.login-app,.ant-modal,.ant-drawer,.ant-select-dropdown,.ant-dropdown,.ant-popover) .ant-switch-checked { background:var(--accent-strong); }
@@ -294,6 +300,16 @@
 :is(.bo-shell,.login-app,.ant-modal,.ant-drawer,.ant-select-dropdown,.ant-dropdown,.ant-popover) .ant-alert-info { background:var(--info-weak); border-color:var(--info); }
 :is(.bo-shell,.login-app,.ant-modal,.ant-drawer,.ant-select-dropdown,.ant-dropdown,.ant-popover) .ant-alert-message { color:var(--text); }
 :is(.bo-shell,.login-app,.ant-modal,.ant-drawer,.ant-select-dropdown,.ant-dropdown,.ant-popover) .ant-alert-description { color:var(--text-2); }
+
+/* Spacing for the no-TLS banner's permanent "don't show this again" action,
+   which sits on its own line under the description. margin-top rather than a
+   side margin, so RTL locales need no mirrored rule.
+   Colour is deliberately absent: the button keeps whatever the theme gives
+   every other secondary button (neutral in light, the green-tinted dark
+   variant from custom.css). An override here would only win in light mode,
+   which is worse than either look - it would make this the one control in the
+   panel that changes character between themes. */
+:is(.bo-shell,.login-app,.ant-modal,.ant-drawer,.ant-select-dropdown,.ant-dropdown,.ant-popover) .ant-alert .sec-alert-dismiss { margin-top:10px; }
 
 /*
  * Tags. The colour budget for this whole panel is deliberately small:

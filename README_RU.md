@@ -6,6 +6,8 @@
 
 Этот проект — улучшенная версия панели **[3X-UI](https://github.com/MHSanaei/3x-ui)** (версии 2.9.3). Цель проекта — добавить различные протоколы и реализовать её как комплексную панель с поддержкой возможностей **Xray-core**.
 
+![Общий вид](https://raw.githubusercontent.com/Sir-MmD/vpn-ui/refs/heads/main/media/overview.png)
+
 ## Новые протоколы
 
 - PPTP
@@ -22,9 +24,11 @@
 
 ## Новые возможности
 
+- **Мультиадмин** с доступом к отдельным Inbound: каждый администратор видит только назначенные ему
+- Аккаунты **реселлеров** с лимитом трафика, который пополняет администратор и который тратится только на выданные Inbound
 - Функция **Client to Client**, даже в режиме **Cross Inbound** (внутреннее соединение пользователя L2TP с пользователем OpenVPN)
 - Добавление **Encryption** **AES-256-GCM** и **AES-128-GCM** в протокол **Shadowsocks**
-- Поддержка **XHTTP Object** в **Outbound**
+- Поддержка **XHTTP Object** в **Inbound** и **Outbound**
 - Скрипт автоматической установки **[WARP-CLI](https://github.com/Sir-MmD/warp-cli)** (официальная версия Cloudflare)
 - [Пропатченное ядро **Xray-core**](https://github.com/Sir-MmD/Xray-core) для устранения ошибки «Unsupported Cipher» в протоколе **Shadowsocks**
 - Объединение всех файлов (Geofile, Xray-core и ядер Backend) в один единый бинарный файл
@@ -75,11 +79,6 @@ sudo /opt/vpn-ui/vpn-ui-amd64 --uninstall
 
 > [!NOTE]
 > Путь к базе данных, служба systemd и все порты по умолчанию были изменены, поэтому вы можете без каких-либо проблем установить эту панель рядом с другими вашими панелями.
-
-## Скриншоты
-
-![Общий вид](https://raw.githubusercontent.com/Sir-MmD/vpn-ui/refs/heads/main/media/overview.png)
-
 
 ## Как новые протоколы взаимодействуют с ядром Xray-core
 

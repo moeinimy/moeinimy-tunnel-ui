@@ -35,8 +35,6 @@
   --dark-color-tag-blue-color:#529fff;
   --dark-color-codemirror-line-hover:rgba(0, 135, 113, 0.2);
   --dark-color-codemirror-line-selection:rgba(0, 135, 113, 0.3);
-  --dark-color-login-background:var(--dark-color-background);
-  --dark-color-login-wave:var(--dark-color-surface-200);
   --dark-color-tooltip:rgba(61, 76, 104, 0.9);
   --dark-color-back-top:rgba(61, 76, 104, 0.9);
   --dark-color-back-top-hover:rgba(61, 76, 104, 1);
@@ -75,7 +73,6 @@ html[data-theme-animations='off'] {
   .ant-progress-success-bg,
   .ant-radio-button-wrapper:not(:first-child):before,
   .ant-radio-button-wrapper,
-  #login,
   .cm-s-xq.CodeMirror {
     transition:border 0s,background 0s!important;
   }
@@ -89,9 +86,6 @@ html[data-theme-animations='off'] {
   .ant-menu-theme-switch,
   .ant-menu-submenu-title {
     transition:color 0s!important;
-  }
-  .wave-btn-bg {
-    transition:width 0s!important;
   }
 }
 
@@ -125,8 +119,6 @@ html[data-theme='ultra-dark'] {
   --dark-color-tag-blue-color:#3c89e8;
   --dark-color-codemirror-line-hover:rgba(82, 84, 94, 0.2);
   --dark-color-codemirror-line-selection:rgba(82, 84, 94, 0.3);
-  --dark-color-login-background:#0a2227;
-  --dark-color-login-wave:#0f2d32;
   --dark-color-tooltip:rgba(88, 93, 100, 0.9);
   --dark-color-back-top:rgba(88, 93, 100, 0.9);
   --dark-color-back-top-hover:rgba(88, 93, 100, 1);
@@ -150,9 +142,6 @@ html[data-theme='ultra-dark'] {
   .dark .ant-select-dropdown-menu-item-active:not(.ant-select-dropdown-menu-item-disabled),
   .dark .ant-select-dropdown-menu-item:hover:not(.ant-select-dropdown-menu-item-disabled) {
     background-color:rgb(0 93 78 / .3);
-  }
-  .dark .waves-header {
-    background-color:#0a2227;
   }
   .dark .ant-calendar-year-panel-year:hover,
   .dark .ant-calendar-month-panel-month:hover,
@@ -1957,125 +1946,13 @@ li.ant-calendar-time-picker-select-option-selected {
   margin-top:.5rem;
 }
 
-#app.login-app * {
-  -webkit-font-smoothing:antialiased;
-  -moz-osx-font-smoothing:grayscale;
-}
-
-#app.login-app h1 {
-  text-align:center;
-  height:110px;
-}
-
-#app.login-app .ant-form-item-children .ant-btn,
-#app.login-app .ant-input {
-  height:50px;
-  border-radius:30px;
-}
-
-#app.login-app .ant-input-group-addon {
-  border-radius:0 30px 30px 0;
-  width:50px;
-  font-size:18px;
-}
-
-#app.login-app .ant-input-affix-wrapper .ant-input-prefix {
-  left:23px;
-}
-
-#app.login-app .ant-input-affix-wrapper .ant-input:not(:first-child) {
-  padding-left:50px;
-}
-
-#app.login-app .centered {
-  display:flex;
-  text-align:center;
-  align-items:center;
-  justify-content:center;
-  width:100%;
-}
-
-#app.login-app .title {
-  font-size:2rem;
-  margin-block-end:2rem;
-}
-
-#app.login-app .title b {
-  font-weight:bold!important;
-}
-
-#app.login-app {
-  overflow:hidden;
-}
-
-#app.login-app #login {
-  animation:charge 0.5s both;
-  background-color:#fff;
-  border-radius:2rem;
-  padding:4rem 3rem;
-  transition:all 0.3s;
-  user-select:none;
-  -webkit-user-select:none;
-  -moz-user-select:none;
-}
-
-#app.login-app #login:hover {
-  box-shadow:0 2px 8px rgb(0 0 0 / .09);
-}
-
-@keyframes charge {
-  from {
-    transform:translateY(5rem);
-    opacity:0;
-  }
-  to {
-    transform:translateY(0);
-    opacity:1;
-  }
-}
-
-#app.login-app .under {
-  background-color:#c7ebe2;
-  z-index:0;
-}
-
-#app.login-app.dark .under {
-  background-color:var(--dark-color-login-wave);
-}
-
-#app.login-app.dark #login {
-  background-color:var(--dark-color-surface-100);
-}
-
-#app.login-app.dark h1 {
-  color:#fff;
-}
-
-#app.login-app .ant-btn-primary-login {
-  width:100%;
-}
-
-#app.login-app .ant-btn-primary-login:focus,
-#app.login-app .ant-btn-primary-login:hover {
-  color:#fff;
-  background-color:#065;
-  border-color:#065;
-  background-image:linear-gradient(270deg,#fff0 30%,#009980,#fff0 100%);
-  background-repeat:no-repeat;
-  animation:ma-bg-move ease-in-out 5s infinite;
-  background-position-x:-500px;
-  width:95%;
-  animation-delay:-0.5s;
-  box-shadow:0 2px 0 rgb(0 0 0 / .045);
-}
-
-#app.login-app .ant-btn-primary-login.active,
-#app.login-app .ant-btn-primary-login:active {
-  color:#fff;
-  background-color:#065;
-  border-color:#065;
-}
-
+/*
+ * The login page's styles used to live here: the old waves hero, the card and
+ * the word-swap headline. They are inline in web/html/login.html now, which is
+ * self-contained. Do not go looking for them in this sheet.
+ *
+ * ma-bg-move stays because the selected sidebar menu item animates with it.
+ */
 @keyframes ma-bg-move {
   0% {
     background-position:-500px 0;
@@ -2086,307 +1963,6 @@ li.ant-calendar-time-picker-select-option-selected {
   100% {
     background-position:1000px 0;
   }
-}
-
-#app.login-app .wave-btn-bg {
-  position:relative;
-  border-radius:25px;
-  width:100%;
-  transition:all 0.3s cubic-bezier(.645,.045,.355,1);
-}
-
-#app.login-app.dark .wave-btn-bg {
-  color:#fff;
-  position:relative;
-  background-color:#0a7557;
-  border:2px double #fff0;
-  background-origin:border-box;
-  background-clip:padding-box,border-box;
-  background-size:300%;
-  width:100%;
-  z-index:1;
-}
-
-#app.login-app.dark .wave-btn-bg:hover {
-  animation:wave-btn-tara 4s ease infinite;
-}
-
-#app.login-app.dark .wave-btn-bg-cl {
-  background-image:linear-gradient(#fff0,#fff0),radial-gradient(circle at left top,#006655,#009980,#006655)!important;
-  border-radius:3em;
-}
-
-#app.login-app.dark .wave-btn-bg-cl:hover {
-  width:95%;
-}
-
-#app.login-app.dark .wave-btn-bg-cl:before {
-  position:absolute;
-  content:"";
-  top:-5px;
-  left:-5px;
-  bottom:-5px;
-  right:-5px;
-  z-index:-1;
-  background:inherit;
-  background-size:inherit;
-  border-radius:4em;
-  opacity:0;
-  transition:0.5s;
-}
-
-#app.login-app.dark .wave-btn-bg-cl:hover::before {
-  opacity:1;
-  filter:blur(20px);
-  animation:wave-btn-tara 8s linear infinite;
-}
-
-@keyframes wave-btn-tara {
-  to {
-    background-position:300%;
-  }
-}
-
-#app.login-app.dark .ant-btn-primary-login {
-  font-size:14px;
-  color:#fff;
-  text-align:center;
-  background-image:linear-gradient(rgb(13 14 33 / .45),rgb(13 14 33 / .35));
-  border-radius:2rem;
-  border:none;
-  outline:none;
-  background-color:#fff0;
-  height:46px;
-  position:relative;
-  white-space:nowrap;
-  cursor:pointer;
-  touch-action:manipulation;
-  padding:0 15px;
-  width:100%;
-  animation:none;
-  background-position-x:0;
-  box-shadow:none;
-}
-
-#app.login-app .waves-header {
-  position:fixed;
-  width:100%;
-  text-align:center;
-  background-color:#dbf5ed;
-  color:#fff;
-  z-index:-1;
-}
-
-#app.login-app.dark .waves-header {
-  background-color:var(--dark-color-login-background);
-}
-
-#app.login-app .waves-inner-header {
-  height:50vh;
-  width:100%;
-  margin:0;
-  padding:0;
-}
-
-#app.login-app .waves {
-  position:relative;
-  width:100%;
-  height:15vh;
-  margin-bottom:-8px;
-  min-height:100px;
-  max-height:150px;
-}
-
-#app.login-app .parallax>use {
-  animation:move-forever 25s cubic-bezier(.55,.5,.45,.5) infinite;
-}
-
-#app.login-app.dark .parallax>use {
-  fill:var(--dark-color-login-wave);
-}
-
-#app.login-app .parallax>use:nth-child(1) {
-  animation-delay:-2s;
-  animation-duration:4s;
-  opacity:.2;
-}
-
-#app.login-app .parallax>use:nth-child(2) {
-  animation-delay:-3s;
-  animation-duration:7s;
-  opacity:.4;
-}
-
-#app.login-app .parallax>use:nth-child(3) {
-  animation-delay:-4s;
-  animation-duration:10s;
-  opacity:.6;
-}
-
-#app.login-app .parallax>use:nth-child(4) {
-  animation-delay:-5s;
-  animation-duration:13s;
-}
-
-@keyframes move-forever {
-  0% {
-    transform:translate3d(-90px,0,0);
-  }
-  100% {
-    transform:translate3d(85px,0,0);
-  }
-}
-
-@media (max-width:768px) {
-  #app.login-app .waves {
-    height:40px;
-    min-height:40px;
-  }
-}
-
-#app.login-app .words-wrapper {
-  width:100%;
-  display:inline-block;
-  position:relative;
-  text-align:center;
-}
-
-#app.login-app .words-wrapper b {
-  width:100%;
-  display:inline-block;
-  position:absolute;
-  left:0;
-  top:0;
-}
-
-#app.login-app .words-wrapper b.is-visible {
-  position:relative;
-}
-
-#app.login-app .headline.zoom .words-wrapper {
-  -webkit-perspective:300px;
-  -moz-perspective:300px;
-  perspective:300px;
-}
-
-#app.login-app .headline {
-  display:flex;
-  justify-content:center;
-  align-items:center;
-}
-
-#app.login-app .headline.zoom b {
-  opacity:0;
-}
-
-#app.login-app .headline.zoom b.is-visible {
-  opacity:1;
-  -webkit-animation:zoom-in 0.8s;
-  -moz-animation:zoom-in 0.8s;
-  animation:cubic-bezier(.215,.61,.355,1) zoom-in 0.8s;
-}
-
-#app.login-app .headline.zoom b.is-hidden {
-  -webkit-animation:zoom-out 0.8s;
-  -moz-animation:zoom-out 0.8s;
-  animation:cubic-bezier(.215,.61,.355,1) zoom-out 0.4s;
-}
-
-@-webkit-keyframes zoom-in {
-  0% {
-    opacity:0;
-    -webkit-transform:translateZ(100px);
-  }
-  100% {
-    opacity:1;
-    -webkit-transform:translateZ(0);
-  }
-}
-
-@-moz-keyframes zoom-in {
-  0% {
-    opacity:0;
-    -moz-transform:translateZ(100px);
-  }
-  100% {
-    opacity:1;
-    -moz-transform:translateZ(0);
-  }
-}
-
-@keyframes zoom-in {
-  0% {
-    opacity:0;
-    -webkit-transform:translateZ(100px);
-    -moz-transform:translateZ(100px);
-    -ms-transform:translateZ(100px);
-    -o-transform:translateZ(100px);
-    transform:translateZ(100px);
-  }
-  100% {
-    opacity:1;
-    -webkit-transform:translateZ(0);
-    -moz-transform:translateZ(0);
-    -ms-transform:translateZ(0);
-    -o-transform:translateZ(0);
-    transform:translateZ(0);
-  }
-}
-
-@-webkit-keyframes zoom-out {
-  0% {
-    opacity:1;
-    -webkit-transform:translateZ(0);
-  }
-  100% {
-    opacity:0;
-    -webkit-transform:translateZ(-100px);
-  }
-}
-
-@-moz-keyframes zoom-out {
-  0% {
-    opacity:1;
-    -moz-transform:translateZ(0);
-  }
-  100% {
-    opacity:0;
-    -moz-transform:translateZ(-100px);
-  }
-}
-
-@keyframes zoom-out {
-  0% {
-    opacity:1;
-    -webkit-transform:translateZ(0);
-    -moz-transform:translateZ(0);
-    -ms-transform:translateZ(0);
-    -o-transform:translateZ(0);
-    transform:translateZ(0);
-  }
-  100% {
-    opacity:0;
-    -webkit-transform:translateZ(-100px);
-    -moz-transform:translateZ(-100px);
-    -ms-transform:translateZ(-100px);
-    -o-transform:translateZ(-100px);
-    transform:translateZ(-100px);
-  }
-}
-
-#app.login-app .setting-section {
-  position:absolute;
-  top:0;
-  right:0;
-  padding:22px;
-}
-
-#app.login-app .ant-space-item .ant-switch {
-  margin:2px 0 4px;
-}
-
-#app.login-app .ant-layout-content {
-  transition:none;
 }
 
 .inbounds-page .ant-table:not(.ant-table-expanded-row .ant-table) {
@@ -2694,35 +2270,6 @@ li.ant-calendar-time-picker-select-option-selected {
   margin-block-end:12px;
 }
 
-#app.login-app #login input.ant-input:-webkit-autofill {
-  -webkit-box-shadow:0 0 0 100px #f8f8f8 inset;
-  box-shadow:0 0 0 100px #f8f8f8 inset;
-  transition:background-color 9999s ease-in-out 0s,color 9999s ease-in-out 0s;
-  background-clip:text;
-}
-
-#app.login-app #login .ant-input-affix-wrapper:hover .ant-input:-webkit-autofill:not(.ant-input-disabled),
-#app.login-app #login input.ant-input:-webkit-autofill:hover,
-#app.login-app #login input.ant-input:-webkit-autofill:focus {
-  -webkit-box-shadow:0 0 0 100px #e8f4f2 inset;
-  box-shadow:0 0 0 100px #e8f4f2 inset;
-}
-
-#app.login-app.dark #login .ant-input-affix-wrapper:hover .ant-input:-webkit-autofill:not(.ant-input-disabled),
-#app.login-app.dark #login input.ant-input:-webkit-autofill {
-  -webkit-text-fill-color:var(--dark-color-text-primary);
-  caret-color:var(--dark-color-text-primary);
-  -webkit-box-shadow:0 0 0 1000px var(--dark-color-surface-200) inset;
-  box-shadow:0 0 0 1000px var(--dark-color-surface-200) inset;
-  transition:background-color 9999s ease-in-out 0s,color 9999s ease-in-out 0s;
-}
-
-#app.login-app.dark #login .ant-input-affix-wrapper:hover .ant-input:-webkit-autofill:not(.ant-input-disabled),
-#app.login-app.dark #login input.ant-input:-webkit-autofill:hover,
-#app.login-app.dark #login input.ant-input:-webkit-autofill:focus {
-  border-color:var(--dark-color-surface-300);
-}
-
 .dark .ant-descriptions-bordered .ant-descriptions-item-label {
   background-color:var(--dark-color-background);
 }
@@ -2853,10 +2400,6 @@ li.ant-calendar-time-picker-select-option-selected {
   height:100%;
 }
 
-.h-50px {
-  height:50px;
-}
-
 .overflow-auto {
   overflow:auto;
 }
@@ -2883,11 +2426,6 @@ li.ant-calendar-time-picker-select-option-selected {
 
 .mt-1rem {
   margin-top:1rem;
-}
-
-.my-3rem {
-  margin-top:3rem;
-  margin-bottom:3rem;
 }
 
 .dark .ant-alert-info {

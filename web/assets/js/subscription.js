@@ -80,6 +80,27 @@
       } else if (link.startsWith('ss://')) {
         const hashIdx = link.indexOf('#');
         if (hashIdx !== -1) return decodeURIComponent(link.substring(hashIdx + 1));
+      } else if (link.startsWith('tg://')) {
+        // tg://proxy?server=HOST&port=..&secret=.. -> label with the server host.
+        const qs = new URL('http://x/?' + link.substring(link.indexOf('?') + 1)).searchParams;
+        const host = qs.get('server');
+        return host ? 'MTProto (' + host + ')' : 'MTProto';
+      } else if (link.startsWith('ssh://')) {
+        // ssh://base64(user:pass@host:port)[#label] -> prefer the #label, else the host.
+        const hashIdx = link.indexOf('#');
+        if (hashIdx !== -1) return decodeURIComponent(link.substring(hashIdx + 1));
+        const decoded = atob(link.substring('ssh://'.length));
+        const at = decoded.lastIndexOf('@');
+        return 'SSH' + (at !== -1 ? ' (' + decoded.substring(at + 1) + ')' : '');
+      } else if (link.startsWith('wireguard://')) {
+        // wg-c/awg: wireguard://<privkey>@host:port?..#remark -> the remark names the
+        // device; fall back to the endpoint so a link without one still reads.
+        const hashIdx = link.indexOf('#');
+        if (hashIdx !== -1) return decodeURIComponent(link.substring(hashIdx + 1));
+        const at = link.indexOf('@');
+        const qIdx = link.indexOf('?');
+        return at !== -1 ? 'WireGuard (' + link.substring(at + 1, qIdx === -1 ? undefined : qIdx) + ')'
+                         : 'WireGuard';
       }
     } catch (e) { /* ignore and fallback */ }
     return 'Link ' + (idx + 1);

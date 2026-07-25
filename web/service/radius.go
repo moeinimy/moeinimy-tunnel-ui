@@ -662,6 +662,7 @@ func (s *RadiusService) lookupEmail(protocol string, username string) string {
 	type clientEntry struct {
 		ID    string `json:"id"`
 		Email string `json:"email"`
+		Slot  *int   `json:"slot"` // address-pool slot; nil = fall back to list index
 	}
 	type settingsJSON struct {
 		Clients []clientEntry `json:"clients"`
@@ -799,10 +800,21 @@ func (s *RadiusService) killPppdByIP(ip string) {
 }
 
 // CleanStaleSessions removes sessions whose PPP interface no longer exists.
+//
+// Skips "cp:"-keyed sessions: ReconcileLocalSessions owns those, and it already derives them
+// each tick from the protocol's own liveness source (WireGuard handshake times, swanctl SAs),
+// folding their bytes on the way out. isIPActive cannot judge them anyway: it looks for the
+// address on a local interface, but a WireGuard peer's address is never local, and for the
+// gateway model sess.ip is a block CIDR ("10.7.1.2/32") rather than a bare address. So every
+// wg-c/awg session read as dead on every pass: the sweep re-added it seconds later, and the
+// resulting remove/add churn was what let duplicate accounting rules accumulate.
 func (s *RadiusService) CleanStaleSessions() {
 	s.mu.Lock()
 	var stale []string
 	for sid, sess := range s.sessions {
+		if strings.HasPrefix(sid, "cp:") {
+			continue
+		}
 		if !s.isIPActive(sess.ip, sess.protocol) {
 			stale = append(stale, sid)
 		}
@@ -933,6 +945,7 @@ func (s *RadiusService) getClientIP(protocol string, inboundId int, username, st
 	type clientEntry struct {
 		ID    string `json:"id"`
 		Email string `json:"email"`
+		Slot  *int   `json:"slot"` // address-pool slot; nil = fall back to list index
 	}
 	type settingsJSON struct {
 		IpRanges          []string      `json:"ipRanges"`
@@ -948,10 +961,14 @@ func (s *RadiusService) getClientIP(protocol string, inboundId int, username, st
 		return nil, false
 	}
 
+	// The account's SLOT, not its position in clients[]: a delete compacts the list, and
+	// deriving the address from the position moved every later account (and orphaned the
+	// device-lease keys below, which are built from this value).
 	clientIndex := -1
+	accountSlot := -1
 	for i, c := range settings.Clients {
 		if c.ID == username || c.Email == username {
-			clientIndex = i
+			clientIndex, accountSlot = i, slotOr(c.Slot, i)
 			break
 		}
 	}
@@ -981,19 +998,19 @@ func (s *RadiusService) getClientIP(protocol string, inboundId int, username, st
 		// it authenticates via PAP and enforces the cap in its own client-connect hook.)
 		var blockIPs []string
 		if k <= 1 {
-			if ip := computeVpnClientIP(ranges, inbound.Id, clientIndex, protocol); ip != nil {
+			if ip := computeVpnClientIP(ranges, inbound.Id, accountSlot, protocol); ip != nil {
 				blockIPs = []string{ip.String()}
 			}
 		} else {
-			blockIPs = vpnAccountDeviceIPs(pppSubnetsOrDefault(ranges, protocol, inbound.Id), clientIndex, k)
+			blockIPs = vpnAccountDeviceIPs(pppSubnetsOrDefault(ranges, protocol, inbound.Id), accountSlot, k)
 		}
 		if len(blockIPs) == 0 {
 			return nil, false
 		}
 		strategy := normUserLimitStrategy(settings.UserLimitStrategy)
-		return s.allocateBlockIP(inbound.Id, clientIndex, blockIPs, protocol, strategy, station, nasPort, email)
+		return s.allocateBlockIP(inbound.Id, accountSlot, blockIPs, protocol, strategy, station, nasPort, email)
 	}
-	return computeVpnClientIP(ranges, inbound.Id, clientIndex, protocol), false
+	return computeVpnClientIP(ranges, inbound.Id, accountSlot, protocol), false
 }
 
 // allocateBlockIP assigns a stable IP inside account `clientIndex`'s K-block (User
@@ -1006,7 +1023,7 @@ func (s *RadiusService) getClientIP(protocol string, inboundId int, username, st
 // when all K are held the strategy decides — "reject" returns (nil,true) so the caller
 // denies, "accept" evicts the account's OLDEST live device. Returns (ip,false) on
 // success, (nil,true) on deny.
-func (s *RadiusService) allocateBlockIP(inboundId, clientIndex int, blockIPs []string, protocol, strategy, station string, nasPort uint32, email string) (net.IP, bool) {
+func (s *RadiusService) allocateBlockIP(inboundId, accountSlot int, blockIPs []string, protocol, strategy, station string, nasPort uint32, email string) (net.IP, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.pending == nil {
@@ -1029,7 +1046,7 @@ func (s *RadiusService) allocateBlockIP(inboundId, clientIndex int, blockIPs []s
 	// behind the same NAT; a redial reclaiming the same freed unit keeps this key.
 	skey := ""
 	if station != "" {
-		skey = fmt.Sprintf("%s:%d:%d:%s:%d", protocol, inboundId, clientIndex, station, nasPort)
+		skey = fmt.Sprintf("%s:%d:%d:%s:%d", protocol, inboundId, accountSlot, station, nasPort)
 	}
 
 	// recordOC records/refreshes an OpenConnect device's session at AUTH (see
@@ -1076,7 +1093,7 @@ func (s *RadiusService) allocateBlockIP(inboundId, clientIndex int, blockIPs []s
 	}
 
 	if protocol == "openconnect" {
-		logger.Debugf("RADIUS: oc alloc idx=%d station=%q nasPort=%d skey=%q block=%v", clientIndex, station, nasPort, skey, blockIPs)
+		logger.Debugf("RADIUS: oc alloc idx=%d station=%q nasPort=%d skey=%q block=%v", accountSlot, station, nasPort, skey, blockIPs)
 	}
 
 	// IDEMPOTENT REDIAL: a client (by Calling-Station-Id) keeps the block IP it already
@@ -1359,6 +1376,7 @@ func BuildVpnEmailToIPMap() map[string][]string {
 	type clientEntry struct {
 		ID    string `json:"id"`
 		Email string `json:"email"`
+		Slot  *int   `json:"slot"` // address-pool slot; nil = fall back to list index
 	}
 
 	// --- L2TP / PPTP / OpenConnect / SSTP: single-network block, one IP (or K device
@@ -1394,6 +1412,7 @@ func BuildVpnEmailToIPMap() map[string][]string {
 			if client.Email == "" {
 				continue
 			}
+			slot := slotOr(client.Slot, i) // stored slot, not list position
 			// ikev2 psk / eap-tls: one local-auth account whose devices lease from a
 			// whole-block charon pool. Map it to the entire block CIDR so any pool
 			// address routes through Xray instead of hitting the vpnAddrSpace
@@ -1412,23 +1431,23 @@ func BuildVpnEmailToIPMap() map[string][]string {
 				// (User Limit 0 = the full 64-device /26), which differs from the shared k above.
 				wk := wgcEffectiveK(settings.UserLimit)
 				if wk <= 1 {
-					if ip := computeVpnClientIP(ranges, inbound.Id, i, string(inbound.Protocol)); ip != nil {
+					if ip := computeVpnClientIP(ranges, inbound.Id, slot, string(inbound.Protocol)); ip != nil {
 						result[client.Email] = append(result[client.Email], ip.String()+"/32")
 					}
 				} else {
 					bs := nextPow2(wk)
-					if subnet, hostBase, ok := vpnAccountBlock(subnets, i, bs); ok {
+					if subnet, hostBase, ok := vpnAccountBlock(subnets, slot, bs); ok {
 						result[client.Email] = append(result[client.Email], fmt.Sprintf("%s.%d/%d", subnet, hostBase, 32-log2i(bs)))
 					}
 				}
 				continue
 			}
 			if k <= 1 {
-				if ip := computeVpnClientIP(ranges, inbound.Id, i, string(inbound.Protocol)); ip != nil {
+				if ip := computeVpnClientIP(ranges, inbound.Id, slot, string(inbound.Protocol)); ip != nil {
 					result[client.Email] = append(result[client.Email], ip.String())
 				}
 			} else {
-				result[client.Email] = append(result[client.Email], vpnAccountDeviceIPs(subnets, i, k)...)
+				result[client.Email] = append(result[client.Email], vpnAccountDeviceIPs(subnets, slot, k)...)
 			}
 		}
 	}
@@ -1461,24 +1480,25 @@ func BuildVpnEmailToIPMap() map[string][]string {
 			if client.Email == "" {
 				continue
 			}
+			slot := slotOr(client.Slot, i) // stored slot, not list position
 			if k <= 1 {
 				if udpOn {
-					if ip := ovpnBlockClientIP(udpNet, udpPrefix, i); ip != "" {
+					if ip := ovpnBlockClientIP(udpNet, udpPrefix, slot); ip != "" {
 						result[client.Email] = append(result[client.Email], ip)
 					}
 				}
 				if tcpOn {
-					if ip := ovpnBlockClientIP(tcpNet, tcpPrefix, i); ip != "" {
+					if ip := ovpnBlockClientIP(tcpNet, tcpPrefix, slot); ip != "" {
 						result[client.Email] = append(result[client.Email], ip)
 					}
 				}
 				continue
 			}
 			if udpOn {
-				result[client.Email] = append(result[client.Email], vpnAccountDeviceIPs(udpSubnets, i, k)...)
+				result[client.Email] = append(result[client.Email], vpnAccountDeviceIPs(udpSubnets, slot, k)...)
 			}
 			if tcpOn {
-				result[client.Email] = append(result[client.Email], vpnAccountDeviceIPs(tcpSubnets, i, k)...)
+				result[client.Email] = append(result[client.Email], vpnAccountDeviceIPs(tcpSubnets, slot, k)...)
 			}
 		}
 	}

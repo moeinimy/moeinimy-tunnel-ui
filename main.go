@@ -186,6 +186,21 @@ func runWebServer() {
 		log.Fatalf("Error initializing database: %v", err)
 	}
 
+	// Give the VPN-protocol accounts that predate their subscription support a subId,
+	// so they have a subscription link at all. This runs on every start rather than
+	// only from MigrateDB, because MigrateDB is reached only by the `migrate`
+	// subcommand and the DB-import path: a panel that is simply upgraded and
+	// restarted never calls it, which is the normal way this fix arrives. Idempotent
+	// and cheap (it writes only the inbounds that were actually missing one).
+	inboundMigrations := &service.InboundService{}
+	inboundMigrations.MigrationSubIds()
+	// Same reason, and the same requirement to run before anything serves: stamp each
+	// pool-protocol account with the slot it is already using, so its tunnel address stops
+	// depending on its position in the client list. Deleting an account used to renumber
+	// every later one, moving live sessions onto other accounts' addresses and breaking
+	// installed WireGuard configs outright.
+	inboundMigrations.MigrationAccountSlots()
+
 	// Extract the pinned Xray core + base geo files baked into the panel. The
 	// core is overwritten on every start so the bundled (patched) fork is always
 	// what runs — switching/updating it from the dashboard is disabled. Geo files
@@ -218,8 +233,14 @@ func runWebServer() {
 	// A daemon somehow still running keeps its old inode (writeExecutable renames
 	// rather than overwrites, to dodge ETXTBSY) and picks the new one up on its next
 	// restart.
+	//
+	// Scoped to the cores this host actually installed: setup is per-core now, and
+	// "installed" is decided by the binary being present on disk, so refreshing the
+	// WHOLE bundle here would silently re-install every core on the next restart
+	// and undo any uninstall. See service.RefreshInstalledDaemons for the
+	// pre-per-core-tracking case, which still gets the full bundle.
 	if backend.Available() {
-		if files, exErr := backend.Extract(); exErr != nil {
+		if files, exErr := service.RefreshInstalledDaemons(); exErr != nil {
 			logger.Warning("could not extract bundled VPN daemons:", exErr)
 		} else if len(files) > 0 {
 			logger.Info("extracted bundled VPN daemons:", len(files), "files to", backend.BinDir())
@@ -1610,6 +1631,53 @@ func migrateDb() {
 	fmt.Println("Migration done!")
 }
 
+// importDb imports a stock 3x-ui (or vpn-ui) backup database over the current one,
+// keeping THIS panel's reachability/identity settings (port, path, TLS, session
+// secret, RADIUS secret, provisioning state). Everything else, the operator's
+// inbounds/clients/traffic/admins/subscription content, comes across from the
+// backup. deploy.sh calls this on a fresh install when the operator points it at a
+// 3x-ui backup; it is also available standalone. Usage: vpn-ui import --from <path>
+func importDb() {
+	importCmd := flag.NewFlagSet("import", flag.ExitOnError)
+	var from string
+	importCmd.StringVar(&from, "from", "", "path to the 3x-ui/vpn-ui backup .db to import")
+	_ = importCmd.Parse(os.Args[2:])
+	if from == "" && importCmd.NArg() > 0 {
+		from = importCmd.Arg(0) // also accept `vpn-ui import <path>`
+	}
+	if from == "" {
+		fmt.Fprintln(os.Stderr, "usage: vpn-ui import --from <path-to-backup.db>")
+		os.Exit(1)
+	}
+	src, err := os.Open(from)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "import: cannot open %s: %v\n", from, err)
+		os.Exit(1)
+	}
+	defer src.Close()
+
+	// A current DB has to exist so its settings can be snapshotted before the swap.
+	// On a fresh install this creates the defaults we then preserve; on an existing
+	// one it opens the live DB.
+	if err := database.InitDB(config.GetDBPath()); err != nil {
+		fmt.Fprintf(os.Stderr, "import: %v\n", err)
+		os.Exit(1)
+	}
+	var serverService service.ServerService
+	// activate=false: the panel is not running here, so do not regenerate configs or
+	// restart Xray; the panel's own startup brings the data plane up on the new data.
+	report, err := serverService.ImportForeignDB(src, false)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "import failed: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Printf("Imported %d inbound(s), %d client account(s), %d admin account(s).\n",
+		report.Inbounds, report.Clients, report.Admins)
+	fmt.Printf("Kept this panel's own settings (%d key(s): port, path, TLS, secrets).\n",
+		len(report.PreservedSettings))
+	fmt.Println("Log in with the username and password from the imported panel.")
+}
+
 // readRadiusSecret returns the RADIUS shared secret used by the OpenVPN auth/connect
 // /disconnect hooks. Canonical source is the panel DB (settings key `radiusSecret`,
 // written by getOrCreateRadiusSecret on startup): these hooks are separate short-lived
@@ -1713,7 +1781,7 @@ func openvpnAuth() {
 // without stealing a slot from a device that is merely mid-handshake.
 const ovpnLeaseReclaimGrace = 10 * time.Second
 
-func ovpnLeaseBlockIP(inboundId int, username, poolIP string) (string, string, bool) {
+func ovpnLeaseBlockIP(inboundId int, username, poolIP, sessionKey string) (string, string, bool) {
 	proto := "udp"
 	if strings.HasPrefix(poolIP, "10.3.") {
 		proto = "tcp"
@@ -1752,6 +1820,11 @@ func ovpnLeaseBlockIP(inboundId int, username, poolIP string) (string, string, b
 		inUse[ip] = true
 	}
 
+	// Addresses openvpn has told us are free but the status file still shows connected
+	// (it is rewritten only every 5s). Applied after the lease scan below, so a new
+	// device that has already leased one of them still counts as holding it.
+	released := ovpnReleasedIPs(dir, proto)
+
 	leaseDir := filepath.Join(dir, "leases-"+proto)
 	_ = os.MkdirAll(leaseDir, 0755)
 	now := time.Now()
@@ -1769,6 +1842,15 @@ func ovpnLeaseBlockIP(inboundId int, username, poolIP string) (string, string, b
 			}
 			inUse[ent.Name()] = true // lease file is named by the leased IP
 			leaseAge[ent.Name()] = now.Sub(fi.ModTime())
+		}
+	}
+
+	// A released address is only still in use if something leased it since: the release
+	// came from openvpn itself, the status entry behind it is just stale.
+	for ip := range released {
+		if _, leased := leaseAge[ip]; !leased {
+			delete(inUse, ip)
+			delete(liveStatus, ip)
 		}
 	}
 
@@ -1804,36 +1886,48 @@ func ovpnLeaseBlockIP(inboundId int, username, poolIP string) (string, string, b
 			if inUse[ip] {
 				continue
 			}
-			ovpnWriteLease(leaseDir, ip, poolIP)
+			ovpnWriteLease(leaseDir, ip, sessionKey)
+			ovpnClearRelease(dir, proto, ip)
 			return ip, mask, false
 		}
 	}
 
 	// The block is full — but a gap-lease can outlive its device by up to 30s, so "full"
-	// may be an illusion. "accept": admit by reclaiming a ghost or evicting the oldest
-	// live device; "reject" (default): refuse.
-	if ovpnReadStrategy(dir, proto) == "accept" {
-		// Prefer reclaiming a slot pinned ONLY by a stale gap-lease (an abandoned dial)
-		// over evicting a live device — and never self-evict. A ghost = a lease older
-		// than the grace whose IP is NOT in the status. OpenVPN rewrites the status
-		// every 5s, so any real device is listed within 5s of connecting; a >grace lease
-		// still absent from the status is abandoned, not a device merely mid-handshake.
-		// Reclaim the OLDEST such ghost.
-		var ghostIP string
-		var ghostAge time.Duration
-		for _, ip := range candidates {
-			if liveStatus[ip] {
-				continue // a genuinely connected device — never a ghost
-			}
-			if age, leased := leaseAge[ip]; leased && age > ovpnLeaseReclaimGrace && age > ghostAge {
-				ghostIP, ghostAge = ip, age
-			}
+	// may be an illusion.
+	//
+	// Reclaiming a slot pinned ONLY by a stale gap-lease is cleanup, not admission, so it
+	// happens for EITHER strategy: a ghost is a lease with no device behind it, and
+	// handing its address to a new dial keeps the number of LIVE devices within K either
+	// way. This used to sit inside the "accept" branch below, which made a "reject"
+	// inbound refuse an account's own redial (AUTH_FAILED, since a failing client-connect
+	// script is reported to the client as an auth failure) for as long as the previous
+	// lease lived. Any dial that does not complete leaves such a lease, so on a
+	// reject inbound a client that dropped and came back looked permanently broken while
+	// its User Limit was never actually exceeded.
+	//
+	// A ghost = a lease older than the grace whose IP is NOT in the status. OpenVPN
+	// rewrites the status every 5s, so any real device is listed within 5s of connecting;
+	// a >grace lease still absent from the status is abandoned, not a device merely
+	// mid-handshake. Reclaim the OLDEST such ghost.
+	var ghostIP string
+	var ghostAge time.Duration
+	for _, ip := range candidates {
+		if liveStatus[ip] {
+			continue // a genuinely connected device — never a ghost
 		}
-		if ghostIP != "" {
-			ovpnWriteLease(leaseDir, ghostIP, poolIP)
-			return ghostIP, mask, false
+		if age, leased := leaseAge[ip]; leased && age > ovpnLeaseReclaimGrace && age > ghostAge {
+			ghostIP, ghostAge = ip, age
 		}
+	}
+	if ghostIP != "" {
+		ovpnWriteLease(leaseDir, ghostIP, sessionKey)
+		ovpnClearRelease(dir, proto, ghostIP)
+		return ghostIP, mask, false
+	}
 
+	// Past that, the block really is held by live devices. "accept": evict the account's
+	// oldest device and take its address. "reject" (default): refuse.
+	if ovpnReadStrategy(dir, proto) == "accept" {
 		// A real device-cap hit: evict the oldest LIVE device and reuse its IP. The kill
 		// MUST happen AFTER this hook returns — client-connect runs synchronously and
 		// blocks OpenVPN's management loop — so hand it to the detached openvpn-evict
@@ -1853,7 +1947,8 @@ func ovpnLeaseBlockIP(inboundId int, username, poolIP string) (string, string, b
 			}
 		}
 		ovpnSpawnEvict(inboundId, proto, victimIP, victimRAddr)
-		ovpnWriteLease(leaseDir, victimIP, poolIP)
+		ovpnWriteLease(leaseDir, victimIP, sessionKey)
+		ovpnClearRelease(dir, proto, victimIP)
 		return victimIP, mask, false
 	}
 	return "", "", true // reject the new device
@@ -1875,8 +1970,40 @@ func oldestLeasedIP(leaseAge map[string]time.Duration) string {
 
 // ovpnWriteLease records a gap-lease file named by the leased block IP, storing the
 // device's pool IP as content so the disconnect hook can find and free it by pool IP.
-func ovpnWriteLease(leaseDir, blockIP, poolIP string) {
-	_ = os.WriteFile(filepath.Join(leaseDir, blockIP), []byte(poolIP), 0644)
+func ovpnWriteLease(leaseDir, blockIP, sessionKey string) {
+	_ = os.WriteFile(filepath.Join(leaseDir, blockIP), []byte(sessionKey), 0644)
+}
+
+// ovpnSessionKey identifies ONE device session, for matching a lease at disconnect back
+// to the connect that wrote it.
+//
+// It must not be ifconfig_pool_remote_ip, which is what this used to be: every device on
+// an inbound gets pushed a block address instead of the pool address, so openvpn keeps
+// handing the SAME first pool address (the block's .2) to every client, and every lease
+// file ended up holding that one value. Removal then matched the first lease in directory
+// order rather than the disconnecting device's, which
+//   - left the departing device's own lease behind, so on a "reject" inbound its redial
+//     was refused as if its User Limit were full,
+//   - freed a still-live device's lease, letting the account exceed its User Limit, and
+//   - rebuilt the Acct-Stop session id from another device's address, so usage landed on
+//     the wrong session ("acct-stop stale — ip=… reassigned to a live session").
+//
+// trusted_ip:trusted_port is the client's real transport address, unique per session and
+// reported identically to the connect and disconnect hooks.
+func ovpnSessionKey() string {
+	ip, port := os.Getenv("trusted_ip"), os.Getenv("trusted_port")
+	if ip == "" {
+		ip = os.Getenv("trusted_ip6")
+	}
+	if ip == "" {
+		// No real address in the environment: fall back to the pool address, which is
+		// what the old scheme used. Still better than an empty key.
+		return os.Getenv("ifconfig_pool_remote_ip")
+	}
+	if port == "" {
+		return ip
+	}
+	return ip + ":" + port
 }
 
 // ovpnLeasedIPs returns the set of block IPs currently gap-leased in a transport's
@@ -1899,12 +2026,13 @@ func ovpnLeasedIPs(leaseDir string) map[string]bool {
 	return set
 }
 
-// ovpnRemoveLeaseByPool removes the gap-lease held by the device with this pool IP
-// (leases are named by block IP with the pool IP as content) and returns the leased
+// ovpnRemoveLeaseBySession removes the gap-lease this device session holds (leases are
+// named by block IP and hold the session key, see ovpnSessionKey) and returns the leased
 // block IP, or "" if none matches. Called on client-disconnect so the slot frees
 // immediately instead of lingering until the lease TTL, and so the Acct-Stop can be
-// keyed by the same leased IP the connect hook used.
-func ovpnRemoveLeaseByPool(leaseDir, poolIP string) string {
+// keyed by the same leased IP the connect hook used. A lease written by an older build
+// holds a pool address instead and simply will not match: it ages out on the TTL.
+func ovpnRemoveLeaseBySession(leaseDir, sessionKey string) string {
 	entries, err := os.ReadDir(leaseDir)
 	if err != nil {
 		return ""
@@ -1912,12 +2040,66 @@ func ovpnRemoveLeaseByPool(leaseDir, poolIP string) string {
 	for _, ent := range entries {
 		p := filepath.Join(leaseDir, ent.Name())
 		content, e := os.ReadFile(p)
-		if e == nil && strings.TrimSpace(string(content)) == poolIP {
+		if e == nil && sessionKey != "" && strings.TrimSpace(string(content)) == sessionKey {
 			_ = os.Remove(p)
 			return ent.Name()
 		}
 	}
 	return ""
+}
+
+// ovpnReleaseTTL is how long a release marker counts. It only has to outlive the status
+// file's write interval (status ... 5), with room for a slow rewrite.
+const ovpnReleaseTTL = 15 * time.Second
+
+// ovpnWriteRelease records that openvpn just told us a device left this block address.
+//
+// The status file is rewritten every 5s, so for a few seconds after a disconnect the
+// departed device is still listed as connected, and a block whose addresses all look
+// occupied is refused: an account that dropped and redialled straight away was answered
+// with AUTH_FAILED although its User Limit was not reached. The management socket would
+// give the live table, but client-connect runs INSIDE openvpn's event loop (which is why
+// the evictor is a detached helper), so asking it from the hook would deadlock until the
+// timeout. The disconnect hook already knows exactly which address was freed, so it says
+// so here and the connect hook believes it over the stale file.
+func ovpnWriteRelease(dir, proto, blockIP string) {
+	if blockIP == "" {
+		return
+	}
+	relDir := filepath.Join(dir, "released-"+proto)
+	if err := os.MkdirAll(relDir, 0755); err != nil {
+		return
+	}
+	_ = os.WriteFile(filepath.Join(relDir, blockIP), nil, 0644)
+}
+
+// ovpnReleasedIPs returns the block IPs released within the TTL, expiring older markers.
+func ovpnReleasedIPs(dir, proto string) map[string]bool {
+	set := map[string]bool{}
+	relDir := filepath.Join(dir, "released-"+proto)
+	entries, err := os.ReadDir(relDir)
+	if err != nil {
+		return set
+	}
+	now := time.Now()
+	for _, ent := range entries {
+		p := filepath.Join(relDir, ent.Name())
+		fi, serr := os.Stat(p)
+		if serr != nil {
+			continue
+		}
+		if now.Sub(fi.ModTime()) > ovpnReleaseTTL {
+			os.Remove(p)
+			continue
+		}
+		set[ent.Name()] = true
+	}
+	return set
+}
+
+// ovpnClearRelease drops a release marker once the address is handed out again.
+func ovpnClearRelease(dir, proto, blockIP string) {
+	os.Remove(filepath.Join(dir, "released-"+proto, blockIP))
 }
 
 // ovpnReadStrategy returns the inbound's User Limit Strategy ("accept", else the
@@ -2111,7 +2293,7 @@ func openvpnConnect() {
 	// User Limit K>=2: if the panel published a block for this account, lease a
 	// free IP inside it and push it to this device (duplicate-cn lets K devices
 	// share the CN). os.Args[3] is OpenVPN's writable per-session config file.
-	leased, mask, reject := ovpnLeaseBlockIP(inboundId, username, ip)
+	leased, mask, reject := ovpnLeaseBlockIP(inboundId, username, ip, ovpnSessionKey())
 	if reject {
 		// User Limit reached with strategy=reject: a non-zero exit from a
 		// client-connect script makes OpenVPN refuse this device.
@@ -2175,8 +2357,12 @@ func openvpnDisconnect() {
 	if strings.HasPrefix(ip, "10.3.") {
 		proto = "tcp"
 	}
-	leaseDir := filepath.Join(fmt.Sprintf("/etc/openvpn/server-%d", inboundId), "leases-"+proto)
-	if leased := ovpnRemoveLeaseByPool(leaseDir, ip); leased != "" {
+	dir := fmt.Sprintf("/etc/openvpn/server-%d", inboundId)
+	leaseDir := filepath.Join(dir, "leases-"+proto)
+	if leased := ovpnRemoveLeaseBySession(leaseDir, ovpnSessionKey()); leased != "" {
+		// Tell the connect hook this address is free NOW; the status file will not say
+		// so for up to another 5s, and a redial in between would be refused.
+		ovpnWriteRelease(dir, proto, leased)
 		ip = leased
 	}
 
@@ -2360,6 +2546,8 @@ func main() {
 		fmt.Println("Commands:")
 		fmt.Println("    run            run web panel")
 		fmt.Println("    migrate        migrate form other/old vpn-ui")
+		fmt.Println("    import         import a 3x-ui/vpn-ui backup DB over the current one")
+		fmt.Println("                   (--from <path>; keeps this panel's port/path/cert/secret)")
 		fmt.Println("    setting        set settings")
 		fmt.Println("    info           show the panel login, access URL and service state")
 		fmt.Println("                   (--json for scripts, --get <field> for one raw value)")
@@ -2398,6 +2586,8 @@ func main() {
 		runWebServer()
 	case "migrate":
 		migrateDb()
+	case "import":
+		importDb()
 	case "setting":
 		err := settingCmd.Parse(os.Args[2:])
 		if err != nil {

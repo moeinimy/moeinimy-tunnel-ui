@@ -202,7 +202,7 @@ EOF
 }
 
 backhaul_health() { systemctl is-active --quiet "$(unit_name "$1")"; }
-backhaul_sample() { printf '0 0'; }
+backhaul_sample() { svc_ip_sample "$1"; }
 
 backhaul_status() {
     ui_kv "Role"      "${TUN[BH_ROLE]}"

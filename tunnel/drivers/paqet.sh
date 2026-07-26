@@ -291,7 +291,7 @@ paqet_health() {
 
 # paqet_sample NAME — Paqet has no kernel interface; byte accounting is not
 # available without extra tooling, so report zeros (bandwidth shown as N/A).
-paqet_sample() { printf '0 0'; }
+paqet_sample() { svc_ip_sample "$1"; }
 
 paqet_status() {
     ui_kv "Role"       "${TUN[PAQET_ROLE]}"

@@ -158,7 +158,7 @@ EOF
 }
 
 gost_health() { systemctl is-active --quiet "$(unit_name "$1")"; }
-gost_sample() { printf '0 0'; }
+gost_sample() { svc_ip_sample "$1"; }
 
 gost_status() {
     ui_kv "Role"      "${TUN[GO_ROLE]}"

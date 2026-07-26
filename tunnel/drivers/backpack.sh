@@ -273,7 +273,7 @@ EOF
 }
 
 backpack_health() { systemctl is-active --quiet "$(unit_name "$1")"; }
-backpack_sample() { printf '0 0'; }
+backpack_sample() { svc_ip_sample "$1"; }
 
 backpack_status() {
     ui_kv "Role"      "${TUN[BP_ROLE]}"

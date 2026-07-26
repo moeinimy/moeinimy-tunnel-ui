@@ -166,7 +166,7 @@ EOF
 }
 
 rathole_health() { systemctl is-active --quiet "$(unit_name "$1")"; }
-rathole_sample() { printf '0 0'; }
+rathole_sample() { svc_ip_sample "$1"; }
 
 rathole_status() {
     ui_kv "Role" "${TUN[RH_ROLE]}"

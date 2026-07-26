@@ -5,6 +5,26 @@ All notable changes to this project are documented here. The format is based on
 [Semantic Versioning](https://semver.org/).
 
 
+## [3.5.2] - 2026-07-26
+
+### Fixed
+- **Bandwidth and usage in the bot were always zero for every tunnel except GRE.**
+  The cause was not the reporting code but the data feeding it: each userspace
+  driver's `_sample` returned a hard-coded `0 0`. Userspace tunnels own no
+  network interface, so the kernel keeps no netdev counters for them the way it
+  does for GRE. They now read systemd's per-unit IP accounting (a BPF filter on
+  the service cgroup that counts every byte the tunnel process sends and
+  receives) via a shared `svc_ip_sample` helper — one implementation for
+  BackPack, Backhaul, GOST, frp, rathole, Paqet and Hysteria.
+- Accounting is enabled from one place, as a systemd drop-in written by
+  `svc_install`, so it applies to every protocol and survives reboots. It is
+  also applied live to already-running units, so existing tunnels start counting
+  without a restart that would drop user connections.
+- `[not set]` and systemd's UINT64_MAX sentinel (accounting off, or a kernel
+  without BPF cgroup support) are both reported as zero rather than a bogus
+  18-exabyte reading.
+
+
 ## [3.0.0] - 2026-07-16
 
 ### Added

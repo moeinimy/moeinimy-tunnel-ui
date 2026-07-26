@@ -236,7 +236,7 @@ EOF
 }
 
 hysteria_health() { systemctl is-active --quiet "$(unit_name "$1")"; }
-hysteria_sample() { printf '0 0'; }
+hysteria_sample() { svc_ip_sample "$1"; }
 
 hysteria_status() {
     ui_kv "Role"      "${TUN[HY_ROLE]}"

@@ -18,8 +18,30 @@ svc_install() {
     driver_render_unit >"$tmp" || { rm -f "$tmp"; return 1; }
     install -m 0644 "$tmp" "$path"
     rm -f "$tmp"
+    svc_accounting_dropin "$name"
     systemctl daemon-reload
     log_debug "installed unit $path"
+}
+
+# svc_accounting_dropin NAME — turn on systemd's per-unit IP accounting.
+# Written as a drop-in rather than baked into each driver's unit so it applies
+# to every protocol from one place. Takes effect when the unit next starts.
+svc_accounting_dropin() {
+    local dir
+    dir="$(unit_path "$1").d"
+    mkdir -p "$dir"
+    cat >"$dir/10-accounting.conf" <<'EOF'
+# Managed by Tunnel Manager — enables the byte counters the bot reports.
+[Service]
+IPAccounting=yes
+EOF
+    chmod 0644 "$dir/10-accounting.conf"
+    # Also apply it live, so a tunnel that is already running starts counting
+    # without being restarted (dropping user connections). The drop-in above is
+    # what makes it stick across reboots.
+    if systemctl is-active --quiet "$(unit_name "$1")" 2>/dev/null; then
+        systemctl set-property --runtime "$(unit_name "$1")" IPAccounting=yes >/dev/null 2>&1 || true
+    fi
 }
 
 svc_uninstall() {
@@ -27,7 +49,28 @@ svc_uninstall() {
     path="$(unit_path "$name")"
     systemctl disable --now "$(unit_name "$name")" >/dev/null 2>&1 || true
     rm -f "$path"
+    rm -rf "${path}.d"
     systemctl daemon-reload
+}
+
+# svc_ip_sample NAME -> "RX TX" total bytes, from systemd's IP accounting.
+# Userspace tunnels own no network interface, so the kernel keeps no netdev
+# counters for them (that is why every non-GRE driver used to report 0/0).
+# IPAccounting attaches a BPF filter to the unit's cgroup and counts every byte
+# the process sends and receives — for a tunnel process, that IS the tunnel
+# traffic. Counters restart with the unit; the monitor already treats a counter
+# going backwards as a restart and keeps its own lifetime totals.
+svc_ip_sample() {
+    local unit rx tx
+    unit="$(unit_name "$1")"
+    rx="$(systemctl show "$unit" -p IPIngressBytes --value 2>/dev/null)"
+    tx="$(systemctl show "$unit" -p IPEgressBytes  --value 2>/dev/null)"
+    # systemd reports "[not set]" — or its UINT64_MAX sentinel — when accounting
+    # is off or the kernel lacks BPF cgroup support. Both mean "no data", so
+    # report zero instead of a bogus 18-exabyte reading.
+    [[ "$rx" =~ ^[0-9]+$ && "$rx" != 18446744073709551615 ]] || rx=0
+    [[ "$tx" =~ ^[0-9]+$ && "$tx" != 18446744073709551615 ]] || tx=0
+    printf '%s %s' "$rx" "$tx"
 }
 
 svc_start()   { systemctl start   "$(unit_name "$1")"; }

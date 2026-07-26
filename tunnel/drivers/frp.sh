@@ -156,7 +156,7 @@ EOF
 }
 
 frp_health() { systemctl is-active --quiet "$(unit_name "$1")"; }
-frp_sample() { printf '0 0'; }
+frp_sample() { svc_ip_sample "$1"; }
 
 frp_status() {
     ui_kv "Role" "${TUN[FRP_ROLE]} ($([[ "${TUN[FRP_ROLE]}" == server ]] && echo frps || echo frpc))"

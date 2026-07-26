@@ -545,8 +545,9 @@ func (s *NodeService) forwardingTunnel(id string) (nodeTunnel, error) {
 		if json.Unmarshal([]byte(strings.TrimSpace(detail)), &d) != nil {
 			continue
 		}
+		cfg := tunnelConfigOf(d)
 		str := func(k string) string {
-			v, _ := d[k].(string)
+			v, _ := cfg[k].(string)
 			return v
 		}
 		protocol := str("PROTOCOL")
@@ -716,7 +717,7 @@ func (s *NodeService) remotePortList(tunnelName, field string) (string, error) {
 		if json.Unmarshal([]byte(strings.TrimSpace(raw)), &d) != nil {
 			continue
 		}
-		if v, _ := d[field].(string); strings.TrimSpace(v) != "" {
+		if v, _ := tunnelConfigOf(d)[field].(string); strings.TrimSpace(v) != "" {
 			return v, nil
 		}
 	}

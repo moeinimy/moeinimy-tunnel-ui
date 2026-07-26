@@ -46,8 +46,9 @@ func (s *TunnelService) CheckPorts(name string) ([]PortCheck, error) {
 	if err := json.Unmarshal(raw, &d); err != nil {
 		return nil, fmt.Errorf("could not read tunnel %q: %w", name, err)
 	}
+	cfg := tunnelConfigOf(d)
 	str := func(k string) string {
-		v, _ := d[k].(string)
+		v, _ := cfg[k].(string)
 		return v
 	}
 
@@ -238,4 +239,19 @@ func (s *TunnelService) FieldsMerged(name string) (json.RawMessage, error) {
 		return raw, nil
 	}
 	return merged, nil
+}
+
+// tunnelConfigOf pulls the settings map out of a `tunnelctl json tunnel` object.
+//
+// That command returns {"name":…,"active":…,"config":{…},"state":{…}} — the
+// KEY=VALUE settings live under "config", not at the top level. Reading the top
+// level instead yielded an empty PROTOCOL and an empty port list, so every
+// port-related feature failed the same way: "protocol \"\" has no port-forward
+// list this panel understands", and the auto-forward quietly had nothing to
+// write. The flat fallback keeps older/plain payloads working.
+func tunnelConfigOf(d map[string]any) map[string]any {
+	if cfg, ok := d["config"].(map[string]any); ok {
+		return cfg
+	}
+	return d
 }

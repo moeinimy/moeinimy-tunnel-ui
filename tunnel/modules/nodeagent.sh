@@ -21,7 +21,10 @@
 : "${TM_NODE_CONF:=$TM_CONFIG_DIR/node.conf}"
 
 # Same allowlist the panel enforces — read + safe control only.
-_TM_NODE_ALLOW=" json list names fields start stop restart enable disable status logs create set remove optimize "
+# `update` is included so the panel's backend-update button can bring this node
+# up to the same version instead of leaving it silently behind; see the detached
+# handling in the command loop for why it cannot be run inline.
+_TM_NODE_ALLOW=" json list names fields start stop restart enable disable status logs create set remove optimize update "
 
 # _node_load_conf — (re)read PANEL_URL/NODE_TOKEN. Returns 1 if unusable.
 _node_load_conf() {
@@ -103,6 +106,17 @@ _node_poll_once() {
 
         if [[ "$_TM_NODE_ALLOW" != *" ${args[0]} "* ]]; then
             out="command not allowed on node: ${args[0]}"; ok=false
+        elif [[ "${args[0]}" == update ]]; then
+            # `tunnelctl update` reinstalls the code and restarts tm-node-agent —
+            # this very process. Run inline, it would kill the agent before it
+            # could post a result, so the panel would report a timeout on every
+            # successful update. Detach it and answer immediately; the node comes
+            # back on the new code and resumes polling by itself.
+            log_info "node agent: starting detached 'tunnelctl update'"
+            setsid bash -c "TM_ASSUME_YES=1 NO_COLOR=1 '$TM_CTL' update \
+                >>'$TM_LOG_DIR/node-update.log' 2>&1" </dev/null >/dev/null 2>&1 &
+            out="update started on the node; it reconnects on the new code (log: $TM_LOG_DIR/node-update.log)"
+            ok=true
         else
             # TM_ASSUME_YES: destructive commands (remove/restore) prompt via
             # confirm(); with no TTY that silently answers "no" while still

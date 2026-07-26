@@ -213,14 +213,34 @@ func (s *TunnelService) Create(fields map[string]string) error {
 // the log (tunnelctl reports progress on stderr). Generous timeout: it downloads
 // a tarball and re-installs systemd units.
 func (s *TunnelService) Update() (string, error) {
+	// Connected nodes go first. Updating only this server leaves the Iran side
+	// pinned to whatever version it installed with, which is invisible from the
+	// panel and shows up later as "the fix did not work" — the two ends silently
+	// running different code. Nodes are best effort: an offline or failing node
+	// is reported but must not block updating this server.
+	var report []string
+	nodes := &NodeService{}
+	for _, id := range nodes.OnlineIDs() {
+		name := nodes.NameOf(id)
+		if name == "" {
+			name = id
+		}
+		if _, err := nodes.Exec(id, []string{"update"}); err != nil {
+			report = append(report, "node "+name+": update failed — "+err.Error())
+			continue
+		}
+		report = append(report, "node "+name+": update started (it reconnects on the new code)")
+	}
+
 	out, log, err := s.runCapture(5*time.Minute, "update")
 	if err != nil {
 		// tunnelctl logs progress + failures to stderr, which runCapture returns.
-		return log, err
+		return strings.TrimSpace(strings.Join(report, "\n") + "\n" + log), err
 	}
 	// stderr carries the progress log, stdout is normally empty — show both so a
 	// successful update is visibly distinguishable from a no-op.
-	return strings.TrimSpace(log + "\n" + string(out)), nil
+	report = append(report, log, string(out))
+	return strings.TrimSpace(strings.Join(report, "\n")), nil
 }
 
 // Version reports the installed tunnel backend version.

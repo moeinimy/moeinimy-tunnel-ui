@@ -59,6 +59,24 @@ func ensureVpnHostNetworking() {
 		_ = exec.Command("sysctl", "-w", key+"=2").Run()
 	}
 
+	// route_localnet → on. TPROXY hands the packet to a LOCAL socket while the
+	// policy route (fwmark → table 100) sends it out `lo`; with this at 0 the
+	// kernel refuses that route and drops the packet without a trace.
+	//
+	// Every other piece can look perfect — the nft rule present in prerouting/
+	// mangle, table 100 holding `local default dev lo`, Xray listening on its
+	// TPROXY port — and no VPN client passes a byte. The control plane is
+	// unaffected, so sessions authenticate and get an address, which is why this
+	// reads as "connects but no internet" on every TPROXY protocol at once
+	// (OpenVPN, L2TP, PPTP, OpenConnect, SSTP, IKEv2, wgc, awg) while a direct
+	// Xray inbound like VLESS, which never goes through TPROXY, works fine.
+	//
+	// Distros differ on the default, so a host that shipped 0 was quietly broken
+	// for the entire VPN half of the panel.
+	for _, key := range []string{"net.ipv4.conf.all.route_localnet", "net.ipv4.conf.default.route_localnet"} {
+		_ = exec.Command("sysctl", "-w", key+"=1").Run()
+	}
+
 	if !firewalldRunning() {
 		return
 	}

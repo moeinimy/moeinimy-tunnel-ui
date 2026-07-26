@@ -1247,6 +1247,8 @@
 "advanced" = "Advanced fields"
 "advancedHint" = "Protocol-specific settings. Empty secrets are generated automatically."
 "addPort" = "Add port"
+"checkPorts" = "Check ports"
+"checkPortsNone" = "This tunnel forwards every port, or has no port list to check."
 "addField" = "Add field"
 "save" = "Save"
 "noEditable" = "No editable fields."

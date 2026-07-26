@@ -79,6 +79,7 @@ func (a *TunnelController) initRouter(g *gin.RouterGroup) {
 	g.GET("/tunnel/:name", a.tunnel)
 	g.GET("/fields/:name", a.fields)
 	g.GET("/logs/:name", a.logs)
+	g.GET("/checkports/:name", a.checkPorts)
 
 	// Lifecycle / control
 	g.POST("/create", a.create)
@@ -164,6 +165,18 @@ func (a *TunnelController) fields(c *gin.Context) {
 		return
 	}
 	jsonObj(c, raw, nil)
+}
+
+// checkPorts answers "is this forward actually going to work" by testing, for
+// every port the tunnel relays, whether anything on this server serves it. A
+// relay reports that failure only in its own journal, as a refused dial.
+func (a *TunnelController) checkPorts(c *gin.Context) {
+	res, err := a.tunnelService.CheckPorts(c.Param("name"))
+	if err != nil {
+		jsonMsg(c, I18nWeb(c, "pages.tunnel.toasts.loadFailed"), err)
+		return
+	}
+	jsonObj(c, res, nil)
 }
 
 func (a *TunnelController) logs(c *gin.Context) {
@@ -286,6 +299,41 @@ func panelHost(c *gin.Context) string {
 	return h
 }
 
+// panelPeerIP is panelHost resolved to a literal IPv4, for use as a tunnel's
+// REMOTE_IP.
+//
+// The drivers want an address, not a name: paqet validates REMOTE_IP with
+// is_ipv4 and GRE hands it to `ip tunnel`, neither of which resolves anything.
+// So administering the panel over a domain — the normal case once a certificate
+// is involved — made every pair creation fail with
+//
+//	[✗] invalid REMOTE_IP (server)
+//
+// even though the domain was perfectly correct. Resolution happens here, once,
+// rather than pushing name lookups into the tunnel scripts.
+//
+// Falls back to the unresolved host so the driver still reports the real
+// problem instead of an empty field.
+func panelPeerIP(c *gin.Context) string {
+	host := panelHost(c)
+	if ip := net.ParseIP(host); ip != nil {
+		if v4 := ip.To4(); v4 != nil {
+			return v4.String()
+		}
+		return host // a literal IPv6; let the driver decide whether it can use it
+	}
+	addrs, err := net.LookupIP(host)
+	if err != nil {
+		return host
+	}
+	for _, a := range addrs {
+		if v4 := a.To4(); v4 != nil {
+			return v4.String()
+		}
+	}
+	return host
+}
+
 // nodePanelURL is the base URL the Iran node's control agent polls.
 //
 // The port comes from the panel's OWN listening setting whenever the browser's
@@ -344,7 +392,7 @@ func (a *TunnelController) createPair(c *gin.Context) {
 		jsonMsg(c, I18nWeb(c, "pages.tunnel.toasts.createFailed"), schemaErr)
 		return
 	}
-	ff, inf, online, err := a.nodeService.BuildPair(req.NodeID, req.Name, req.Protocol, req.Fields, panelHost(c), schemaRaw)
+	ff, inf, online, err := a.nodeService.BuildPair(req.NodeID, req.Name, req.Protocol, req.Fields, panelPeerIP(c), schemaRaw)
 	if err != nil {
 		jsonMsg(c, I18nWeb(c, "pages.tunnel.toasts.createFailed"), err)
 		return

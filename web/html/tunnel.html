@@ -119,6 +119,7 @@
                       <a-button size="small" @click="control('restart', t.name)"><a-icon type="reload"></a-icon>{{ i18n "pages.tunnel.restart" }}</a-button>
                     </a-button-group>
                     <a-button size="small" @click="openLogs(t.name)"><a-icon type="file-text"></a-icon>{{ i18n "pages.tunnel.logs" }}</a-button>
+                    <a-button size="small" @click="checkPorts(t.name)"><a-icon type="api"></a-icon>{{ i18n "pages.tunnel.checkPorts" }}</a-button>
                     <a-button size="small" @click="openEdit(t.name)"><a-icon type="edit"></a-icon>{{ i18n "pages.tunnel.edit" }}</a-button>
                     <a-popconfirm title="{{ i18n "pages.tunnel.removeConfirm" }}" placement="topRight"
                       @confirm="control('remove', t.name)" ok-text="{{ i18n "pages.tunnel.remove" }}" cancel-text="{{ i18n "cancel" }}">
@@ -218,6 +219,26 @@
             </a-collapse>
           </template>
         </a-form-model>
+      </a-modal>
+
+      <!-- Port check: what the relay finds when it hands a connection over -->
+      <a-modal v-model="portsVisible" :title="'{{ i18n "pages.tunnel.checkPorts" }}: ' + portsName"
+        :footer="null" :width="620">
+        <a-spin :spinning="portsLoading">
+          <a-alert v-if="!portsLoading && !portsResult.length" type="info" show-icon
+            description='{{ i18n "pages.tunnel.checkPortsNone" }}'></a-alert>
+          <a-list v-else size="small" :data-source="portsResult">
+            <a-list-item slot="renderItem" slot-scope="p">
+              <a-list-item-meta>
+                <span slot="title">
+                  <a-tag :color="p.ok ? 'green' : 'red'">[[ p.ok ? 'OK' : 'FAIL' ]]</a-tag>
+                  [[ p.proto ]] [[ p.listen ]] → [[ p.dest ]]
+                </span>
+                <span slot="description" :style="{ opacity: .75 }">[[ p.detail ]]</span>
+              </a-list-item-meta>
+            </a-list-item>
+          </a-list>
+        </a-spin>
       </a-modal>
 
       <!-- Backend update result -->
@@ -356,7 +377,33 @@
         <a-spin :spinning="editLoading">
           <a-form-model layout="vertical">
             <a-form-model-item v-for="f in editFields" :key="f.key" :label="f.key">
-              <a-input v-model="f.value"></a-input>
+              <!-- Port lists get the same row editor as the create form. Typed as
+                   a raw string ("2095=2095;443=443") one syntax slip silently
+                   breaks every forward, and adding a port meant knowing it. -->
+              <template v-if="portFieldType(f.key)">
+                <div v-for="(r, i) in rowsFor('edit:' + f.key)" :key="i" class="portmap-row">
+                  <template v-if="portFieldType(f.key) === 'forwards'">
+                    <a-select v-model="r.proto" :style="{ width: '84px' }">
+                      <a-select-option value="tcp">tcp</a-select-option>
+                      <a-select-option value="udp">udp</a-select-option>
+                    </a-select>
+                    <a-input-number v-model="r.local" :min="1" :max="65535" placeholder="on relay"></a-input-number>
+                    <span>→</span>
+                    <a-input-number v-model="r.dest" :min="1" :max="65535" placeholder="here"></a-input-number>
+                  </template>
+                  <template v-else>
+                    <a-input-number v-model="r.listen" :min="1" :max="65535" placeholder="on relay"></a-input-number>
+                    <span>→</span>
+                    <a-input-number v-model="r.target" :min="1" :max="65535" placeholder="here"></a-input-number>
+                  </template>
+                  <a-button size="small" type="danger" icon="delete"
+                    @click="rowsFor('edit:' + f.key).splice(i, 1)"></a-button>
+                </div>
+                <a-button type="dashed" size="small" @click="addRow('edit:' + f.key, portFieldType(f.key))">
+                  <a-icon type="plus"></a-icon>{{ i18n "pages.tunnel.addPort" }}
+                </a-button>
+              </template>
+              <a-input v-else v-model="f.value"></a-input>
             </a-form-model-item>
             <a-empty v-if="!editFields.length" description='{{ i18n "pages.tunnel.noEditable" }}'></a-empty>
           </a-form-model>
@@ -461,6 +508,10 @@
       logsContent: '',
       // backend update
       updating: false,
+      portsVisible: false,
+      portsLoading: false,
+      portsName: '',
+      portsResult: [],
       updateLogVisible: false,
       updateLogText: '',
       // nodes
@@ -492,7 +543,7 @@
       anyModalOpen() {
         return this.createVisible || this.editVisible || this.logsVisible ||
           this.nodeCreateVisible || this.nodeOnelinerVisible || this.nodeTunnelsVisible ||
-          this.updateLogVisible || this.updating;
+          this.updateLogVisible || this.updating || this.portsVisible;
       },
     },
     methods: {
@@ -747,6 +798,22 @@
         }
       },
       // ---- edit ----
+      // A tunnel's port list lives under a different key per protocol: GRE and
+      // Paqet use FORWARDS ("proto:local:dest"), the userspace relays use
+      // <PREFIX>_PORTS ("local=dest"). Mirrors tunnelPortSpecFor in the backend.
+      portFieldType(key) {
+        if (key === 'FORWARDS') return 'forwards';
+        return /_PORTS$/.test(key) ? 'portmap' : '';
+      },
+      async checkPorts(name) {
+        this.portsName = name;
+        this.portsResult = [];
+        this.portsVisible = true;
+        this.portsLoading = true;
+        const msg = await HttpUtil.get('/panel/tunnel/checkports/' + encodeURIComponent(name));
+        if (msg && msg.success) this.portsResult = msg.obj || [];
+        this.portsLoading = false;
+      },
       async openEdit(name) {
         this.editName = name;
         this.editFields = [];
@@ -756,7 +823,11 @@
         if (msg && msg.success) {
           this.editFields = (msg.obj || []).map(f => ({ key: f.key, value: f.value }));
           this.editOriginal = {};
-          this.editFields.forEach(f => this.editOriginal[f.key] = f.value);
+          this.editFields.forEach(f => {
+            this.editOriginal[f.key] = f.value;
+            const t = this.portFieldType(f.key);
+            if (t) this.$set(this.rows, 'edit:' + f.key, this.parseRows(f.value, t));
+          });
         }
         this.editLoading = false;
       },
@@ -764,6 +835,8 @@
         this.editLoading = true;
         let changed = 0;
         for (const f of this.editFields) {
+          const t = this.portFieldType(f.key);
+          if (t) f.value = this.serializeRows('edit:' + f.key, t);
           if (this.editOriginal[f.key] !== f.value) {
             changed++;
             await HttpUtil.post('/panel/tunnel/set/' + encodeURIComponent(this.editName), { key: f.key, value: f.value });

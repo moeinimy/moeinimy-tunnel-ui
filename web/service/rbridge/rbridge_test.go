@@ -89,10 +89,10 @@ type fakeAdapter struct {
 	evicted  []string
 }
 
-func (a *fakeAdapter) Protocol() string             { return a.proto }
-func (a *fakeAdapter) Poll() ([]Live, error)        { return a.poll, nil }
-func (a *fakeAdapter) Limit(int) (int, string)      { return a.k, a.strategy }
-func (a *fakeAdapter) Evict(l Live) error           { a.evicted = append(a.evicted, l.DeviceKey); return nil }
+func (a *fakeAdapter) Protocol() string        { return a.proto }
+func (a *fakeAdapter) Poll() ([]Live, error)   { return a.poll, nil }
+func (a *fakeAdapter) Limit(int) (int, string) { return a.k, a.strategy }
+func (a *fakeAdapter) Evict(l Live) error      { a.evicted = append(a.evicted, l.DeviceKey); return nil }
 
 func TestSweeperTickEnforcesDisabledThenLimit(t *testing.T) {
 	// One inbound: a disabled account's tunnel, plus three tunnels for an enabled account

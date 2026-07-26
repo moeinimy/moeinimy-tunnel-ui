@@ -159,7 +159,7 @@ func (a *TunnelController) tunnel(c *gin.Context) {
 }
 
 func (a *TunnelController) fields(c *gin.Context) {
-	raw, err := a.tunnelService.Fields(c.Param("name"))
+	raw, err := a.tunnelService.FieldsMerged(c.Param("name"))
 	if err != nil {
 		jsonMsg(c, I18nWeb(c, "pages.tunnel.toasts.loadFailed"), err)
 		return

@@ -188,6 +188,24 @@ func (s *L2tpService) GetTproxyPort(inbound *model.Inbound) int {
 	return 12300 + inbound.Id
 }
 
+// dokodemoTag names the xray inbound this L2TP service injects.
+//
+// An OpenVPN inbound that also serves L2TP is returned by GetL2tpInbounds, but
+// it ALREADY contributes an xray inbound of its own under inbound.Tag. Emitting
+// the L2TP one under the same tag made xray reject the entire config —
+//
+//	failed to create server > app/proxyman/inbound: existing tag found: inbound-1195
+//
+// — and exit 23 in a two-second crash loop. Nothing about that pointed at L2TP:
+// OpenVPN clients authenticated and got an address, they simply had no route to
+// anywhere, because the core carrying their traffic was never up.
+func (s *L2tpService) dokodemoTag(inbound *model.Inbound) string {
+	if inbound.Protocol == model.OPENVPN {
+		return inbound.Tag + "-l2tp"
+	}
+	return inbound.Tag
+}
+
 // GetDokodemoConfig builds the paired dokodemo-door inbound config for Xray.
 // This config captures TPROXY-redirected PPP traffic and feeds it into Xray's routing.
 func (s *L2tpService) GetDokodemoConfig(inbound *model.Inbound) *xray.InboundConfig {
@@ -202,7 +220,7 @@ func (s *L2tpService) GetDokodemoConfig(inbound *model.Inbound) *xray.InboundCon
 		Protocol:       "dokodemo-door",
 		Settings:       json_util.RawMessage(settings),
 		StreamSettings: json_util.RawMessage(streamSettings),
-		Tag:            inbound.Tag,
+		Tag:            s.dokodemoTag(inbound),
 		Sniffing:       json_util.RawMessage(sniffing),
 	}
 }

@@ -700,3 +700,25 @@ func (s *NodeService) Result(token, cmdID, output string, success bool) bool {
 	n.results[cmdID] = &nodeResult{Output: output, Success: success, at: time.Now()}
 	return true
 }
+
+// remotePortList reads a tunnel's forward list from the node's half of the pair.
+//
+// Only the side that accepts client connections (Iran) carries the port map;
+// the side this panel runs is the other end and stores none. Anything reading
+// only the local half therefore sees an empty list for a working forward.
+func (s *NodeService) remotePortList(tunnelName, field string) (string, error) {
+	for _, id := range s.OnlineIDs() {
+		raw, err := s.Exec(id, []string{"json", "tunnel", tunnelName})
+		if err != nil {
+			continue
+		}
+		var d map[string]any
+		if json.Unmarshal([]byte(strings.TrimSpace(raw)), &d) != nil {
+			continue
+		}
+		if v, _ := d[field].(string); strings.TrimSpace(v) != "" {
+			return v, nil
+		}
+	}
+	return "", errors.New("no node reported a port list for " + tunnelName)
+}

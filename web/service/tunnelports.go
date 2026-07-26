@@ -67,7 +67,17 @@ func (s *TunnelService) CheckPorts(name string) ([]PortCheck, error) {
 		return nil, nil
 	}
 
-	entries := parsePortEntries(str(spec.field), spec.protoForm)
+	list := str(spec.field)
+	if strings.TrimSpace(list) == "" {
+		// The port map belongs to whichever half ACCEPTS client connections — the
+		// Iran side. This panel runs the other half, whose config carries no list
+		// at all, so reading only the local tunnel showed "nothing to check" for a
+		// pair that was forwarding perfectly well. Ask the node for its half.
+		if remote, err := (&NodeService{}).remotePortList(name, spec.field); err == nil {
+			list = remote
+		}
+	}
+	entries := parsePortEntries(list, spec.protoForm)
 	if len(entries) == 0 {
 		return nil, nil
 	}
@@ -192,4 +202,40 @@ func scanProcNet(path, proto string, port int) bool {
 		return true
 	}
 	return false
+}
+
+// FieldsMerged is Fields with the port list filled in from the node's half when
+// this side has none.
+//
+// Only the client-accepting half (Iran) stores the port map, so the edit dialog
+// opened on an empty field: existing ports were invisible and adding one wrote a
+// list containing just the new port, silently dropping the rest.
+func (s *TunnelService) FieldsMerged(name string) (json.RawMessage, error) {
+	raw, err := s.Fields(name)
+	if err != nil {
+		return nil, err
+	}
+	var fields []struct {
+		Key   string `json:"key"`
+		Value string `json:"value"`
+	}
+	if json.Unmarshal(raw, &fields) != nil {
+		return raw, nil // hand back what we have rather than fail the dialog
+	}
+	for i, f := range fields {
+		if !strings.HasSuffix(f.Key, "_PORTS") && f.Key != "FORWARDS" {
+			continue
+		}
+		if strings.TrimSpace(f.Value) != "" {
+			continue
+		}
+		if remote, rerr := (&NodeService{}).remotePortList(name, f.Key); rerr == nil {
+			fields[i].Value = remote
+		}
+	}
+	merged, merr := json.Marshal(fields)
+	if merr != nil {
+		return raw, nil
+	}
+	return merged, nil
 }

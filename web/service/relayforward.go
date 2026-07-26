@@ -2,6 +2,7 @@ package service
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 
 	"github.com/mhsanaei/3x-ui/v2/database/model"
@@ -175,4 +176,53 @@ func (s *InboundService) SyncRelayForwards(inbound *model.Inbound) {
 			}
 		}
 	}
+}
+
+// tunnelPortSpec describes how one tunnel protocol expresses its client
+// port-forwards, and whether it can carry UDP at all.
+//
+// The two shapes are not interchangeable. GRE and Paqet keep a FORWARDS list of
+// "proto:local:dest" and program iptables, so they relay either protocol. The
+// userspace relays keep a "<PREFIX>_PORTS" map of "local=dest" with no protocol
+// field, because they proxy TCP streams only — backhaul and backpack even write
+// accept_udp = false into their config.
+//
+// That distinction is the difference between a forward that works and one that
+// is accepted and silently carries nothing, which is exactly how a UDP service
+// behind a TCP-only tunnel presents itself: the relay listens, the client
+// connects, and the far end logs "connection refused".
+type tunnelPortSpec struct {
+	field     string // settings key holding the forward list
+	protoForm bool   // true: "proto:local:dest"; false: "local=dest"
+	udp       bool   // can this tunnel carry UDP?
+}
+
+func tunnelPortSpecFor(protocol string) (tunnelPortSpec, bool) {
+	switch strings.ToLower(strings.TrimSpace(protocol)) {
+	case "gre":
+		return tunnelPortSpec{"FORWARDS", true, true}, true
+	case "paqet":
+		return tunnelPortSpec{"FORWARDS", true, true}, true
+	case "hysteria":
+		return tunnelPortSpec{"HY_PORTS", false, true}, true
+	case "gost":
+		return tunnelPortSpec{"GO_PORTS", false, false}, true
+	case "backpack":
+		return tunnelPortSpec{"BP_PORTS", false, false}, true
+	case "backhaul":
+		return tunnelPortSpec{"BH_PORTS", false, false}, true
+	case "rathole":
+		return tunnelPortSpec{"RH_PORTS", false, false}, true
+	case "frp":
+		return tunnelPortSpec{"FRP_PORTS", false, false}, true
+	}
+	return tunnelPortSpec{}, false
+}
+
+// entry renders one forward in this tunnel's own syntax.
+func (s tunnelPortSpec) entry(proto string, port int) string {
+	if s.protoForm {
+		return fmt.Sprintf("%s:%d:%d", proto, port, port)
+	}
+	return fmt.Sprintf("%d=%d", port, port)
 }

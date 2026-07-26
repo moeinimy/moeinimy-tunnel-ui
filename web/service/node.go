@@ -441,42 +441,54 @@ func (s *NodeService) EnsureForward(dest, proto string, port int) (string, error
 		return "", nil
 	}
 
-	name, mode, forwards, err := s.forwardingTunnel(id)
+	t, err := s.forwardingTunnel(id)
 	if err != nil {
 		return "", err
 	}
-	if name == "" {
+	if t.name == "" {
 		return "", errors.New("this node has no tunnel yet — create one on the Tunnels page first")
 	}
-	// FORWARD_MODE=all already relays every port; adding an entry would be noise
-	// and the entry list is ignored in that mode anyway.
-	if mode == "all" {
+	// FORWARD_MODE=all already relays every port; the entry list is ignored there.
+	if t.mode == "all" {
 		return "", nil
 	}
+	spec, known := tunnelPortSpecFor(t.protocol)
+	if !known {
+		return "", fmt.Errorf("tunnel %q uses protocol %q, which this panel cannot configure forwards for",
+			t.name, t.protocol)
+	}
+	// Saying this plainly is the whole point: a UDP service behind a TCP-only
+	// relay fails as "connection refused" on the far side, with nothing in the
+	// panel hinting that the tunnel was never able to carry it.
+	if proto == "udp" && !spec.udp {
+		return "", fmt.Errorf("tunnel %q (%s) carries TCP only, so it cannot relay UDP port %d — "+
+			"use GRE, Paqet or Hysteria for that, or run the service over TCP",
+			t.name, t.protocol, port)
+	}
 
-	entry := fmt.Sprintf("%s:%d:%d", proto, port, port)
-	for _, f := range strings.Split(forwards, ";") {
+	entry := spec.entry(proto, port)
+	sep := ";"
+	for _, f := range strings.Split(t.forwards, sep) {
 		if strings.TrimSpace(f) == entry {
 			return "", nil // already forwarded
 		}
 	}
 	updated := entry
-	if strings.TrimSpace(forwards) != "" {
-		updated = strings.TrimRight(forwards, ";") + ";" + entry
+	if strings.TrimSpace(t.forwards) != "" {
+		updated = strings.TrimRight(t.forwards, sep) + sep + entry
 	}
-	if _, err := s.Exec(id, []string{"set", name, "FORWARDS", updated}); err != nil {
+	if _, err := s.Exec(id, []string{"set", t.name, spec.field, updated}); err != nil {
 		return "", err
 	}
-	// The rules are rebuilt when the tunnel restarts.
-	if _, err := s.Exec(id, []string{"restart", name}); err != nil {
+	// The relay only picks up a new port map on restart.
+	if _, err := s.Exec(id, []string{"restart", t.name}); err != nil {
 		return "", err
 	}
-	return fmt.Sprintf("%s → %s on %s", entry, name, s.NameOf(id)), nil
+	return fmt.Sprintf("%s → %s on %s", entry, t.name, s.NameOf(id)), nil
 }
 
 // idForAddress resolves a node by the address an operator typed into an external
-// proxy: its dialled-in IP, or its name (a domain pointing at the node is the
-// common case and cannot be matched here, so the IP is the reliable key).
+// proxy: its dialled-in IP, or a hostname that resolves to it.
 func (s *NodeService) idForAddress(addr string) string {
 	addr = strings.TrimSpace(addr)
 	if addr = strings.Trim(addr, "[]"); addr == "" {
@@ -490,8 +502,7 @@ func (s *NodeService) idForAddress(addr string) string {
 			return id
 		}
 	}
-	// Fall back to a hostname that resolves to a node's IP, so an operator who
-	// entered a domain for their own relay still gets the forward.
+	// A domain pointing at one of our nodes is the common case, so resolve it.
 	if ips, err := net.LookupHost(addr); err == nil {
 		for _, ip := range ips {
 			for id, n := range nodeReg.nodes {
@@ -504,21 +515,29 @@ func (s *NodeService) idForAddress(addr string) string {
 	return ""
 }
 
-// forwardingTunnel picks the tunnel on a node that relays client ports, and
-// reports its name, FORWARD_MODE and current FORWARDS.
-func (s *NodeService) forwardingTunnel(id string) (name, mode, forwards string, err error) {
+// nodeTunnel is the relaying tunnel found on a node.
+type nodeTunnel struct {
+	name     string
+	protocol string
+	mode     string
+	forwards string
+}
+
+// forwardingTunnel picks the tunnel on a node that relays client ports.
+func (s *NodeService) forwardingTunnel(id string) (nodeTunnel, error) {
+	var found nodeTunnel
 	raw, err := s.Exec(id, []string{"json", "list"})
 	if err != nil {
-		return "", "", "", err
+		return found, err
 	}
 	var list []struct {
 		Name string `json:"name"`
 	}
 	if err := json.Unmarshal([]byte(strings.TrimSpace(raw)), &list); err != nil {
-		return "", "", "", fmt.Errorf("could not read the node's tunnel list: %w", err)
+		return found, fmt.Errorf("could not read the node's tunnel list: %w", err)
 	}
-	for _, t := range list {
-		detail, derr := s.Exec(id, []string{"json", "tunnel", t.Name})
+	for _, item := range list {
+		detail, derr := s.Exec(id, []string{"json", "tunnel", item.Name})
 		if derr != nil {
 			continue
 		}
@@ -530,23 +549,30 @@ func (s *NodeService) forwardingTunnel(id string) (name, mode, forwards string, 
 			v, _ := d[k].(string)
 			return v
 		}
-		fm := str("FORWARD_MODE")
-		if fm == "" {
-			fm = str("TRAFFIC_TYPE")
+		protocol := str("PROTOCOL")
+		spec, known := tunnelPortSpecFor(protocol)
+		mode := str("FORWARD_MODE")
+		if mode == "" {
+			mode = str("TRAFFIC_TYPE")
 		}
-		// Prefer a tunnel that is already relaying ports; remember the first one
-		// seen so a single-tunnel node still gets configured.
-		if fm == "ports" || fm == "all" || fm == "port-forward" {
-			if fm == "port-forward" {
-				fm = "ports"
-			}
-			return t.Name, fm, str("FORWARDS"), nil
+		if mode == "port-forward" {
+			mode = "ports"
 		}
-		if name == "" {
-			name, mode, forwards = t.Name, fm, str("FORWARDS")
+		forwards := ""
+		if known {
+			forwards = str(spec.field)
+		}
+		cur := nodeTunnel{item.Name, protocol, mode, forwards}
+		// Prefer a tunnel already set up to relay ports; otherwise remember the
+		// first one, so a single-tunnel node still gets configured.
+		if mode == "ports" || mode == "all" {
+			return cur, nil
+		}
+		if found.name == "" {
+			found = cur
 		}
 	}
-	return name, mode, forwards, nil
+	return found, nil
 }
 
 // Remove deletes a node.

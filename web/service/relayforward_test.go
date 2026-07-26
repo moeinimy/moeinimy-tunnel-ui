@@ -29,29 +29,35 @@ func TestOpenVPNForwardsFollowItsTransport(t *testing.T) {
 	}{
 		{
 			name:     "default udp+tcp, separate tcp port",
-			settings: `{"proto":"udp","tcpPort":1195,"separatePorts":true}`,
+			settings: `{"udpEnable":true,"tcpEnable":true,"tcpPort":1195,"separatePorts":true}`,
 			port:     1194,
 			wantUDP:  []int{1194},
 			wantTCP:  []int{1195},
 		},
 		{
 			name:     "udp only",
-			settings: `{"proto":"udp","tcpEnable":false}`,
+			settings: `{"udpEnable":true,"tcpEnable":false}`,
 			port:     1194,
 			wantUDP:  []int{1194},
 		},
 		{
 			name:     "tcp only",
-			settings: `{"proto":"tcp","tcpEnable":true,"separatePorts":false}`,
+			settings: `{"udpEnable":false,"tcpEnable":true,"separatePorts":false}`,
 			port:     443,
 			wantTCP:  []int{443},
 		},
 		{
 			name:     "both on one port",
-			settings: `{"proto":"udp","tcpEnable":true,"separatePorts":false}`,
+			settings: `{"udpEnable":true,"tcpEnable":true,"separatePorts":false}`,
 			port:     1194,
 			wantUDP:  []int{1194},
 			wantTCP:  []int{1194},
+		},
+		{
+			name:     "udp off, tcp on a separate port (the reported case)",
+			settings: `{"udpEnable":false,"tcpEnable":true,"tcpPort":2095,"separatePorts":true}`,
+			port:     1195,
+			wantTCP:  []int{2095},
 		},
 		{
 			name:     "unparseable settings still forwards udp",

@@ -83,32 +83,24 @@ func inboundForwards(inbound *model.Inbound) []relayForward {
 // openvpnForwards reads the inbound's own transport settings: OpenVPN can run
 // UDP, TCP, or both, optionally on a second port, and forwarding the wrong one
 // leaves clients hanging.
+// It reads the inbound's real settings type rather than a local copy of the
+// fields: an earlier version declared its own struct with a "proto" key that
+// does not exist in the stored JSON, so it always saw the zero value, always
+// concluded UDP was in use, and asked the relay for a UDP forward even on a
+// TCP-only inbound.
 func openvpnForwards(inbound *model.Inbound) []relayForward {
-	var s struct {
-		Proto         string `json:"proto"`
-		TcpEnable     *bool  `json:"tcpEnable"`
-		TcpPort       int    `json:"tcpPort"`
-		SeparatePorts *bool  `json:"separatePorts"`
-	}
-	if json.Unmarshal([]byte(inbound.Settings), &s) != nil {
+	var o openvpnSettings
+	if json.Unmarshal([]byte(inbound.Settings), &o) != nil {
 		return []relayForward{{"udp", inbound.Port}}
 	}
-
 	var out []relayForward
-	if !strings.EqualFold(s.Proto, "tcp") {
+	// UDP always listens on the inbound's own port; TCP may share it or have its
+	// own, which is what tcpListenPort decides.
+	if o.udpEnabled() {
 		out = append(out, relayForward{"udp", inbound.Port})
 	}
-	// tcpEnable is nil-means-enabled, matching openvpnSettings.
-	if s.TcpEnable == nil || *s.TcpEnable {
-		tcpPort := inbound.Port
-		// separatePorts nil means the legacy layout, where TCP used tcpPort.
-		if (s.SeparatePorts == nil || *s.SeparatePorts) && s.TcpPort > 0 {
-			tcpPort = s.TcpPort
-		}
-		out = append(out, relayForward{"tcp", tcpPort})
-	}
-	if len(out) == 0 {
-		out = append(out, relayForward{"udp", inbound.Port})
+	if o.tcpEnabled() {
+		out = append(out, relayForward{"tcp", o.tcpListenPort(inbound.Port)})
 	}
 	return out
 }

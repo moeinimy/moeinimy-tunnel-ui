@@ -5,6 +5,8 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"net"
 	"os"
 	"strings"
 	"sync"
@@ -409,6 +411,142 @@ func (s *NodeService) RemoveTunnelEverywhere(name string) []string {
 		}
 	}
 	return removed
+}
+
+// EnsureForward makes the node reachable at dest relay port/proto to the panel.
+//
+// Setting an "external proxy" on an inbound only rewrites the address handed to
+// clients — it points them at the Iran node but nothing there listens on that
+// port, so the connection dies at the relay. This closes that half: the node's
+// port-forwarding tunnel learns the port, with the protocol the inbound actually
+// speaks (OpenVPN is UDP; a tcp-only forward carries nothing).
+//
+// Best effort by design: it needs the node online, and an inbound must still
+// save when the relay is unreachable. The returned string says what happened so
+// the caller can surface it; err is only for a genuine failure to apply.
+func (s *NodeService) EnsureForward(dest, proto string, port int) (string, error) {
+	if port <= 0 || dest == "" {
+		return "", nil
+	}
+	switch proto {
+	case "tcp", "udp":
+	default:
+		return "", fmt.Errorf("unsupported forward protocol %q", proto)
+	}
+
+	id := s.idForAddress(dest)
+	if id == "" {
+		// dest is not one of our nodes (a CDN, a third-party relay); the operator
+		// owns that path, so there is nothing for us to configure.
+		return "", nil
+	}
+
+	name, mode, forwards, err := s.forwardingTunnel(id)
+	if err != nil {
+		return "", err
+	}
+	if name == "" {
+		return "", errors.New("this node has no tunnel yet — create one on the Tunnels page first")
+	}
+	// FORWARD_MODE=all already relays every port; adding an entry would be noise
+	// and the entry list is ignored in that mode anyway.
+	if mode == "all" {
+		return "", nil
+	}
+
+	entry := fmt.Sprintf("%s:%d:%d", proto, port, port)
+	for _, f := range strings.Split(forwards, ";") {
+		if strings.TrimSpace(f) == entry {
+			return "", nil // already forwarded
+		}
+	}
+	updated := entry
+	if strings.TrimSpace(forwards) != "" {
+		updated = strings.TrimRight(forwards, ";") + ";" + entry
+	}
+	if _, err := s.Exec(id, []string{"set", name, "FORWARDS", updated}); err != nil {
+		return "", err
+	}
+	// The rules are rebuilt when the tunnel restarts.
+	if _, err := s.Exec(id, []string{"restart", name}); err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("%s → %s on %s", entry, name, s.NameOf(id)), nil
+}
+
+// idForAddress resolves a node by the address an operator typed into an external
+// proxy: its dialled-in IP, or its name (a domain pointing at the node is the
+// common case and cannot be matched here, so the IP is the reliable key).
+func (s *NodeService) idForAddress(addr string) string {
+	addr = strings.TrimSpace(addr)
+	if addr = strings.Trim(addr, "[]"); addr == "" {
+		return ""
+	}
+	nodeReg.mu.Lock()
+	defer nodeReg.mu.Unlock()
+	nodeReg.load()
+	for id, n := range nodeReg.nodes {
+		if n.remoteIP != "" && strings.EqualFold(n.remoteIP, addr) {
+			return id
+		}
+	}
+	// Fall back to a hostname that resolves to a node's IP, so an operator who
+	// entered a domain for their own relay still gets the forward.
+	if ips, err := net.LookupHost(addr); err == nil {
+		for _, ip := range ips {
+			for id, n := range nodeReg.nodes {
+				if n.remoteIP != "" && n.remoteIP == ip {
+					return id
+				}
+			}
+		}
+	}
+	return ""
+}
+
+// forwardingTunnel picks the tunnel on a node that relays client ports, and
+// reports its name, FORWARD_MODE and current FORWARDS.
+func (s *NodeService) forwardingTunnel(id string) (name, mode, forwards string, err error) {
+	raw, err := s.Exec(id, []string{"json", "list"})
+	if err != nil {
+		return "", "", "", err
+	}
+	var list []struct {
+		Name string `json:"name"`
+	}
+	if err := json.Unmarshal([]byte(strings.TrimSpace(raw)), &list); err != nil {
+		return "", "", "", fmt.Errorf("could not read the node's tunnel list: %w", err)
+	}
+	for _, t := range list {
+		detail, derr := s.Exec(id, []string{"json", "tunnel", t.Name})
+		if derr != nil {
+			continue
+		}
+		var d map[string]any
+		if json.Unmarshal([]byte(strings.TrimSpace(detail)), &d) != nil {
+			continue
+		}
+		str := func(k string) string {
+			v, _ := d[k].(string)
+			return v
+		}
+		fm := str("FORWARD_MODE")
+		if fm == "" {
+			fm = str("TRAFFIC_TYPE")
+		}
+		// Prefer a tunnel that is already relaying ports; remember the first one
+		// seen so a single-tunnel node still gets configured.
+		if fm == "ports" || fm == "all" || fm == "port-forward" {
+			if fm == "port-forward" {
+				fm = "ports"
+			}
+			return t.Name, fm, str("FORWARDS"), nil
+		}
+		if name == "" {
+			name, mode, forwards = t.Name, fm, str("FORWARDS")
+		}
+	}
+	return name, mode, forwards, nil
 }
 
 // Remove deletes a node.

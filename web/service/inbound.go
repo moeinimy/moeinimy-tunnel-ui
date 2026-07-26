@@ -833,6 +833,12 @@ func (s *InboundService) AddInbound(inbound *model.Inbound) (*model.Inbound, boo
 		}
 	}
 
+	// If this inbound hands clients a relay address, make the relay carry its
+	// ports. Runs after the inbound is committed so a relay problem can never
+	// block the save, and in the background because reaching a node costs a
+	// round trip the operator should not wait on.
+	go s.SyncRelayForwards(inbound)
+
 	return inbound, needRestart, err
 }
 
@@ -1092,7 +1098,13 @@ func (s *InboundService) UpdateInbound(inbound *model.Inbound) (*model.Inbound, 
 		s.xrayApi.Close()
 	}
 
-	return inbound, needRestart, tx.Save(oldInbound).Error
+	saveErr := tx.Save(oldInbound).Error
+	if saveErr == nil {
+		// Same as AddInbound: an edit can add an external proxy, change the port
+		// or switch transport, and the relay has to follow.
+		go s.SyncRelayForwards(oldInbound)
+	}
+	return inbound, needRestart, saveErr
 }
 
 func (s *InboundService) buildRuntimeInboundForAPI(tx *gorm.DB, inbound *model.Inbound) (*model.Inbound, error) {

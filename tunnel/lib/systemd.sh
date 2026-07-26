@@ -70,7 +70,15 @@ svc_ip_sample() {
     # report zero instead of a bogus 18-exabyte reading.
     [[ "$rx" =~ ^[0-9]+$ && "$rx" != 18446744073709551615 ]] || rx=0
     [[ "$tx" =~ ^[0-9]+$ && "$tx" != 18446744073709551615 ]] || tx=0
-    printf '%s %s' "$rx" "$tx"
+    # A relay touches every byte twice: it reads a byte off one socket and
+    # writes it to the other. So the cgroup counts an upload byte once as
+    # ingress (from the user) and once as egress (to the peer), and a download
+    # byte the same way — leaving both counters at upload+download, i.e. double
+    # the real volume. Halving makes the reported total exact. The per-direction
+    # split is necessarily an estimate: cgroup accounting cannot tell a user
+    # socket from a peer socket. GRE is unaffected — it reads netdev counters,
+    # which see each packet once.
+    printf '%s %s' "$(( rx / 2 ))" "$(( tx / 2 ))"
 }
 
 svc_start()   { systemctl start   "$(unit_name "$1")"; }

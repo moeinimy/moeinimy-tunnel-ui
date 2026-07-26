@@ -199,3 +199,71 @@ cpu_arch() {
         *)                  echo unsupported ;;
     esac
 }
+
+# --- TCP MSS clamping for userspace tunnels ---------------------------------
+# Userspace tunnels (BackPack, Backhaul, GOST, rathole, frp, Paqet) carry user
+# traffic inside an ordinary TCP connection between the two servers. That
+# connection is bound by the path MTU, and on a path that both undersizes the
+# MTU and drops the ICMP "fragmentation needed" replies — measured to be exactly
+# the Iran<->EU case here — full-size segments vanish silently while small ones
+# get through. The tunnel therefore looks perfectly healthy (ping fine, control
+# connection up, Telegram fine) yet anything that needs sustained large segments
+# stalls: pages hang, video buffers a few seconds and stops. Clients on mobile
+# escape it because carriers already hand out a smaller MTU.
+#
+# net.ipv4.tcp_mtu_probing only recovers *after* a connection has stalled, which
+# is why the failure shows up as "loads a little, then waits". Clamping the MSS
+# up front avoids the stall instead of recovering from it.
+#
+# GRE is excluded: it clamps per-device in its own driver, where it can account
+# for the 24-byte encapsulation overhead.
+: "${TM_TUNNEL_MSS:=1360}"
+
+# _tun_mss_port — the port of the tunnel's own inter-server connection. Found
+# generically so this stays protocol-agnostic, like the rest of the driver
+# contract: every driver names it <PREFIX>_PORT (BP_PORT, BH_PORT, PAQET_PORT).
+# The match is deliberately anchored to a single-word prefix so that local-only
+# listeners with a longer name — PAQET_SOCKS_PORT — are never picked instead;
+# clamping those would put the rule on the wrong port. Keys are sorted so the
+# choice cannot vary with bash's hash ordering.
+_tun_mss_port() {
+    local k
+    while read -r k; do
+        [[ "$k" =~ ^[A-Z0-9]+_PORT$ ]] || continue
+        if [[ "${TUN[$k]}" =~ ^[0-9]+$ ]]; then printf '%s' "${TUN[$k]}"; return 0; fi
+    done < <(printf '%s\n' "${!TUN[@]}" | sort)
+    return 1
+}
+
+# tun_mss_apply / tun_mss_revert — add/remove the clamp for the loaded tunnel.
+# Two rules cover both roles without needing to know which this server is: our
+# SYN when we dial out (client) and our SYN-ACK when we accept (server). Scoping
+# to the tunnel's own port keeps every other service on the box untouched.
+tun_mss_apply() {
+    if [[ "${TUN[PROTOCOL]:-}" == gre ]]; then return 0; fi
+    if ! have iptables; then return 0; fi
+    local port dir
+    port="$(_tun_mss_port)" || return 0
+    for dir in --dport --sport; do
+        iptables -t mangle -C OUTPUT -p tcp "$dir" "$port" --tcp-flags SYN,RST SYN \
+            -j TCPMSS --set-mss "$TM_TUNNEL_MSS" 2>/dev/null \
+        || iptables -t mangle -A OUTPUT -p tcp "$dir" "$port" --tcp-flags SYN,RST SYN \
+            -j TCPMSS --set-mss "$TM_TUNNEL_MSS" 2>/dev/null || true
+    done
+    return 0
+}
+
+tun_mss_revert() {
+    if [[ "${TUN[PROTOCOL]:-}" == gre ]]; then return 0; fi
+    if ! have iptables; then return 0; fi
+    local port dir
+    port="$(_tun_mss_port)" || return 0
+    for dir in --dport --sport; do
+        while iptables -t mangle -C OUTPUT -p tcp "$dir" "$port" --tcp-flags SYN,RST SYN \
+                -j TCPMSS --set-mss "$TM_TUNNEL_MSS" 2>/dev/null; do
+            iptables -t mangle -D OUTPUT -p tcp "$dir" "$port" --tcp-flags SYN,RST SYN \
+                -j TCPMSS --set-mss "$TM_TUNNEL_MSS" 2>/dev/null || break
+        done
+    done
+    return 0
+}

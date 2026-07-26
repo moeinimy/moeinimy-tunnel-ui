@@ -30,8 +30,11 @@ _driver_fn() {
 }
 
 driver_validate()    { _driver_fn validate "$@"; }
-driver_up()          { _driver_fn up "$@"; }
-driver_down()        { _driver_fn down "$@"; }
+# The MSS clamp is applied here rather than inside each driver so every
+# userspace protocol gets it from one place (tun_mss_apply skips GRE, which
+# clamps per-device in its own driver). See lib/common.sh for why it is needed.
+driver_up()          { _driver_fn up "$@" && tun_mss_apply; }
+driver_down()        { tun_mss_revert; _driver_fn down "$@"; }
 driver_render_unit() { _driver_fn render_unit "$@"; }
 driver_status()      { _driver_fn status "$@"; }
 driver_wizard()      { _driver_fn wizard "$@"; }

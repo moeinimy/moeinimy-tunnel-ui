@@ -609,7 +609,7 @@ func (s *RadiusService) lookupClient(protocol string, inboundId int, username st
 		return "", fmt.Errorf("inbound %d disabled", inboundId)
 	}
 
-	if string(inbound.Protocol) != protocol {
+	if !inboundServesProtocol(&inbound, protocol) {
 		return "", fmt.Errorf("inbound %d protocol mismatch: expected %s got %s", inboundId, protocol, inbound.Protocol)
 	}
 
@@ -900,10 +900,19 @@ func parseNASIdentifier(nasID string) (protocol string, inboundId int, err error
 func (s *RadiusService) findClientInbound(protocol, username string) (*model.Inbound, error) {
 	db := database.GetDB()
 	var inbounds []*model.Inbound
-	if err := db.Where("protocol = ? AND enable = ?", protocol, true).Find(&inbounds).Error; err != nil {
+	protocols := []string{protocol}
+	if protocol == string(model.L2TP) {
+		// An OpenVPN inbound can serve its accounts over L2TP too, so those have
+		// to be searched as well or the account is "not found" on the L2TP side.
+		protocols = append(protocols, string(model.OPENVPN))
+	}
+	if err := db.Where("protocol IN ? AND enable = ?", protocols, true).Find(&inbounds).Error; err != nil {
 		return nil, err
 	}
 	for _, inbound := range inbounds {
+		if !inboundServesProtocol(inbound, protocol) {
+			continue
+		}
 		var settings struct {
 			Clients []struct {
 				ID    string `json:"id"`
@@ -954,6 +963,11 @@ func (s *RadiusService) getClientIP(protocol string, inboundId int, username, st
 		UserLimit         *int          `json:"userLimit"` // nil = absent (legacy => 1); 0 = no limit
 		UserLimitStrategy string        `json:"userLimitStrategy"`
 		Clients           []clientEntry `json:"clients"`
+		// Only set on an OpenVPN inbound that also serves L2TP. Its L2TP sessions
+		// draw from here instead of IpRanges: the same account can hold both an
+		// OpenVPN and an L2TP session, and the address is derived from the
+		// account's slot — one shared pool would hand them the same IP.
+		L2tpIpRanges []string `json:"l2tpIpRanges"`
 	}
 
 	var settings settingsJSON
@@ -979,6 +993,11 @@ func (s *RadiusService) getClientIP(protocol string, inboundId int, username, st
 	ranges := settings.IpRanges
 	if len(ranges) == 0 && settings.IpRange != "" {
 		ranges = []string{settings.IpRange}
+	}
+	// An L2TP session on an OpenVPN inbound uses that inbound's L2TP pool.
+	if protocol == string(model.L2TP) && inbound.Protocol == model.OPENVPN &&
+		len(settings.L2tpIpRanges) > 0 {
+		ranges = settings.L2tpIpRanges
 	}
 
 	email := settings.Clients[clientIndex].Email
@@ -1677,4 +1696,22 @@ ATTRIBUTE	MS-CHAP2-Response	25	string	Microsoft
 ATTRIBUTE	MS-CHAP2-Success	26	string	Microsoft
 `
 	return os.WriteFile(dir+"/dictionary", []byte(dict), 0644)
+}
+
+// inboundServesProtocol reports whether an inbound answers RADIUS requests for
+// the given protocol. Normally that means its own protocol and nothing else —
+// an account must not authenticate against a service it was not created for.
+//
+// The one exception is an OpenVPN inbound that opted in to serving L2TP/IPsec
+// (openvpnSettings.L2tpEnable + a PSK), which exists so a single account works
+// from both an .ovpn profile and a phone's built-in L2TP client. Without the
+// opt-in the answer stays a flat no, so enabling it is always deliberate.
+func inboundServesProtocol(inbound *model.Inbound, protocol string) bool {
+	if inbound == nil {
+		return false
+	}
+	if string(inbound.Protocol) == protocol {
+		return true
+	}
+	return protocol == string(model.L2TP) && openvpnServesL2tp(inbound)
 }

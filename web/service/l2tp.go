@@ -67,20 +67,92 @@ func (s *L2tpService) getRadiusSecret() string {
 	return secret
 }
 
+// GetL2tpInbounds returns everything the L2TP stack must serve: the l2tp
+// inbounds, plus any OpenVPN inbound that opted in to serving its own accounts
+// over L2TP/IPsec as well (openvpnSettings.L2tpEnable). Callers reach the
+// settings through parseSettings, which normalises both shapes, so every
+// generator below treats them alike.
 func (s *L2tpService) GetL2tpInbounds() ([]*model.Inbound, error) {
 	db := database.GetDB()
 	var inbounds []*model.Inbound
-	err := db.Model(model.Inbound{}).Where("protocol = ?", "l2tp").Find(&inbounds).Error
-	return inbounds, err
+	err := db.Model(model.Inbound{}).
+		Where("protocol IN ?", []string{string(model.L2TP), string(model.OPENVPN)}).
+		Find(&inbounds).Error
+	if err != nil {
+		return nil, err
+	}
+	out := inbounds[:0]
+	for _, in := range inbounds {
+		if in.Protocol == model.OPENVPN && !openvpnServesL2tp(in) {
+			continue
+		}
+		out = append(out, in)
+	}
+	return out, nil
 }
 
+// openvpnServesL2tp reports whether an OpenVPN inbound also answers L2TP.
+func openvpnServesL2tp(inbound *model.Inbound) bool {
+	if inbound == nil || inbound.Protocol != model.OPENVPN {
+		return false
+	}
+	var o openvpnSettings
+	if json.Unmarshal([]byte(inbound.Settings), &o) != nil {
+		return false
+	}
+	enabled, _ := o.l2tpServingSettings()
+	return enabled
+}
+
+// parseSettings reads an inbound's L2TP settings. An OpenVPN inbound serving
+// L2TP is translated into the same shape: the two settings blobs already agree
+// on clients, dns and mtu, so only the IPsec keys and the address pool differ.
 func (s *L2tpService) parseSettings(inbound *model.Inbound) (*l2tpSettings, error) {
+	if inbound.Protocol == model.OPENVPN {
+		return l2tpSettingsFromOpenVpn(inbound)
+	}
 	settings := &l2tpSettings{}
 	err := json.Unmarshal([]byte(inbound.Settings), settings)
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse L2TP settings for inbound %d: %w", inbound.Id, err)
 	}
 	return settings, nil
+}
+
+// l2tpSettingsFromOpenVpn projects an OpenVPN inbound onto the L2TP settings the
+// generators expect. The client roster is shared verbatim — that is the whole
+// point: one account, both protocols.
+func l2tpSettingsFromOpenVpn(inbound *model.Inbound) (*l2tpSettings, error) {
+	var o openvpnSettings
+	if err := json.Unmarshal([]byte(inbound.Settings), &o); err != nil {
+		return nil, fmt.Errorf("failed to parse OpenVPN settings for inbound %d: %w", inbound.Id, err)
+	}
+	enabled, psk := o.l2tpServingSettings()
+	if !enabled {
+		return nil, fmt.Errorf("inbound %d does not serve L2TP", inbound.Id)
+	}
+
+	out := &l2tpSettings{
+		IpsecEnable:       true, // L2TP without IPsec is not offered here; the PSK is required
+		IpsecPsk:          psk,
+		ClientToClient:    o.ClientToClient,
+		CrossInbound:      o.CrossInbound,
+		UserLimit:         o.UserLimit,
+		UserLimitStrategy: o.UserLimitStrategy,
+		// A pool of its own, never IpRanges: one account may hold an OpenVPN and
+		// an L2TP session at the same time, and both are indexed by the client's
+		// slot — sharing the range would assign them the same address.
+		IpRanges: o.L2tpIpRanges,
+		Dns1:     o.Dns1,
+		Dns2:     o.Dns2,
+		Mtu:      o.Mtu,
+	}
+	for _, c := range o.Clients {
+		out.Clients = append(out.Clients, l2tpClient{
+			ID: c.ID, Password: c.Password, Email: c.Email, Enable: c.Enable,
+		})
+	}
+	return out, nil
 }
 
 // effectiveRanges returns the inbound's configured IP ranges, seeding from the

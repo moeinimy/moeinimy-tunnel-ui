@@ -110,6 +110,51 @@
             :disabled="!inbound.settings.clientToClient"
         ></a-switch>
     </a-form-item>
+    <!-- One account, two ways in: the same client list is served over L2TP/IPsec
+         so a phone's built-in VPN client works without a second inbound and a
+         duplicate set of users. -->
+    <a-form-item>
+        <template slot="label">
+            <a-tooltip>
+                <template slot="title">
+                    Serve these same accounts over L2TP/IPsec as well, so one user works with both the .ovpn profile and a phone's built-in L2TP client
+                </template>
+                Also serve L2TP/IPsec
+                <a-icon type="question-circle"></a-icon>
+            </a-tooltip>
+        </template>
+        <a-switch v-model="inbound.settings.l2tpEnable"></a-switch>
+    </a-form-item>
+    <template v-if="inbound.settings.l2tpEnable">
+        <a-form-item>
+            <template slot="label">
+                <a-tooltip>
+                    <template slot="title">
+                        Required. IPsec with no pre-shared key would let anyone negotiate, so the L2TP side stays off until this is set.
+                    </template>
+                    IPsec PSK
+                    <a-icon type="question-circle"></a-icon>
+                </a-tooltip>
+            </template>
+            <a-input v-model.trim="inbound.settings.ipsecPsk" placeholder="pre-shared key"></a-input>
+        </a-form-item>
+        <a-form-item>
+            <template slot="label">
+                <a-tooltip>
+                    <template slot="title">
+                        Address pool for the L2TP side. Kept separate from the OpenVPN ranges above because one account may hold an OpenVPN and an L2TP session at the same time — a shared pool would give both the same IP.
+                    </template>
+                    L2TP IP range
+                    <a-icon type="question-circle"></a-icon>
+                </a-tooltip>
+            </template>
+            <a-input
+                :value="(inbound.settings.l2tpIpRanges || []).join(', ')"
+                @change="e => inbound.settings.l2tpIpRanges = e.target.value.split(',').map(s => s.trim()).filter(s => s)"
+                placeholder="10.7.0.2-10.7.0.254"
+            ></a-input>
+        </a-form-item>
+    </template>
     <a-form-item label="External Proxy">
         <a-switch v-model="ovpnExternalProxy"></a-switch>
         <a-button

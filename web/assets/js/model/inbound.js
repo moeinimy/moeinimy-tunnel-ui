@@ -3865,6 +3865,9 @@ Inbound.OpenvpnSettings = class extends Inbound.Settings {
     serverCertFile = "",
     serverKeyFile = "",
     tlsCryptFile = "",
+    l2tpEnable = false,
+    ipsecPsk = "",
+    l2tpIpRanges = [],
   ) {
     super(protocol);
     this.udpEnable = udpEnable;
@@ -3903,6 +3906,12 @@ Inbound.OpenvpnSettings = class extends Inbound.Settings {
     this.userLimit = userLimit;
     // At the User Limit cap: "reject" a new device, or "accept" (evict oldest).
     this.userLimitStrategy = userLimitStrategy;
+    // L2TP/IPsec served from this same inbound: same accounts, so one user works
+    // with both the .ovpn profile and a phone's built-in L2TP client. The pool is
+    // kept separate from ipRanges because both sessions can be live at once.
+    this.l2tpEnable = l2tpEnable;
+    this.ipsecPsk = ipsecPsk;
+    this.l2tpIpRanges = l2tpIpRanges;
   }
 
   static fromJson(json = {}) {
@@ -3937,6 +3946,9 @@ Inbound.OpenvpnSettings = class extends Inbound.Settings {
       json.serverCertFile ?? "",
       json.serverKeyFile ?? "",
       json.tlsCryptFile ?? "",
+      json.l2tpEnable ?? false,
+      json.ipsecPsk ?? "",
+      Array.isArray(json.l2tpIpRanges) ? json.l2tpIpRanges.slice() : [],
     );
   }
 
@@ -3970,6 +3982,9 @@ Inbound.OpenvpnSettings = class extends Inbound.Settings {
       ipRanges: this.ipRanges || [],
       userLimit: this.userLimit,
       userLimitStrategy: this.userLimitStrategy,
+      l2tpEnable: this.l2tpEnable,
+      ipsecPsk: this.ipsecPsk,
+      l2tpIpRanges: this.l2tpIpRanges || [],
     };
   }
 };

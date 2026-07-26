@@ -65,6 +65,25 @@ type openvpnSettings struct {
 	UserLimitStrategy string              `json:"userLimitStrategy"` // at the cap: "accept" (default, evict oldest) or "reject" (deny new device)
 	IpRanges          []string            `json:"ipRanges"`          // UDP-side /24 ranges; TCP mirrors into 10.3.x. Panel-managed.
 	Clients           []openvpnClient     `json:"clients"`
+
+	// L2TP/IPsec served from this same inbound, so one account works with both
+	// the .ovpn profile and a phone's built-in L2TP client — no second inbound
+	// and no duplicate user list.
+	//
+	// The address pool is deliberately separate from IpRanges: the same account
+	// may hold an OpenVPN and an L2TP session at once, and the pool is indexed by
+	// the client's slot, so a shared range would hand both sessions the same IP.
+	L2tpEnable   bool     `json:"l2tpEnable"`
+	IpsecPsk     string   `json:"ipsecPsk"`
+	L2tpIpRanges []string `json:"l2tpIpRanges"`
+}
+
+// l2tpServingSettings reports whether this OpenVPN inbound also answers L2TP,
+// and the pre-shared key it does so with. IPsec without a PSK would let anyone
+// negotiate, so an empty key disables the L2TP half rather than weakening it.
+func (o *openvpnSettings) l2tpServingSettings() (enabled bool, psk string) {
+	psk = strings.TrimSpace(o.IpsecPsk)
+	return o.L2tpEnable && psk != "", psk
 }
 
 // effectiveRanges returns the inbound's UDP-side (10.2.x) client ranges, or nil

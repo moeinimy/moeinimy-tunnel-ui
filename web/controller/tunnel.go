@@ -6,6 +6,7 @@ import (
 	"net"
 	"net/http"
 	"regexp"
+	"strconv"
 	"strings"
 
 	"github.com/mhsanaei/3x-ui/v2/logger"
@@ -285,6 +286,35 @@ func panelHost(c *gin.Context) string {
 	return h
 }
 
+// nodePanelURL is the base URL the Iran node's control agent polls.
+//
+// The port comes from the panel's OWN listening setting whenever the browser's
+// Host header carries none. Reaching the panel through a proxy or CDN on 443
+// (https://panel.example.com, no port shown) produced a node URL with no port,
+// so the agent polled 443 — where the panel is not listening — and logged
+// "panel returned HTTP 502" forever, while the same panel reached by IP:port
+// worked. The hostname still comes from the request, so a domain stays a domain
+// and an IP stays an IP.
+//
+// A port is only appended when it differs from the scheme's default: a panel
+// genuinely served on 443 must not be handed ":443", which would defeat any
+// front end that answers on the bare name.
+func nodePanelURL(c *gin.Context) string {
+	scheme := "http"
+	if c.Request.TLS != nil || strings.EqualFold(c.GetHeader("X-Forwarded-Proto"), "https") {
+		scheme = "https"
+	}
+	host := c.Request.Host
+	if _, _, err := net.SplitHostPort(host); err != nil {
+		var settingService service.SettingService
+		if port, perr := settingService.GetPort(); perr == nil && port > 0 &&
+			!(scheme == "https" && port == 443) && !(scheme == "http" && port == 80) {
+			host = net.JoinHostPort(host, strconv.Itoa(port))
+		}
+	}
+	return scheme + "://" + host + c.GetString("base_path")
+}
+
 type pairReq struct {
 	NodeID   string            `json:"nodeId"`
 	Name     string            `json:"name"`
@@ -381,11 +411,7 @@ func (a *TunnelController) nodeCreate(c *gin.Context) {
 	}
 	id, token := a.nodeService.Create(name, setup)
 
-	scheme := "http"
-	if c.Request.TLS != nil || strings.EqualFold(c.GetHeader("X-Forwarded-Proto"), "https") {
-		scheme = "https"
-	}
-	panelURL := scheme + "://" + c.Request.Host + c.GetString("base_path")
+	panelURL := nodePanelURL(c)
 	oneliner := "bash <(curl -fsSL https://raw.githubusercontent.com/" + nodeRepo +
 		"/main/scripts/install.sh) --iran --panel " + panelURL + " --token " + token
 

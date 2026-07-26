@@ -9,9 +9,19 @@
 selfupdate_run() {
     require_root
     ui_title "Update"
-    local current latest
+    local current latest remote
     current="$(cat "$TM_HOME/VERSION" 2>/dev/null || echo unknown)"
     log_info "Installed version: $current  (repo: $TM_REPO)"
+    # Say WHERE the version was read from and what the branch is offering. When
+    # "update" appeared to do nothing, the log gave no way to tell whether the
+    # branch simply had nothing newer, whether TM_REPO pointed somewhere stale,
+    # or whether TM_HOME was not the directory install.sh writes to.
+    log_info "Reading version from: $TM_HOME/VERSION"
+    if remote="$(selfupdate_check)"; then
+        log_info "Branch ${TM_BRANCH} is offering: $remote"
+    else
+        log_info "Branch ${TM_BRANCH} reports the same version — refreshing the code anyway."
+    fi
 
     if [[ -d "$TM_HOME/.git" ]] && have git; then
         log_info "Updating via git…"
@@ -23,6 +33,15 @@ selfupdate_run() {
     fi
 
     latest="$(cat "$TM_HOME/VERSION" 2>/dev/null || echo unknown)"
+    # install.sh always writes to /opt/tunnel-manager. If tunnelctl is being run
+    # from somewhere else (a source checkout, a stale symlink), the files DID
+    # update but this VERSION never moves — which looks exactly like a broken
+    # update button. Name both paths rather than leave that invisible.
+    if [[ "$TM_HOME" != "/opt/tunnel-manager" && -f /opt/tunnel-manager/VERSION ]]; then
+        log_warn "This tunnelctl runs from $TM_HOME, but the installer writes to /opt/tunnel-manager"
+        log_warn "  (now $(cat /opt/tunnel-manager/VERSION 2>/dev/null)). Re-link with:"
+        log_warn "  ln -sf /opt/tunnel-manager/tunnelctl /usr/local/bin/tunnelctl"
+    fi
     # The version only moves when the backend's VERSION file does, but `update`
     # always refreshes the code from the branch tip. Reporting a bare
     # "3.0.0 -> 3.0.0" reads as "nothing happened" even though new code just

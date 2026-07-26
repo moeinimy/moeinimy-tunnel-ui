@@ -640,6 +640,20 @@ func (s *OpenVpnService) buildServerConfig(inbound *model.Inbound, settings *ope
 	// route, bypassing Xray entirely (mirrors the L2TP/PPTP noipv6 fix).
 	b.WriteString("push \"block-ipv6\"\n")
 	b.WriteString(fmt.Sprintf("tun-mtu %d\n", mtu))
+	// Push the SAME mtu to clients, and clamp inner TCP to match.
+	//
+	// tun-mtu alone only sized the server's end. Clients kept their own default
+	// of 1500 and went on emitting full-size packets, so lowering the inbound's
+	// MTU changed nothing that mattered. Behind a relay — which wraps OpenVPN in
+	// its own encapsulation — those packets no longer fit the path and are
+	// dropped. The handshake is small enough to survive, so the session comes up
+	// and then moves no data: connected, no internet. A direct connection has no
+	// extra header and is unaffected, which is exactly how this presents.
+	//
+	// mssfix makes TCP inside the tunnel negotiate a segment that fits, which
+	// covers the case even when a client ignores the pushed mtu.
+	b.WriteString(fmt.Sprintf("push \"tun-mtu %d\"\n", mtu))
+	b.WriteString(fmt.Sprintf("mssfix %d\n", ovpnMssFor(mtu)))
 	caPath, certPath, keyPath, tcPath := s.certPaths(inbound, settings)
 	b.WriteString(fmt.Sprintf("ca %s\n", caPath))
 	b.WriteString(fmt.Sprintf("cert %s\n", certPath))
@@ -894,6 +908,15 @@ func (s *OpenVpnService) GenerateClientConfig(inbound *model.Inbound, proto stri
 		b.WriteString("explicit-exit-notify 3\n")
 	}
 	b.WriteString("remote-cert-tls server\n")
+	clientMtu := settings.Mtu
+	if clientMtu <= 0 {
+		clientMtu = 1500
+	}
+	// Carry the tunnel MTU in the profile itself, not only as a server push: a
+	// client that ignores or never receives the push would otherwise keep its
+	// 1500-byte default and stall the moment real data flows through a relay.
+	b.WriteString(fmt.Sprintf("tun-mtu %d\n", clientMtu))
+	b.WriteString(fmt.Sprintf("mssfix %d\n", ovpnMssFor(clientMtu)))
 	b.WriteString("auth-user-pass\n")
 	// This profile authenticates by username/password only and carries no
 	// <cert>/<key> (the server runs `verify-client-cert none`). OpenVPN Connect
@@ -1161,4 +1184,15 @@ func (s *OpenVpnService) runCmd(name string, args ...string) error {
 		return err
 	}
 	return nil
+}
+
+// ovpnMssFor is the largest TCP MSS that still fits inside a tunnel of this MTU,
+// leaving room for the IPv4 and TCP headers (20 bytes each). Clamped to a sane
+// floor so a mistyped MTU cannot produce a value no connection can use.
+func ovpnMssFor(mtu int) int {
+	mss := mtu - 40
+	if mss < 500 {
+		mss = 500
+	}
+	return mss
 }

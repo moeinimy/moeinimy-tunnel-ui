@@ -155,6 +155,66 @@ func writeCrossInboundRules(b *strings.Builder, nets []vpnNet) {
 	}
 }
 
+// defaultEgressIface returns the interface the host's default route uses, e.g.
+// "eth0". Empty if it cannot be determined, in which case the caller must skip
+// any rule that would otherwise masquerade onto every interface — including the
+// tun devices, which would break client-to-client.
+func defaultEgressIface() string {
+	out, err := exec.Command("ip", "-4", "route", "show", "default").Output()
+	if err != nil {
+		return ""
+	}
+	fields := strings.Fields(string(out))
+	for i, f := range fields {
+		if f == "dev" && i+1 < len(fields) {
+			return fields[i+1]
+		}
+	}
+	return ""
+}
+
+// writeEgressNatRules gives every VPN client subnet a masquerade on the way out
+// of the host's default interface.
+//
+// This is a FALLBACK, not the data path. When TPROXY works, a client packet is
+// delivered locally to Xray and never reaches nat postrouting with a VPN source
+// address, so these rules match nothing. They matter only when TPROXY does not
+// take the packet — and there the kernel forwards it out of the WAN interface
+// carrying its private source address (10.3.0.2), which no reply can ever come
+// back to. That is the "connects but no traffic at all" black hole: OpenVPN,
+// PPP and the routing were all healthy; the packets simply left unroutable.
+//
+// Older releases masqueraded OpenVPN unconditionally and had no such failure
+// mode. Moving to TPROXY bought Xray routing and per-client stats but made a
+// single unmatched steering rule silently fatal. Keeping the NAT rule behind it
+// restores the old behaviour as the floor: worst case the traffic bypasses
+// Xray's routing and exits directly, which is a degradation the user can see and
+// live with, not a dead connection.
+//
+// Destinations inside VPN space are excluded so client-to-client and
+// cross-inbound traffic keeps its real source address — those verdicts are
+// decided in prerouting and must not be rewritten here.
+func writeEgressNatRules(b *strings.Builder, nets []vpnNet, wan string) {
+	if wan == "" {
+		return
+	}
+	var all []string
+	for _, n := range nets {
+		all = append(all, n.subnets...)
+	}
+	if len(all) == 0 {
+		return
+	}
+	for _, src := range all {
+		for _, dst := range all {
+			b.WriteString(fmt.Sprintf("add rule ip vpn nat_post ip saddr %s ip daddr %s return\n", src, dst))
+		}
+	}
+	for _, src := range all {
+		b.WriteString(fmt.Sprintf("add rule ip vpn nat_post ip saddr %s oifname %q masquerade\n", src, wan))
+	}
+}
+
 // ApplyNftRules regenerates and atomically loads the nftables config for all VPN inbounds.
 // Static chains (prerouting/postrouting/input) are flushed and rebuilt.
 // Accounting chains (<proto>_acct_in / <proto>_acct_out) are NEVER flushed: their dynamic
@@ -225,11 +285,13 @@ func (s *NftService) ApplyNftRules() error {
 	b.WriteString("add chain ip vpn prerouting { type filter hook prerouting priority mangle; policy accept; }\n")
 	b.WriteString("add chain ip vpn postrouting { type filter hook postrouting priority mangle; policy accept; }\n")
 	b.WriteString("add chain ip vpn input { type filter hook input priority filter; policy accept; }\n")
+	b.WriteString("add chain ip vpn nat_post { type nat hook postrouting priority srcnat; policy accept; }\n")
 
 	// Flush only static chains (accounting chains are dynamic, never flushed)
 	b.WriteString("flush chain ip vpn prerouting\n")
 	b.WriteString("flush chain ip vpn postrouting\n")
 	b.WriteString("flush chain ip vpn input\n")
+	b.WriteString("flush chain ip vpn nat_post\n")
 
 	// Accounting jumps (must be before TPROXY so packets are counted before accept).
 	//
@@ -334,6 +396,7 @@ func (s *NftService) ApplyNftRules() error {
 		allNets = append(allNets, vpnNet{subnets: awgCIDRs(inbound, st), c2c: st.ClientToClient, cross: st.CrossInbound})
 	}
 	writeCrossInboundRules(&b, allNets)
+	writeEgressNatRules(&b, allNets, defaultEgressIface())
 
 	// L2TP TPROXY rules
 	for _, inbound := range l2tpInbounds {
@@ -349,8 +412,8 @@ func (s *NftService) ApplyNftRules() error {
 		srcs := subnetCIDRs(l2tp.GetSubnetsForInbound(inbound))
 		writeClientToClientRules(&b, srcs, c2c)
 		for _, src := range srcs {
-			b.WriteString(fmt.Sprintf("add rule ip vpn prerouting ip saddr %s meta mark != 0xff ip protocol tcp tproxy to :%d meta mark set mark or 0x1 accept\n", src, port))
-			b.WriteString(fmt.Sprintf("add rule ip vpn prerouting ip saddr %s meta mark != 0xff ip protocol udp tproxy to :%d meta mark set mark or 0x1 accept\n", src, port))
+			b.WriteString(fmt.Sprintf("add rule ip vpn prerouting ip saddr %s meta mark != 0xff ip protocol tcp counter tproxy to :%d meta mark set mark or 0x1 accept\n", src, port))
+			b.WriteString(fmt.Sprintf("add rule ip vpn prerouting ip saddr %s meta mark != 0xff ip protocol udp counter tproxy to :%d meta mark set mark or 0x1 accept\n", src, port))
 		}
 	}
 
@@ -367,8 +430,8 @@ func (s *NftService) ApplyNftRules() error {
 		srcs := subnetCIDRs(pptp.GetSubnetsForInbound(inbound))
 		writeClientToClientRules(&b, srcs, c2c)
 		for _, src := range srcs {
-			b.WriteString(fmt.Sprintf("add rule ip vpn prerouting ip saddr %s meta mark != 0xff ip protocol tcp tproxy to :%d meta mark set mark or 0x1 accept\n", src, port))
-			b.WriteString(fmt.Sprintf("add rule ip vpn prerouting ip saddr %s meta mark != 0xff ip protocol udp tproxy to :%d meta mark set mark or 0x1 accept\n", src, port))
+			b.WriteString(fmt.Sprintf("add rule ip vpn prerouting ip saddr %s meta mark != 0xff ip protocol tcp counter tproxy to :%d meta mark set mark or 0x1 accept\n", src, port))
+			b.WriteString(fmt.Sprintf("add rule ip vpn prerouting ip saddr %s meta mark != 0xff ip protocol udp counter tproxy to :%d meta mark set mark or 0x1 accept\n", src, port))
 		}
 	}
 
@@ -388,8 +451,8 @@ func (s *NftService) ApplyNftRules() error {
 		srcs := subnetCIDRs(sstp.GetSubnetsForInbound(inbound))
 		writeClientToClientRules(&b, srcs, c2c)
 		for _, src := range srcs {
-			b.WriteString(fmt.Sprintf("add rule ip vpn prerouting ip saddr %s meta mark != 0xff ip protocol tcp tproxy to :%d meta mark set mark or 0x1 accept\n", src, port))
-			b.WriteString(fmt.Sprintf("add rule ip vpn prerouting ip saddr %s meta mark != 0xff ip protocol udp tproxy to :%d meta mark set mark or 0x1 accept\n", src, port))
+			b.WriteString(fmt.Sprintf("add rule ip vpn prerouting ip saddr %s meta mark != 0xff ip protocol tcp counter tproxy to :%d meta mark set mark or 0x1 accept\n", src, port))
+			b.WriteString(fmt.Sprintf("add rule ip vpn prerouting ip saddr %s meta mark != 0xff ip protocol udp counter tproxy to :%d meta mark set mark or 0x1 accept\n", src, port))
 		}
 	}
 
@@ -433,8 +496,8 @@ func (s *NftService) ApplyNftRules() error {
 		// still bridge the two clients).
 		writeClientToClientRules(&b, srcs, settings.ClientToClient)
 		for _, src := range srcs {
-			b.WriteString(fmt.Sprintf("add rule ip vpn prerouting ip saddr %s meta mark != 0xff ip protocol tcp tproxy to :%d meta mark set mark or 0x1 accept\n", src, port))
-			b.WriteString(fmt.Sprintf("add rule ip vpn prerouting ip saddr %s meta mark != 0xff ip protocol udp tproxy to :%d meta mark set mark or 0x1 accept\n", src, port))
+			b.WriteString(fmt.Sprintf("add rule ip vpn prerouting ip saddr %s meta mark != 0xff ip protocol tcp counter tproxy to :%d meta mark set mark or 0x1 accept\n", src, port))
+			b.WriteString(fmt.Sprintf("add rule ip vpn prerouting ip saddr %s meta mark != 0xff ip protocol udp counter tproxy to :%d meta mark set mark or 0x1 accept\n", src, port))
 		}
 	}
 
@@ -453,8 +516,8 @@ func (s *NftService) ApplyNftRules() error {
 		srcs := ocservCIDRs(inbound, settings)
 		writeClientToClientRules(&b, srcs, settings.ClientToClient)
 		for _, src := range srcs {
-			b.WriteString(fmt.Sprintf("add rule ip vpn prerouting ip saddr %s meta mark != 0xff ip protocol tcp tproxy to :%d meta mark set mark or 0x1 accept\n", src, port))
-			b.WriteString(fmt.Sprintf("add rule ip vpn prerouting ip saddr %s meta mark != 0xff ip protocol udp tproxy to :%d meta mark set mark or 0x1 accept\n", src, port))
+			b.WriteString(fmt.Sprintf("add rule ip vpn prerouting ip saddr %s meta mark != 0xff ip protocol tcp counter tproxy to :%d meta mark set mark or 0x1 accept\n", src, port))
+			b.WriteString(fmt.Sprintf("add rule ip vpn prerouting ip saddr %s meta mark != 0xff ip protocol udp counter tproxy to :%d meta mark set mark or 0x1 accept\n", src, port))
 		}
 	}
 
@@ -473,8 +536,8 @@ func (s *NftService) ApplyNftRules() error {
 		srcs := ikev2CIDRs(inbound, settings)
 		writeClientToClientRules(&b, srcs, settings.ClientToClient)
 		for _, src := range srcs {
-			b.WriteString(fmt.Sprintf("add rule ip vpn prerouting ip saddr %s meta mark != 0xff ip protocol tcp tproxy to :%d meta mark set mark or 0x1 accept\n", src, port))
-			b.WriteString(fmt.Sprintf("add rule ip vpn prerouting ip saddr %s meta mark != 0xff ip protocol udp tproxy to :%d meta mark set mark or 0x1 accept\n", src, port))
+			b.WriteString(fmt.Sprintf("add rule ip vpn prerouting ip saddr %s meta mark != 0xff ip protocol tcp counter tproxy to :%d meta mark set mark or 0x1 accept\n", src, port))
+			b.WriteString(fmt.Sprintf("add rule ip vpn prerouting ip saddr %s meta mark != 0xff ip protocol udp counter tproxy to :%d meta mark set mark or 0x1 accept\n", src, port))
 		}
 	}
 
@@ -493,8 +556,8 @@ func (s *NftService) ApplyNftRules() error {
 		srcs := wgcCIDRs(inbound, settings)
 		writeClientToClientRules(&b, srcs, settings.ClientToClient)
 		for _, src := range srcs {
-			b.WriteString(fmt.Sprintf("add rule ip vpn prerouting ip saddr %s meta mark != 0xff ip protocol tcp tproxy to :%d meta mark set mark or 0x1 accept\n", src, port))
-			b.WriteString(fmt.Sprintf("add rule ip vpn prerouting ip saddr %s meta mark != 0xff ip protocol udp tproxy to :%d meta mark set mark or 0x1 accept\n", src, port))
+			b.WriteString(fmt.Sprintf("add rule ip vpn prerouting ip saddr %s meta mark != 0xff ip protocol tcp counter tproxy to :%d meta mark set mark or 0x1 accept\n", src, port))
+			b.WriteString(fmt.Sprintf("add rule ip vpn prerouting ip saddr %s meta mark != 0xff ip protocol udp counter tproxy to :%d meta mark set mark or 0x1 accept\n", src, port))
 		}
 	}
 
@@ -511,8 +574,8 @@ func (s *NftService) ApplyNftRules() error {
 		srcs := awgCIDRs(inbound, settings)
 		writeClientToClientRules(&b, srcs, settings.ClientToClient)
 		for _, src := range srcs {
-			b.WriteString(fmt.Sprintf("add rule ip vpn prerouting ip saddr %s meta mark != 0xff ip protocol tcp tproxy to :%d meta mark set mark or 0x1 accept\n", src, port))
-			b.WriteString(fmt.Sprintf("add rule ip vpn prerouting ip saddr %s meta mark != 0xff ip protocol udp tproxy to :%d meta mark set mark or 0x1 accept\n", src, port))
+			b.WriteString(fmt.Sprintf("add rule ip vpn prerouting ip saddr %s meta mark != 0xff ip protocol tcp counter tproxy to :%d meta mark set mark or 0x1 accept\n", src, port))
+			b.WriteString(fmt.Sprintf("add rule ip vpn prerouting ip saddr %s meta mark != 0xff ip protocol udp counter tproxy to :%d meta mark set mark or 0x1 accept\n", src, port))
 		}
 	}
 
@@ -526,12 +589,6 @@ func (s *NftService) ApplyNftRules() error {
 	if err := s.runCmd("nft", "-f", nftConfigFile); err != nil {
 		return fmt.Errorf("failed to load nft rules: %w", err)
 	}
-
-	// Best-effort: drop the legacy OpenVPN NAT chain left by older versions that
-	// masqueraded OpenVPN straight to the internet. OpenVPN now routes via TPROXY,
-	// so the chain is obsolete. Both calls no-op once it's gone.
-	s.runCmd("nft", "flush", "chain", "ip", "vpn", "nat_post")
-	s.runCmd("nft", "delete", "chain", "ip", "vpn", "nat_post")
 
 	// Best-effort: drop the pre-split combined "<proto>_acct" chains. The static chains
 	// were rebuilt above without their jumps, so on an upgraded box they linger holding

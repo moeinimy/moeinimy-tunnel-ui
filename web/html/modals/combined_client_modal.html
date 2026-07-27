@@ -118,6 +118,57 @@
             </a-form-item>
         </template>
 
+        <!-- Device limits are PER PROTOCOL, not one figure for the customer. They
+             count different things and are enforced by different machinery: OpenVPN
+             authenticates by username so its User Limit counts SESSIONS, while an IP
+             Limit counts distinct addresses seen for the account. Only the traffic
+             allowance is genuinely shared; a single number here would have to mean
+             something different on each row. -->
+        <template
+            v-if="combinedModal.needsUserLimit || (app.ipLimitEnable && combinedModal.needsUuid)"
+        >
+            <a-divider>{{ i18n "pages.combined.limits" }}</a-divider>
+
+            <!-- OpenVPN gets User Limit and NOT an IP Limit, deliberately. A per-account
+                 IP Limit is enforced by the patched core at admission, and the core never
+                 sees an OpenVPN client: ipLimitEnforcedInCore() excludes every VPN
+                 protocol, so the field would publish to nothing and silently do nothing.
+                 What actually caps an OpenVPN account's devices is its session count,
+                 which is what User Limit is. -->
+            <a-form-item v-if="combinedModal.needsUserLimit">
+                <template slot="label">
+                    <a-tooltip>
+                        <template slot="title">
+                            <span>{{ i18n "pages.combined.userLimitDesc" }}</span>
+                        </template>
+                        <span>{{ i18n "pages.combined.userLimit" }} </span>
+                        <a-icon type="question-circle"></a-icon>
+                    </a-tooltip>
+                </template>
+                <a-input-number
+                    v-model.number="combinedModal.userLimit"
+                    :min="0"
+                    :max="64"
+                ></a-input-number>
+            </a-form-item>
+
+            <a-form-item v-if="app.ipLimitEnable && combinedModal.needsUuid">
+                <template slot="label">
+                    <a-tooltip>
+                        <template slot="title">
+                            <span>{{ i18n "pages.combined.ipLimitDesc" }}</span>
+                        </template>
+                        <span>{{ i18n "pages.combined.ipLimitVless" }} </span>
+                        <a-icon type="question-circle"></a-icon>
+                    </a-tooltip>
+                </template>
+                <a-input-number
+                    v-model.number="combinedModal.limitIpVless"
+                    :min="0"
+                ></a-input-number>
+            </a-form-item>
+        </template>
+
         <template v-if="combinedModal.needsUuid">
             <a-form-item>
                 <template slot="label">
@@ -167,7 +218,36 @@
             ></a-input-number>
         </a-form-item>
 
+        <!-- Start on first use. For a group this is ONE clock for the customer: it
+             starts on whichever protocol they happen to open first, and the other two
+             expire on that same date rather than each waiting for its own first use. -->
         <a-form-item>
+            <template slot="label">
+                <a-tooltip>
+                    <template slot="title">
+                        <span>{{ i18n "pages.combined.delayedStartDesc" }}</span>
+                    </template>
+                    {{ i18n "pages.client.delayedStart" }}
+                    <a-icon type="question-circle"></a-icon>
+                </a-tooltip>
+            </template>
+            <a-switch
+                v-model="combinedModal.delayedStart"
+                @click="combinedModal.expiryTime = 0"
+            ></a-switch>
+        </a-form-item>
+
+        <a-form-item
+            v-if="combinedModal.delayedStart"
+            label='{{ i18n "pages.client.expireDays" }}'
+        >
+            <a-input-number
+                v-model.number="delayedExpireDays"
+                :min="0"
+            ></a-input-number>
+        </a-form-item>
+
+        <a-form-item v-else>
             <template slot="label">
                 <a-tooltip>
                     <template slot="title">
@@ -207,22 +287,6 @@
             </template>
             <a-input-number
                 v-model.number="combinedModal.reset"
-                :min="0"
-            ></a-input-number>
-        </a-form-item>
-
-        <a-form-item v-if="app.ipLimitEnable">
-            <template slot="label">
-                <a-tooltip>
-                    <template slot="title">
-                        <span>{{ i18n "pages.combined.ipLimitDesc" }}</span>
-                    </template>
-                    <span>{{ i18n "pages.inbounds.IPLimit" }} </span>
-                    <a-icon type="question-circle"></a-icon>
-                </a-tooltip>
-            </template>
-            <a-input-number
-                v-model.number="combinedModal.limitIp"
                 :min="0"
             ></a-input-number>
         </a-form-item>
@@ -308,8 +372,19 @@
         flow: "",
         totalGB: 0,
         expiryTime: 0,
+        // Start on first use: the expiry is stored NEGATIVE, as minus the duration in
+        // milliseconds, and becomes a real date when the customer first sends traffic.
+        // For a group it is the GROUP's clock that starts, on whichever protocol they
+        // happen to connect with first — not three clocks, one per protocol.
+        delayedStart: false,
+        // Device limits are per protocol: they count different things (OpenVPN's
+        // User Limit counts sessions, an IP Limit counts addresses) and are enforced
+        // by different machinery, so one figure for the customer would mean something
+        // different on every row. L2TP gets none — there is no field for it, so its
+        // account is created unlimited.
+        userLimit: 0,
+        limitIpVless: 0,
         reset: 0,
-        limitIp: 0,
         subId: "",
         tgId: 0,
         comment: "",
@@ -333,8 +408,10 @@
             this.flow = "";
             this.totalGB = 0;
             this.expiryTime = 0;
+            this.delayedStart = false;
+            this.userLimit = 0;
+            this.limitIpVless = 0;
             this.reset = 0;
-            this.limitIp = 0;
             // One subscription id across all three, so a single subscription link
             // carries whichever of them the client app understands.
             this.subId = RandomUtil.randomLowerAndNum(16);
@@ -379,8 +456,16 @@
             return this.activeSlots().some((s) => s.protocol === Protocols.VLESS);
         },
 
-        // The shared expiry as a millisecond epoch. The datepickers hand back a
-        // moment (gregorian) or a number (persian), and an untouched field is 0.
+        get needsUserLimit() {
+            return this.activeSlots().some(
+                (s) => s.protocol === Protocols.OPENVPN,
+            );
+        },
+
+        // The shared expiry as a millisecond epoch, or NEGATIVE for a delayed start
+        // (minus the duration, which the server turns into a date on first traffic).
+        // The datepickers hand back a moment (gregorian) or a number (persian), and an
+        // untouched field is 0.
         expiryMillis() {
             const t = this.expiryTime;
             if (t == null || t === "") return 0;
@@ -392,11 +477,17 @@
         // what keeps there being one definition of each of them.
         buildClient(slot) {
             let client;
+            // limitIp is set inside each case, not shared below, because it is a
+            // per-protocol figure here — and left at the model's own 0 (unlimited)
+            // for L2TP, which the form offers no field for.
             switch (slot.protocol) {
                 case Protocols.OPENVPN:
                     client = new Inbound.OpenvpnSettings.OpenvpnUser();
                     client.id = this.username;
                     client.password = this.password;
+                    // OpenVPN only: the other two have no notion of it, and a stray
+                    // userLimit key on their client JSON would just be dead weight.
+                    client.userLimit = this.userLimit;
                     break;
                 case Protocols.L2TP:
                     client = new Inbound.L2tpSettings.L2tpUser();
@@ -407,6 +498,7 @@
                     client = new Inbound.VLESSSettings.VLESS();
                     client.id = this.uuid;
                     client.flow = this.flow;
+                    client.limitIp = this.limitIpVless;
                     break;
                 default:
                     return null;
@@ -422,7 +514,6 @@
             );
             client.expiryTime = this.expiryMillis();
             client.reset = this.reset;
-            client.limitIp = this.limitIp;
             client.subId = this.subId;
             client.tgId = this.tgId;
             client.comment = this.comment;
@@ -491,6 +582,16 @@
             combinedModal,
             get datepicker() {
                 return app.datepicker;
+            },
+            // The delayed-start duration, kept as the negative expiry the server
+            // expects rather than a second field that could disagree with it.
+            get delayedExpireDays() {
+                return combinedModal.expiryTime < 0
+                    ? combinedModal.expiryTime / -86400000
+                    : 0;
+            },
+            set delayedExpireDays(days) {
+                combinedModal.expiryTime = -86400000 * days;
             },
             // Flow is a property of the VLESS INBOUND's stream (TLS or Reality over
             // TCP), not of the account, so the control only appears once an inbound

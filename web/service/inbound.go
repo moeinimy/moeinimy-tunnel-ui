@@ -2302,7 +2302,8 @@ func (s *InboundService) AddTraffic(inboundTraffics []*xray.Traffic, clientTraff
 	// Push each shared allowance onto its members BEFORE the checks below, so a group
 	// that has just run out is enforced in the same tick that spent it — by exactly the
 	// same code path as an ordinary account, rather than a second one beside it.
-	if gerr := (&ClientGroupService{}).enforceGroups(tx); gerr != nil {
+	needRestartGroups, gerr := (&ClientGroupService{}).enforceGroups(tx)
+	if gerr != nil {
 		logger.Warning("client groups: cannot apply shared quotas: ", gerr)
 	}
 
@@ -2326,7 +2327,7 @@ func (s *InboundService) AddTraffic(inboundTraffics []*xray.Traffic, clientTraff
 	} else if count > 0 {
 		logger.Debugf("%v inbounds disabled", count)
 	}
-	return nil, (needRestart0 || needRestart1 || needRestart2), l2tpDisabledEmails, pptpDisabledEmails, ovpnDisabledEmails
+	return nil, (needRestartGroups || needRestart0 || needRestart1 || needRestart2), l2tpDisabledEmails, pptpDisabledEmails, ovpnDisabledEmails
 }
 
 // VpnInboundTraffic turns per-account VPN byte counts into per-inbound totals.

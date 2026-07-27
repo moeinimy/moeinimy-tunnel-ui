@@ -2,6 +2,7 @@ package service
 
 import (
 	"strings"
+	"time"
 
 	"github.com/mhsanaei/3x-ui/v2/database"
 	"github.com/mhsanaei/3x-ui/v2/database/model"
@@ -102,6 +103,13 @@ func (s *ClientGroupService) SetMembership(groupId int, emails []string) error {
 // enforceGroups mirrors each group's entitlement onto its members and expires them
 // together when the group's SHARED usage runs out.
 //
+// The group owns every part of the entitlement that has state: the quota, the expiry
+// date, the delayed-start clock and the renewal period. Members own only their
+// credentials. Anything with state that were left to the members would be N copies of
+// it for one customer, drifting apart — three different start dates from three first
+// connections, or three renewals each wiping the counters the shared usage is summed
+// from.
+//
 // It deliberately does not disable anyone itself. Everything downstream of an account
 // running out — removing it from Xray, telling the VPN backends to drop its live
 // sessions, flipping enable — already happens in disableInvalidClients, driven by the
@@ -113,17 +121,63 @@ func (s *ClientGroupService) SetMembership(groupId int, emails []string) error {
 // GROUP's to set while an account belongs to one, and every tick rewrites it from the
 // group. Raise the group's quota and the next tick restores the real date; the account
 // comes back without anyone editing it.
-func (s *ClientGroupService) enforceGroups(tx *gorm.DB) error {
+// It reports whether Xray needs restarting: only re-enabling an account requires it,
+// because Xray keeps its accounts in memory and was told to drop this one.
+func (s *ClientGroupService) enforceGroups(tx *gorm.DB) (bool, error) {
+	needRestart := false
 	var groups []*model.ClientGroup
 	if err := tx.Model(model.ClientGroup{}).Find(&groups).Error; err != nil {
-		return err
+		return false, err
 	}
+	// One reading of the clock for the whole pass, so every group in this tick is
+	// judged against the same instant.
+	now := time.Now().UnixMilli()
 	for _, g := range groups {
 		var agg struct{ Used int64 }
 		if err := tx.Model(xray.ClientTraffic{}).
 			Select("COALESCE(SUM(up),0) + COALESCE(SUM(down),0) as used").
 			Where("group_id = ?", g.Id).Scan(&agg).Error; err != nil {
-			return err
+			return needRestart, err
+		}
+
+		// A delayed start (expiry stored NEGATIVE, as minus the duration) becomes a
+		// real date the moment the customer first sends traffic — and it is the
+		// GROUP's clock that starts, once, on whichever protocol they happened to
+		// open first. Converting here rather than letting each member convert itself
+		// is the whole point: three accounts converting independently would give one
+		// customer three different expiry dates, and this loop would then overwrite
+		// each of them with the group's still-negative value on the next tick, which
+		// is an account that never expires at all.
+		//
+		// Written back to the group, so it converts exactly once and every later tick
+		// sees an ordinary date.
+		if g.ExpiryTime < 0 && agg.Used > 0 {
+			g.ExpiryTime = now - g.ExpiryTime
+			if err := tx.Model(model.ClientGroup{}).Where("id = ?", g.Id).
+				Update("expiry_time", g.ExpiryTime).Error; err != nil {
+				return needRestart, err
+			}
+		}
+
+		// Renewal is the GROUP's too. One period for the customer: the allowance
+		// refills once and the next one starts for all of their accounts together.
+		if g.Reset > 0 && g.ExpiryTime > 0 && g.ExpiryTime <= now {
+			next := g.ExpiryTime
+			for next <= now {
+				next += int64(g.Reset) * 86400000
+			}
+			if err := tx.Model(xray.ClientTraffic{}).Where("group_id = ?", g.Id).
+				Updates(map[string]any{"up": 0, "down": 0}).Error; err != nil {
+				return needRestart, err
+			}
+			if err := tx.Model(model.ClientGroup{}).Where("id = ?", g.Id).
+				Update("expiry_time", next).Error; err != nil {
+				return needRestart, err
+			}
+			g.ExpiryTime = next
+			// The counters the sum was taken from are now zero, so the group is not
+			// spent any more: recompute from this tick rather than the previous one.
+			agg.Used = 0
 		}
 
 		spent := g.Total > 0 && agg.Used >= g.Total
@@ -134,16 +188,55 @@ func (s *ClientGroupService) enforceGroups(tx *gorm.DB) error {
 			expiry = 1
 		}
 
+		// A group that is healthy again brings its accounts back. Renew the period,
+		// raise the quota or flip the group on, and the members return — which is the
+		// whole promise of the group owning the entitlement. Writing a future expiry is
+		// NOT enough on its own: disableInvalidClients flipped enable to false and
+		// nothing ever flips it back, so without this a renewed group renews into three
+		// permanently dead accounts.
+		//
+		// "settings say enabled, traffic row says disabled" is precisely "the system
+		// disabled this, the operator did not": the manual switch writes both, while
+		// disableInvalidClients only ever writes the row. So an account an operator
+		// turned off by hand stays off, and RADIUS already draws the same distinction
+		// on every login.
+		if !spent && g.Enable {
+			res := tx.Exec(`
+				UPDATE client_traffics SET enable = 1
+				WHERE group_id = ? AND enable = 0 AND EXISTS (
+					SELECT 1 FROM inbounds,
+						JSON_EACH(JSON_EXTRACT(inbounds.settings, '$.clients')) AS c
+					WHERE inbounds.id = client_traffics.inbound_id
+					  AND JSON_EXTRACT(c.value, '$.email') = client_traffics.email
+					  AND JSON_EXTRACT(c.value, '$.enable') = 1
+				)`, g.Id)
+			if res.Error != nil {
+				return needRestart, res.Error
+			}
+			// Xray holds its accounts in memory and was told to remove these; the VPN
+			// backends re-read enable from the row on every login and need nothing.
+			if res.RowsAffected > 0 {
+				needRestart = true
+			}
+		}
+
 		if err := tx.Model(xray.ClientTraffic{}).Where("group_id = ?", g.Id).
 			Updates(map[string]any{
 				"total":       g.Total,
 				"expiry_time": expiry,
-				"reset":       g.Reset,
+				// Deliberately ZERO, never g.Reset. autoRenewClients renews an account
+				// by pushing ITS expiry forward and zeroing ITS counters, and a member
+				// carrying a reset period would be renewed the moment the group's
+				// expiry passed — zeroing the very counters the group's usage is summed
+				// from. The allowance would refill itself every tick and the customer
+				// would never run out. The group renews itself above instead; members
+				// are told not to.
+				"reset": 0,
 			}).Error; err != nil {
-			return err
+			return needRestart, err
 		}
 	}
-	return nil
+	return needRestart, nil
 }
 
 // --- Combined accounts -------------------------------------------------------------
@@ -211,14 +304,6 @@ func (s *ClientGroupService) CreateCombined(group *model.ClientGroup, members []
 	group.Name = strings.TrimSpace(group.Name)
 	if len(members) == 0 {
 		return nil, common.NewError("a combined account needs at least one protocol")
-	}
-	// A delayed start (a NEGATIVE expiry, turned into a real date when the account first
-	// carries traffic) cannot be shared. Each member would convert on its own first
-	// connection, and enforceGroups would overwrite whichever date it produced with the
-	// group's still-negative one on the next tick — an account that never expires.
-	// Refused rather than quietly coerced to a date the operator did not choose.
-	if group.ExpiryTime < 0 {
-		return nil, common.NewError("a shared allowance cannot use a delayed start: give the group an expiry date, or none")
 	}
 
 	var inboundService InboundService

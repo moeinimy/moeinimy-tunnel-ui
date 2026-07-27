@@ -22,6 +22,7 @@ import (
 type InboundController struct {
 	inboundService service.InboundService
 	xrayService    service.XrayService
+	clientGroupService service.ClientGroupService
 	l2tpService    service.L2tpService
 	pptpService    service.PptpService
 	openvpnService service.OpenVpnService
@@ -68,6 +69,15 @@ func (a *InboundController) initRouter(g *gin.RouterGroup) {
 	// username, check ownership of an unrelated inbound with that id. Scoped in the
 	// handler instead.
 	g.GET("/getClientTrafficsById/:id", read, a.getClientTrafficsById)
+
+	// Shared client groups: reading is part of seeing inbounds; changing an
+	// entitlement is a client edit, which is the permission that already governs a
+	// single account's quota.
+	g.GET("/clientGroups", read, a.getClientGroups)
+	g.POST("/clientGroups/add", requirePerm(model.PermEditClient), a.addClientGroup)
+	g.POST("/clientGroups/update/:id", requirePerm(model.PermEditClient), a.updateClientGroup)
+	g.POST("/clientGroups/del/:id", requirePerm(model.PermEditClient), a.delClientGroup)
+	g.POST("/clientGroups/membership", requirePerm(model.PermEditClient), a.setClientGroupMembership)
 
 	g.POST("/add", requirePerm(model.PermCreateInbound), a.addInbound)
 	g.POST("/del/:id", requirePerm(model.PermDeleteInbound), owns, a.delInbound)
@@ -2018,4 +2028,73 @@ func (a *InboundController) callerOwnsInbounds(c *gin.Context, inboundIds []int)
 	}
 	owns, err := accessService.CanAccessAllInbounds(inboundIds, user.Id)
 	return err == nil && owns
+}
+
+// --- Shared client groups ----------------------------------------------------------
+//
+// A group is an entitlement (quota, expiry, on/off) shared by accounts that belong to
+// one customer across different protocols. Membership is stored on the account's
+// traffic row, so these endpoints only ever move ids around; the quota itself is
+// applied by the traffic job (ClientGroupService.enforceGroups).
+
+func (a *InboundController) getClientGroups(c *gin.Context) {
+	groups, err := a.clientGroupService.GetGroups()
+	if err != nil {
+		jsonMsg(c, I18nWeb(c, "pages.inbounds.toasts.obtain"), err)
+		return
+	}
+	jsonObj(c, groups, nil)
+}
+
+func (a *InboundController) addClientGroup(c *gin.Context) {
+	group := &model.ClientGroup{}
+	if err := c.ShouldBind(group); err != nil {
+		jsonMsg(c, I18nWeb(c, "pages.inbounds.toasts.create"), err)
+		return
+	}
+	if err := a.clientGroupService.AddGroup(group); err != nil {
+		jsonMsg(c, I18nWeb(c, "pages.inbounds.toasts.create"), err)
+		return
+	}
+	jsonObj(c, group, nil)
+}
+
+func (a *InboundController) updateClientGroup(c *gin.Context) {
+	group := &model.ClientGroup{}
+	if err := c.ShouldBind(group); err != nil {
+		jsonMsg(c, I18nWeb(c, "pages.inbounds.toasts.update"), err)
+		return
+	}
+	id, err := strconv.Atoi(c.Param("id"))
+	if err != nil {
+		jsonMsg(c, I18nWeb(c, "pages.inbounds.toasts.update"), err)
+		return
+	}
+	group.Id = id
+	jsonMsg(c, I18nWeb(c, "pages.inbounds.toasts.update"), a.clientGroupService.UpdateGroup(group))
+}
+
+func (a *InboundController) delClientGroup(c *gin.Context) {
+	id, err := strconv.Atoi(c.Param("id"))
+	if err != nil {
+		jsonMsg(c, I18nWeb(c, "pages.inbounds.toasts.delete"), err)
+		return
+	}
+	jsonMsg(c, I18nWeb(c, "pages.inbounds.toasts.delete"), a.clientGroupService.DelGroup(id))
+}
+
+// setClientGroupMembership moves accounts into a group, or out of every group when the
+// id is 0. Emails are the account identity everywhere else in the panel, so they are
+// what the UI sends here too.
+func (a *InboundController) setClientGroupMembership(c *gin.Context) {
+	var body struct {
+		GroupId int      `json:"groupId"`
+		Emails  []string `json:"emails"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil {
+		jsonMsg(c, I18nWeb(c, "pages.inbounds.toasts.update"), err)
+		return
+	}
+	jsonMsg(c, I18nWeb(c, "pages.inbounds.toasts.update"),
+		a.clientGroupService.SetMembership(body.GroupId, body.Emails))
 }

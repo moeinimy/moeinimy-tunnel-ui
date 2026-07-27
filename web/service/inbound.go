@@ -2299,6 +2299,13 @@ func (s *InboundService) AddTraffic(inboundTraffics []*xray.Traffic, clientTraff
 		return err, false, nil, nil, nil
 	}
 
+	// Push each shared allowance onto its members BEFORE the checks below, so a group
+	// that has just run out is enforced in the same tick that spent it — by exactly the
+	// same code path as an ordinary account, rather than a second one beside it.
+	if gerr := (&ClientGroupService{}).enforceGroups(tx); gerr != nil {
+		logger.Warning("client groups: cannot apply shared quotas: ", gerr)
+	}
+
 	needRestart0, count, err := s.autoRenewClients(tx)
 	if err != nil {
 		logger.Warning("Error in renew clients:", err)

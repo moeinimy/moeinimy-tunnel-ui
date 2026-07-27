@@ -536,6 +536,9 @@
 "created" = "The combined account has been created."
 "needName" = "Enter a customer name."
 "needProtocol" = "Turn on at least one protocol."
+"sharedWith" = "Shared allowance:"
+"ownUsage" = "This account"
+"groupTagDesc" = "Part of a shared allowance. The traffic bar shows what the WHOLE group has used, not this account alone."
 
 [pages.inbounds.periodicTrafficReset]
 "never" = "Never"

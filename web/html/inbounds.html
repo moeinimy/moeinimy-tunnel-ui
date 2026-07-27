@@ -1297,6 +1297,15 @@
       remarkModel: '-ieo',
       selInbounds: [],
       selClients: [],
+      // Shared allowances, keyed by id, refreshed with the inbound list.
+      //
+      // A grouped account's own row carries only ITS OWN bytes — that is deliberate,
+      // because the server never writes the group's figure back to a member (the next
+      // collection would add each member's delta to a row that already holds
+      // everyone's). So the shared total exists nowhere but here: without this the
+      // table shows three accounts each reading "2 GB of 50" and the operator has no
+      // way to know 35 of the 50 are already gone.
+      clientGroups: {},
       // The reseller's own balance chip. Seeded from the server-rendered RESELLER
       // global so it is right on first paint, then held here rather than read off
       // the global: RESELLER is a snapshot taken when the page was served, and it
@@ -1343,9 +1352,34 @@
         await this.getOnlineUsers();
 
         this.setInbounds(msg.obj);
+        await this.refreshClientGroups();
         setTimeout(() => {
           this.refreshing = false;
         }, 500);
+      },
+      // The shared allowances behind grouped accounts, re-read with every list so the
+      // usage the table shows is as fresh as the accounts' own.
+      //
+      // Failure-tolerant and raw-axios for the same reason as refreshResellerBalance:
+      // this is decoration on a list that already loaded, and a red toast every
+      // auto-refresh because a secondary fetch blipped would be worse than a figure
+      // that is one tick stale. The last known groups stay on screen.
+      //
+      // Not fetched for a reseller: /clientGroups is panel-wide, so it would hand them
+      // every other seller's customer names, and the role cannot create a group anyway.
+      async refreshClientGroups() {
+        if (RESELLER.isReseller) return;
+        try {
+          const resp = await axios.get('/panel/api/inbounds/clientGroups');
+          const body = resp && resp.data ? resp.data : null;
+          const list = body && Array.isArray(body.obj) ? body.obj : null;
+          if (!list) return;
+          const byId = {};
+          for (const g of list) byId[g.id] = g;
+          this.clientGroups = byId;
+        } catch (e) {
+          console.warn('client groups refresh failed', e);
+        }
       },
       // Re-reads the caller's own reseller balance after anything that can move it.
       // Deliberately failure-tolerant: the chip is informational, the server is what
@@ -2542,6 +2576,53 @@
         }
         return dbInbound._clientStatsMap.get(email);
       },
+      // The shared allowance an account belongs to, or null when it stands alone.
+      clientGroup(dbInbound, email) {
+        if (!email || !dbInbound) return null;
+        const stats = this.getClientStats(dbInbound, email);
+        if (!stats || !stats.groupId) return null;
+        return this.clientGroups[stats.groupId] || null;
+      },
+      // An account's figures as its ALLOWANCE sees them: for a grouped account, the
+      // usage and quota of the whole group, because that is what it is billed against
+      // and what actually runs out.
+      //
+      // Substituted here, once, rather than at each call site: the bar, the
+      // percentage, the colour, "remaining" and "depleted" all have to agree, and
+      // separate copies of the branch are separate chances for one of them to keep
+      // reporting the account's own bytes and read "plenty left" on a customer who
+      // has none.
+      //
+      // Deliberately NOT used by getUpStats/getDownStats: the ↑/↓ breakdown in the
+      // popover stays this account's own, because that is what tells the operator
+      // which protocol the customer is actually connecting with.
+      getAllowanceStats(dbInbound, email) {
+        const stats = this.getClientStats(dbInbound, email);
+        if (!stats) return stats;
+        const group = stats.groupId ? this.clientGroups[stats.groupId] : null;
+        if (!group) return stats;
+        return Object.assign({}, stats, {
+          up: group.up || 0,
+          down: group.down || 0,
+          total: group.total || 0,
+        });
+      },
+      // The cap the traffic bar is drawn against, in bytes. For a grouped account
+      // that is the GROUP's total and not the copy in this account's settings JSON:
+      // enforceGroups mirrors a changed group quota onto the members' traffic rows
+      // but never back into their settings, so raising a group's quota would
+      // otherwise leave every one of its bars drawn against yesterday's number.
+      allowanceTotal(dbInbound, client) {
+        const group = this.clientGroup(dbInbound, client.email);
+        return group ? (group.total || 0) : (client.totalGB || 0);
+      },
+      // The same cap in gigabytes, for the label beside the bar. A method rather than
+      // arithmetic in the template, because client._totalGB (what this replaces) is a
+      // GETTER ON THE CLIENT MODEL and a group's total is a plain number on a plain
+      // object: the conversion has to live somewhere that works for both.
+      allowanceTotalGB(dbInbound, client) {
+        return NumberFormatter.toFixed(this.allowanceTotal(dbInbound, client) / SizeFormatter.ONE_GB, 2);
+      },
       getUpStats(dbInbound, email) {
         if (!email || email.length == 0) return 0;
         let clientStats = this.getClientStats(dbInbound, email);
@@ -2554,7 +2635,7 @@
       },
       getSumStats(dbInbound, email) {
         if (!email || email.length == 0) return 0;
-        let clientStats = this.getClientStats(dbInbound, email);
+        let clientStats = this.getAllowanceStats(dbInbound, email);
         return clientStats ? clientStats.up + clientStats.down : 0;
       },
       getAllTimeClient(dbInbound, email) {
@@ -2565,19 +2646,19 @@
       },
       getRemStats(dbInbound, email) {
         if (!email || email.length == 0) return 0;
-        let clientStats = this.getClientStats(dbInbound, email);
+        let clientStats = this.getAllowanceStats(dbInbound, email);
         if (!clientStats) return 0;
         let remained = clientStats.total - (clientStats.up + clientStats.down);
         return remained > 0 ? remained : 0;
       },
       clientStatsColor(dbInbound, email) {
         if (!email || email.length == 0) return ColorUtils.clientUsageColor();
-        let clientStats = this.getClientStats(dbInbound, email);
+        let clientStats = this.getAllowanceStats(dbInbound, email);
         return ColorUtils.clientUsageColor(clientStats, app.trafficDiff)
       },
       statsProgress(dbInbound, email) {
         if (!email || email.length == 0) return 100;
-        let clientStats = this.getClientStats(dbInbound, email);
+        let clientStats = this.getAllowanceStats(dbInbound, email);
         if (!clientStats) return 0;
         if (clientStats.total == 0) return 100;
         return 100 * (clientStats.down + clientStats.up) / clientStats.total;
@@ -2591,7 +2672,7 @@
       },
       statsExpColor(dbInbound, email) {
         if (!email || email.length == 0) return '#7a316f';
-        let clientStats = this.getClientStats(dbInbound, email);
+        let clientStats = this.getAllowanceStats(dbInbound, email);
         if (!clientStats) return '#7a316f';
         let statsColor = ColorUtils.usageColor(clientStats.down + clientStats.up, this.trafficDiff, clientStats.total);
         let expColor = ColorUtils.usageColor(new Date().getTime(), this.expireDiff, clientStats.expiryTime);
@@ -2612,7 +2693,7 @@
       },
       isClientDepleted(dbInbound, email) {
         if (!email || !dbInbound) return false;
-        const stats = this.getClientStats(dbInbound, email);
+        const stats = this.getAllowanceStats(dbInbound, email);
         if (!stats) return false;
         const total = stats.total ?? 0;
         const used = (stats.up ?? 0) + (stats.down ?? 0);

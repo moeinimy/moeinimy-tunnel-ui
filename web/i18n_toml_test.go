@@ -168,6 +168,7 @@ var knownMissing = keySet(
 	"pages.combined.sharedQuotaDesc", "pages.combined.sharedExpiryDesc",
 	"pages.combined.ipLimitDesc", "pages.combined.subIdDesc",
 	"pages.combined.created", "pages.combined.needName", "pages.combined.needProtocol",
+	"pages.combined.sharedWith", "pages.combined.ownUsage", "pages.combined.groupTagDesc",
 )
 
 // flattenKeys collapses nested TOML tables into dotted keys (e.g. "pages.core.title").

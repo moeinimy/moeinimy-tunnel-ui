@@ -414,6 +414,9 @@
 "created" = "اکانت ترکیبی ساخته شد."
 "needName" = "نام مشتری را وارد کنید."
 "needProtocol" = "حداقل یک پروتکل را روشن کنید."
+"sharedWith" = "حجم مشترک:"
+"ownUsage" = "این اکانت"
+"groupTagDesc" = "بخشی از یک حجم مشترک است. نوار ترافیک، مصرف کل گروه را نشان می‌دهد نه فقط این اکانت را."
 
 [pages.inbounds.periodicTrafficReset]
 "never" = "هرگز"

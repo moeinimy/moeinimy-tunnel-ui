@@ -286,7 +286,17 @@ func (a *ServerController) checkUpdate(c *gin.Context) {
 	}
 	a.updMu.Unlock()
 
-	info, err := a.serverService.CheckPanelUpdate()
+	// "Check for Update" must reach GitHub, not a cache. There are two of them —
+	// this controller's, cleared by `force` above, and the service's TTL — and
+	// going through CheckPanelUpdate would only clear the first: pressing the
+	// button right after a release still answered "Up to date", from a service
+	// cache filled before that release existed. A manual check is the one call
+	// with a person waiting on it, so it always pays for a fresh request.
+	check := a.serverService.CheckPanelUpdate
+	if force {
+		check = a.serverService.RefreshPanelUpdate
+	}
+	info, err := check()
 
 	a.updMu.Lock()
 	a.lastPanelUpdateTime = now // cache success AND failure to bound GitHub calls

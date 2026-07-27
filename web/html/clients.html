@@ -1,0 +1,350 @@
+{{ template "page/head_start" .}}
+{{ template "page/head_end" .}}
+
+{{ template "page/body_start" .}}
+{{template "page/shell_start" . }}
+      <a-spin :spinning="spinning" :delay="300" tip='{{ i18n "loading"}}' size="large">
+        <transition name="list" appear>
+          <a-row :gutter="[16, 16]" :style="{ margin: 0 }">
+            <a-col :span="24">
+
+              <!-- Four figures the operator otherwise has to count by hand across
+                   every inbound. "Customers" is groups, not accounts: a combined
+                   account is one person however many rows they occupy. -->
+              <a-row :gutter="[16, 16]" :style="{ marginBottom: '8px' }">
+                <a-col :xs="12" :sm="12" :md="6">
+                  <a-card hoverable :body-style="{ padding: '14px 18px' }">
+                    <div class="bo-muted">{{ i18n "pages.clients.statAccounts" }}</div>
+                    <div :style="{ fontSize: '22px', fontWeight: 600 }">[[ rows.length ]]</div>
+                  </a-card>
+                </a-col>
+                <a-col :xs="12" :sm="12" :md="6">
+                  <a-card hoverable :body-style="{ padding: '14px 18px' }">
+                    <div class="bo-muted">{{ i18n "pages.clients.statCustomers" }}</div>
+                    <div :style="{ fontSize: '22px', fontWeight: 600 }">[[ customerCount ]]</div>
+                  </a-card>
+                </a-col>
+                <a-col :xs="12" :sm="12" :md="6">
+                  <a-card hoverable :body-style="{ padding: '14px 18px' }">
+                    <div class="bo-muted">{{ i18n "online" }}</div>
+                    <div :style="{ fontSize: '22px', fontWeight: 600, color: 'var(--ok)' }">
+                      [[ onlineCount ]]</div>
+                  </a-card>
+                </a-col>
+                <a-col :xs="12" :sm="12" :md="6">
+                  <a-card hoverable :body-style="{ padding: '14px 18px' }">
+                    <div class="bo-muted">{{ i18n "depleted" }}</div>
+                    <div :style="{ fontSize: '22px', fontWeight: 600, color: 'var(--error)' }">
+                      [[ depletedCount ]]</div>
+                  </a-card>
+                </a-col>
+              </a-row>
+
+              <a-card hoverable :style="{ marginBottom: '16px' }">
+                <div :style="{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: '8px' }">
+                  <a-input-search v-model.trim="search"
+                    placeholder='{{ i18n "pages.clients.searchPlaceholder" }}'
+                    :style="{ maxWidth: '320px' }" allow-clear></a-input-search>
+                  <a-select v-model="protocolFilter" :style="{ minWidth: '150px' }"
+                    :dropdown-class-name="themeSwitcher.currentTheme">
+                    <a-select-option value="">{{ i18n "pages.clients.allProtocols" }}</a-select-option>
+                    <a-select-option v-for="p in protocols" :key="p" :value="p">[[ p ]]</a-select-option>
+                  </a-select>
+                  <a-select v-model="stateFilter" :style="{ minWidth: '170px' }"
+                    :dropdown-class-name="themeSwitcher.currentTheme">
+                    <a-select-option value="">{{ i18n "pages.clients.allStates" }}</a-select-option>
+                    <a-select-option value="grouped">{{ i18n "pages.clients.onlyGrouped" }}</a-select-option>
+                    <a-select-option value="online">{{ i18n "online" }}</a-select-option>
+                    <a-select-option value="depleted">{{ i18n "depleted" }}</a-select-option>
+                    <a-select-option value="disabled">{{ i18n "disabled" }}</a-select-option>
+                  </a-select>
+                  <a-button icon="reload" @click="load(true)" :loading="spinning"></a-button>
+                  <span class="bo-muted" v-if="filtered.length !== rows.length">
+                    [[ filtered.length ]] / [[ rows.length ]]
+                  </span>
+                </div>
+              </a-card>
+
+              <a-card hoverable :body-style="{ padding: isMobile ? '8px' : '16px' }">
+                <a-table :columns="columns" :data-source="filtered" :row-key="r => r.key"
+                  :pagination="{ pageSize: 25, showSizeChanger: true, pageSizeOptions: ['25','50','100','200'] }"
+                  :scroll="{ x: true }" size="middle">
+
+                  <template slot="client" slot-scope="text, row">
+                    <a-space direction="horizontal" :size="2">
+                      <a-tooltip>
+                        <template slot="title">
+                          <template v-if="row.depleted">{{ i18n "depleted" }}</template>
+                          <template v-else-if="!row.enable">{{ i18n "disabled" }}</template>
+                          <template v-else-if="row.online">{{ i18n "online" }}</template>
+                          <template v-else>{{ i18n "offline" }}</template>
+                        </template>
+                        <a-badge :class="row.online ? 'online-animation' : ''"
+                          :color="row.enable ? (row.depleted ? '#cf3c3c' : '#008771') : (themeSwitcher.isDarkTheme ? '#2c3950' : '#bcbcbc')"></a-badge>
+                      </a-tooltip>
+                      <a-space direction="vertical" :size="2">
+                        <span class="client-email">[[ row.email ]]</span>
+                        <span class="client-comment" v-if="row.comment">[[ row.comment ]]</span>
+                      </a-space>
+                    </a-space>
+                  </template>
+
+                  <!-- The point of the page: the customer, spelled once per row, so
+                       the three accounts of a combined one read as one person
+                       instead of three unrelated names in three different inbounds. -->
+                  <template slot="group" slot-scope="text, row">
+                    <a-tooltip v-if="row.group" :overlay-class-name="themeSwitcher.currentTheme">
+                      <template slot="title">{{ i18n "pages.combined.groupTagDesc" }}</template>
+                      <a-tag color="purple" :style="{ cursor: 'default' }">
+                        <a-icon type="usergroup-add" :style="{ marginRight: '3px' }"></a-icon>[[ row.group.name ]]
+                      </a-tag>
+                    </a-tooltip>
+                    <span v-else class="bo-muted">—</span>
+                  </template>
+
+                  <template slot="protocol" slot-scope="text, row">
+                    <a-tag>[[ row.protocol ]]</a-tag>
+                  </template>
+
+                  <template slot="inbound" slot-scope="text, row">
+                    <a :href="basePath + 'panel/inbounds'">[[ row.inboundRemark || ('#' + row.inboundId) ]]</a>
+                  </template>
+
+                  <template slot="traffic" slot-scope="text, row">
+                    <a-popover :overlay-class-name="themeSwitcher.currentTheme">
+                      <template slot="content">
+                        <table cellpadding="2">
+                          <tr v-if="row.group">
+                            <td colspan="2" :style="{ textAlign: 'center' }">
+                              {{ i18n "pages.combined.sharedWith" }} <b>[[ row.group.name ]]</b>
+                              ([[ row.group.members ]])
+                            </td>
+                          </tr>
+                          <tr v-if="row.group">
+                            <td>{{ i18n "pages.combined.ownUsage" }}</td>
+                            <td>[[ SizeFormatter.sizeFormat(row.ownUsed) ]]</td>
+                          </tr>
+                          <tr>
+                            <td>↑[[ SizeFormatter.sizeFormat(row.up) ]]</td>
+                            <td>↓[[ SizeFormatter.sizeFormat(row.down) ]]</td>
+                          </tr>
+                          <tr v-if="row.total > 0">
+                            <td>{{ i18n "remained" }}</td>
+                            <td>[[ SizeFormatter.sizeFormat(Math.max(0, row.total - row.used)) ]]</td>
+                          </tr>
+                        </table>
+                      </template>
+                      <table>
+                        <tr class="tr-table-box">
+                          <td class="tr-table-rt">[[ SizeFormatter.sizeFormat(row.used) ]]</td>
+                          <td class="tr-table-bar" v-if="row.total > 0">
+                            <a-progress :show-info="false"
+                              :status="row.depleted ? 'exception' : ''"
+                              :percent="row.percent"></a-progress>
+                          </td>
+                          <td v-else class="infinite-bar tr-table-bar">
+                            <a-progress :show-info="false" :percent="100"></a-progress>
+                          </td>
+                          <td class="tr-table-lt">
+                            <template v-if="row.total > 0">[[ NumberFormatter.toFixed(row.total / SizeFormatter.ONE_GB, 2) + "GB" ]]</template>
+                            <span v-else class="tr-infinity-ch">&infin;</span>
+                          </td>
+                        </tr>
+                      </table>
+                    </a-popover>
+                  </template>
+
+                  <template slot="expiry" slot-scope="text, row">
+                    <a-tag v-if="row.expiryTime === 0" :style="{ border: 'none' }">∞</a-tag>
+                    <a-tooltip v-else :overlay-class-name="themeSwitcher.currentTheme">
+                      <template slot="title">
+                        <span v-if="row.expiryTime < 0">{{ i18n "pages.client.delayedStart" }}</span>
+                        <span v-else>[[ IntlUtil.formatDate(row.expiryTime) ]]</span>
+                      </template>
+                      <a-tag :color="row.expiryTime > 0 && row.expiryTime <= now ? 'red' : ''">
+                        <span v-if="row.expiryTime < 0">{{ i18n "pages.client.delayedStart" }}</span>
+                        <span v-else>[[ IntlUtil.formatRelativeTime(row.expiryTime) ]]</span>
+                      </a-tag>
+                    </a-tooltip>
+                  </template>
+                </a-table>
+
+                <div v-if="!rows.length && !spinning" class="bo-muted"
+                  :style="{ textAlign: 'center', padding: '24px' }">
+                  {{ i18n "pages.clients.empty" }}
+                </div>
+              </a-card>
+            </a-col>
+          </a-row>
+        </transition>
+      </a-spin>
+{{template "page/shell_end" . }}
+
+{{template "page/body_scripts" .}}
+{{template "component/aSidebar" .}}
+{{template "component/aThemeSwitch" .}}
+
+<script>
+  const app = new Vue({
+    delimiters: ['[[', ']]'],
+    mixins: [MediaQueryMixin],
+    el: '#app',
+    data: {
+      themeSwitcher,
+      pageTitle: '{{ i18n "pages.clients.title" }}',
+      // Named so the traffic cell picks up its layout: the bar/label rules in
+      // custom.css are scoped per page, and this table renders the same markup.
+      pageClass: 'clients-page',
+      spinning: false,
+      dbInbounds: [],
+      // Keyed by id, exactly as the inbounds page holds them: a grouped account's own
+      // row carries only its own bytes, so the shared figure exists nowhere else.
+      clientGroups: {},
+      onlineClients: [],
+      search: '',
+      protocolFilter: '',
+      stateFilter: '',
+      now: Date.now(),
+      columns: [
+        { title: '{{ i18n "pages.clients.colClient" }}', scopedSlots: { customRender: 'client' },
+          sorter: (a, b) => a.email.localeCompare(b.email) },
+        { title: '{{ i18n "pages.clients.colCustomer" }}', scopedSlots: { customRender: 'group' },
+          sorter: (a, b) => (a.group ? a.group.name : '￿').localeCompare(b.group ? b.group.name : '￿') },
+        { title: '{{ i18n "pages.clients.colProtocol" }}', scopedSlots: { customRender: 'protocol' },
+          sorter: (a, b) => a.protocol.localeCompare(b.protocol) },
+        { title: '{{ i18n "pages.clients.colInbound" }}', scopedSlots: { customRender: 'inbound' },
+          sorter: (a, b) => (a.inboundRemark || '').localeCompare(b.inboundRemark || '') },
+        { title: '{{ i18n "pages.inbounds.traffic" }}', scopedSlots: { customRender: 'traffic' },
+          sorter: (a, b) => a.used - b.used },
+        { title: '{{ i18n "pages.inbounds.expireDate" }}', scopedSlots: { customRender: 'expiry' },
+          sorter: (a, b) => (a.expiryTime || Infinity) - (b.expiryTime || Infinity) },
+      ],
+    },
+    computed: {
+      // One flat row per account, across every inbound. Built once per load rather
+      // than resolved per cell: the table sorts and filters over these, and a cell
+      // that recomputed a group lookup would do it on every keystroke of the search.
+      rows() {
+        const out = [];
+        for (const dbInbound of this.dbInbounds) {
+          let clients = [];
+          try {
+            clients = JSON.parse(dbInbound.settings || '{}').clients || [];
+          } catch (e) { continue; }
+          const stats = new Map();
+          for (const s of (dbInbound.clientStats || [])) stats.set(s.email, s);
+
+          for (const c of clients) {
+            if (!c || !c.email) continue;
+            const st = stats.get(c.email);
+            const group = st && st.groupId ? (this.clientGroups[st.groupId] || null) : null;
+            // The GROUP's figures when there is one: that is the allowance this
+            // account is billed against and what actually runs out. Its own bytes
+            // are kept beside them, because that is what says which protocol the
+            // customer really uses.
+            const ownUp = st ? (st.up || 0) : 0;
+            const ownDown = st ? (st.down || 0) : 0;
+            const up = group ? (group.up || 0) : ownUp;
+            const down = group ? (group.down || 0) : ownDown;
+            const total = group ? (group.total || 0) : (st ? (st.total || 0) : (c.totalGB || 0));
+            const used = up + down;
+            const expiryTime = st ? (st.expiryTime || 0) : (c.expiryTime || 0);
+            out.push({
+              key: dbInbound.id + ':' + c.email,
+              email: c.email,
+              comment: c.comment || '',
+              protocol: dbInbound.protocol,
+              inboundId: dbInbound.id,
+              inboundRemark: dbInbound.remark,
+              group, up, down, total, used,
+              ownUsed: ownUp + ownDown,
+              percent: total > 0 ? Math.min(100, 100 * used / total) : 100,
+              enable: st ? !!st.enable : (c.enable !== false),
+              online: this.onlineClients.includes(c.email),
+              depleted: (total > 0 && used >= total) ||
+                (expiryTime > 0 && expiryTime <= this.now),
+              expiryTime,
+            });
+          }
+        }
+        return out;
+      },
+      filtered() {
+        const q = this.search.toLowerCase();
+        return this.rows.filter(r => {
+          if (this.protocolFilter && r.protocol !== this.protocolFilter) return false;
+          switch (this.stateFilter) {
+            case 'grouped': if (!r.group) return false; break;
+            case 'online': if (!r.online) return false; break;
+            case 'depleted': if (!r.depleted) return false; break;
+            case 'disabled': if (r.enable) return false; break;
+          }
+          if (!q) return true;
+          // The customer's name is searchable too, which is the whole point: typing
+          // it brings up every protocol they hold in one list.
+          return r.email.toLowerCase().includes(q)
+            || (r.group && r.group.name.toLowerCase().includes(q))
+            || (r.inboundRemark || '').toLowerCase().includes(q)
+            || (r.comment || '').toLowerCase().includes(q)
+            || r.protocol.toLowerCase().includes(q);
+        });
+      },
+      protocols() {
+        return [...new Set(this.rows.map(r => r.protocol))].sort();
+      },
+      // Customers, not accounts: every group counts once, and each ungrouped
+      // account is its own customer.
+      customerCount() {
+        const groups = new Set();
+        let solo = 0;
+        for (const r of this.rows) {
+          if (r.group) groups.add(r.group.id); else solo++;
+        }
+        return groups.size + solo;
+      },
+      onlineCount() { return this.rows.filter(r => r.online).length; },
+      depletedCount() { return this.rows.filter(r => r.depleted).length; },
+    },
+    methods: {
+      async load(showSpinner = false) {
+        if (showSpinner) this.spinning = true;
+        const msg = await HttpUtil.get('/panel/api/inbounds/list');
+        if (msg.success) this.dbInbounds = msg.obj || [];
+        await this.loadGroups();
+        await this.loadOnline();
+        this.now = Date.now();
+        this.spinning = false;
+      },
+      // Failure-tolerant and raw-axios, like the inbounds page: this decorates a list
+      // that already loaded, and a red toast because a secondary fetch blipped would
+      // be worse than a figure that is one refresh stale.
+      async loadGroups() {
+        if (RESELLER.isReseller) return;
+        try {
+          const resp = await axios.get('/panel/api/inbounds/clientGroups');
+          const body = resp && resp.data ? resp.data : null;
+          const list = body && Array.isArray(body.obj) ? body.obj : null;
+          if (!list) return;
+          const byId = {};
+          for (const g of list) byId[g.id] = g;
+          this.clientGroups = byId;
+        } catch (e) {
+          console.warn('client groups refresh failed', e);
+        }
+      },
+      async loadOnline() {
+        try {
+          const resp = await axios.post('/panel/api/inbounds/onlines');
+          const body = resp && resp.data ? resp.data : null;
+          this.onlineClients = body && Array.isArray(body.obj) ? body.obj : [];
+        } catch (e) {
+          console.warn('online clients refresh failed', e);
+        }
+      },
+    },
+    async mounted() {
+      await this.load(true);
+    },
+  });
+</script>
+{{ template "page/body_end" .}}

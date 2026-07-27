@@ -100,6 +100,7 @@
 "ultraDark" = "Ultra Dark"
 "dashboard" = "Overview"
 "inbounds" = "Inbounds"
+"clients" = "Clients"
 "settings" = "Panel Settings"
 "xray" = "Xray Configs"
 "core" = "Core Settings"
@@ -513,6 +514,20 @@
 "days" = "Day(s)"
 "renew" = "Auto Renew"
 "renewDesc" = "Auto-renewal after expiration. (0 = disable)(unit: day)"
+
+[pages.clients]
+"title" = "Clients"
+"searchPlaceholder" = "Search account, customer, inbound, comment"
+"allProtocols" = "All protocols"
+"allStates" = "Any state"
+"onlyGrouped" = "Combined accounts only"
+"statAccounts" = "Accounts"
+"statCustomers" = "Customers"
+"colClient" = "Account"
+"colCustomer" = "Customer"
+"colProtocol" = "Protocol"
+"colInbound" = "Inbound"
+"empty" = "No accounts yet."
 
 [pages.combined]
 "open" = "Combined Account"

@@ -172,6 +172,16 @@ var knownMissing = keySet(
 	"pages.combined.userLimit", "pages.combined.userLimitDesc",
 	"pages.combined.delayedStartDesc",
 	"pages.combined.limits", "pages.combined.ipLimitVless",
+
+	// The cross-inbound Clients page. Translated in en_US and fa_IR; the other
+	// locales render via the English fallback until translated.
+	"menu.clients",
+	"pages.clients.title", "pages.clients.searchPlaceholder",
+	"pages.clients.allProtocols", "pages.clients.allStates",
+	"pages.clients.onlyGrouped", "pages.clients.statAccounts",
+	"pages.clients.statCustomers", "pages.clients.colClient",
+	"pages.clients.colCustomer", "pages.clients.colProtocol",
+	"pages.clients.colInbound", "pages.clients.empty",
 )
 
 // flattenKeys collapses nested TOML tables into dotted keys (e.g. "pages.core.title").

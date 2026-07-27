@@ -820,6 +820,10 @@ body.dark .bo-theme-toggle .bo-i-moon { display:block; }
 .bo-rs-bal-label { font-size:var(--fs-xs); color:var(--text-3); margin-top:2px; }
 .bo-spec-ico--virt { color:var(--info); }
 .bo-spec-ico--loc { color:var(--ok); }
+/* Secondary text. Only the .bo-spec-val pairing was ever defined, so the class on
+   its own — which the resellers page already used and the clients page uses for its
+   stat captions — rendered at full emphasis and read as a heading. */
+.bo-muted { color:var(--text-3); }
 .bo-spec-val.bo-muted { color:var(--text-3); font-weight:var(--fw-medium,500); }
 .bo-spec-ico--health { color:var(--ok); }
 .bo-spec-ico--panel { color:var(--accent); }

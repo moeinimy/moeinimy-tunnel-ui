@@ -2096,31 +2096,36 @@ li.ant-calendar-time-picker-select-option-selected {
   }
 }
 
-.inbounds-page .tr-table-box {
+.inbounds-page .tr-table-box,
+.clients-page .tr-table-box {
   display:flex;
   gap:4px;
   justify-content:center;
   align-items:center;
 }
 
-.inbounds-page .tr-table-rt {
+.inbounds-page .tr-table-rt,
+.clients-page .tr-table-rt {
   flex-basis:70px;
   min-width:70px;
   text-align:end;
 }
 
-.inbounds-page .tr-table-lt {
+.inbounds-page .tr-table-lt,
+.clients-page .tr-table-lt {
   flex-basis:70px;
   min-width:70px;
   text-align:start;
 }
 
-.inbounds-page .tr-table-bar {
+.inbounds-page .tr-table-bar,
+.clients-page .tr-table-bar {
   flex-basis:160px;
   min-width:60px;
 }
 
-.inbounds-page .tr-infinity-ch {
+.inbounds-page .tr-infinity-ch,
+.clients-page .tr-infinity-ch {
   font-size:14pt;
   max-height:24px;
   display:inline-flex;

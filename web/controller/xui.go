@@ -38,6 +38,10 @@ func (a *XUIController) initRouter(g *gin.RouterGroup) {
 	// denial redirects to, so gating it would loop.
 	g.GET("/", a.index)
 	g.GET("/inbounds", requirePerm(model.PermAccessInbounds), a.inbounds)
+	// Every account on the server in one list. Same permission as the inbounds page
+	// and no data of its own — it reads /panel/api/inbounds/list, which is already
+	// scoped to what the caller may see — so it can show nothing that page could not.
+	g.GET("/clients", requirePerm(model.PermAccessInbounds), a.clients)
 	g.GET("/settings", requirePerm(model.PermPanelSettings), a.settings)
 	g.GET("/xray", requirePerm(model.PermXraySettings), a.xraySettings)
 	g.GET("/core", requirePerm(model.PermCoreSettings), a.coreSettings)
@@ -88,6 +92,11 @@ func (a *XUIController) index(c *gin.Context) {
 // inbounds renders the inbounds management page.
 func (a *XUIController) inbounds(c *gin.Context) {
 	html(c, "inbounds.html", "pages.inbounds.title", nil)
+}
+
+// clients renders the flat, cross-inbound account list.
+func (a *XUIController) clients(c *gin.Context) {
+	html(c, "clients.html", "pages.clients.title", nil)
 }
 
 // settings renders the settings management page.

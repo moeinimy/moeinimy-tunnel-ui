@@ -100,6 +100,7 @@
 "ultraDark" = "فوق تیره"
 "dashboard" = "نمای کلی"
 "inbounds" = "ورودی‌ها"
+"clients" = "کلاینت‌ها"
 "settings" = "تنظیمات پنل"
 "xray" = "پیکربندی ایکس‌ری"
 "core" = "تنظیمات هسته"
@@ -391,6 +392,20 @@
 "days" = "(روز)"
 "renew" = "تمدید خودکار"
 "renewDesc" = "تمدید خودکار پس‌از ‌انقضا. (0 = غیرفعال)(واحد: روز)"
+
+[pages.clients]
+"title" = "کلاینت‌ها"
+"searchPlaceholder" = "جست‌وجوی اکانت، مشتری، اینباند، توضیح"
+"allProtocols" = "همهٔ پروتکل‌ها"
+"allStates" = "همهٔ وضعیت‌ها"
+"onlyGrouped" = "فقط اکانت‌های ترکیبی"
+"statAccounts" = "اکانت‌ها"
+"statCustomers" = "مشتری‌ها"
+"colClient" = "اکانت"
+"colCustomer" = "مشتری"
+"colProtocol" = "پروتکل"
+"colInbound" = "اینباند"
+"empty" = "هنوز اکانتی وجود ندارد."
 
 [pages.combined]
 "open" = "اکانت ترکیبی"

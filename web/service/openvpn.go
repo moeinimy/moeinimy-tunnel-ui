@@ -309,6 +309,12 @@ type openvpnClient struct {
 	Email    string `json:"email"`    // tracking identifier
 	Enable   bool   `json:"enable"`
 	Slot     *int   `json:"slot"` // address-pool slot; nil = fall back to list index
+	// UserLimit caps THIS account's simultaneous devices; nil or 0 inherits the
+	// inbound's. See resolveOvpnUserLimit for the resolution and why the inbound's
+	// value is also the ceiling. It must be declared here or the panel would drop
+	// it on the way in: settings are re-marshalled through this struct, so a field
+	// the UI sends but this type does not name is silently discarded.
+	UserLimit *int `json:"userLimit,omitempty"`
 }
 
 // SetRadius configures the RADIUS service and shared secret for OpenVPN authentication.
@@ -487,6 +493,34 @@ func ovpnProcName(inboundId int, proto string) string {
 // source-IP rules the dokodemo-door path can match — the same trick L2TP/PPTP
 // use. Lookups are keyed by common-name, which username-as-common-name sets to
 // the authenticated username (client.ID).
+// resolveOvpnUserLimit is how many devices ONE account may hold at once: its own
+// User Limit when it carries one, otherwise the inbound's.
+//
+// OpenVPN authenticates by username, so unlike IP Limit this counts SESSIONS, not
+// addresses — two devices behind one NAT are two users here and are capped as
+// two. That is what makes "only one person may use this account" expressible at
+// all, and why it belongs per account: the cap is an entitlement that differs
+// between a personal account and a shared one, while IP Limit could only ever
+// approximate it.
+//
+// The inbound's K stays the ceiling because it is also the POOL STRIDE: each
+// account's device addresses are carved out at slot*K, so an account allowed more
+// than K would lease into the next account's block. An account may therefore ask
+// for fewer devices than the inbound allows, never more.
+//
+// nil or 0 inherits rather than meaning "unlimited", matching resolveIPLimit —
+// the two limits are the same question asked at different enforcement points, and
+// having them read a bare 0 differently would be a trap.
+func resolveOvpnUserLimit(client openvpnClient, inboundK int) int {
+	if client.UserLimit == nil || *client.UserLimit <= 0 {
+		return inboundK
+	}
+	if inboundK > 0 && *client.UserLimit > inboundK {
+		return inboundK
+	}
+	return *client.UserLimit
+}
+
 func (s *OpenVpnService) writeClientConfigDir(inbound *model.Inbound, settings *openvpnSettings, proto string, preserveLeases bool) error {
 	ccdDir := fmt.Sprintf("%s/ccd-%s", s.configDir(inbound.Id), proto)
 	// Rebuild from scratch so deleted/renamed users don't leave stale pins.
@@ -548,6 +582,9 @@ func (s *OpenVpnService) writeClientConfigDir(inbound *model.Inbound, settings *
 			}
 		} else {
 			ips = vpnAccountDeviceIPs(subnets, slot, k)
+		}
+		if n := resolveOvpnUserLimit(client, k); n < len(ips) {
+			ips = ips[:n]
 		}
 		if len(ips) == 0 {
 			continue

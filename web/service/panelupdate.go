@@ -127,10 +127,48 @@ type PanelUpdateInfo struct {
 // the dialog is not where that belongs.
 const panelNotesLimit = 16 << 10
 
-// CheckPanelUpdate queries GitHub for the latest release tag and compares it to
-// the running version. Best-effort and short-timeout: it runs on every overview
-// load, so a slow/unreachable GitHub must not hang the dashboard.
+// panelUpdateTTL is how long a version check is reused before GitHub is asked
+// again.
+//
+// The check used to run on every overview load, which is what made it fragile:
+// GitHub allows 60 unauthenticated API requests per hour PER IP, shared with
+// everything else on the host, so an operator with the dashboard open — or a
+// second panel on the same address — could exhaust the quota and turn the update
+// button into a bare 403. Caching turns a busy dashboard into a handful of
+// requests a day, and the refresh job below keeps the answer current without
+// anyone having to open the page.
+const panelUpdateTTL = 6 * time.Hour
+
+type panelUpdateCached struct {
+	info *PanelUpdateInfo
+	at   time.Time
+}
+
+var panelUpdateCache atomic.Value // panelUpdateCached
+
+// CheckPanelUpdate reports the running version vs. the latest published release,
+// serving a recent answer when there is one. Callers that must talk to GitHub
+// (the refresh job, an operator pressing "check now") use RefreshPanelUpdate.
 func (s *ServerService) CheckPanelUpdate() (*PanelUpdateInfo, error) {
+	if c, ok := panelUpdateCache.Load().(panelUpdateCached); ok && time.Since(c.at) < panelUpdateTTL {
+		// Re-compare against the running version rather than replaying the stored
+		// verdict: after a successful self-update the panel restarts into the new
+		// version, and a cached Available=true would keep offering it to itself.
+		info := *c.info
+		info.Current = config.GetVersion()
+		info.Available = versionNewer(info.Latest, info.Current)
+		return &info, nil
+	}
+	return s.RefreshPanelUpdate()
+}
+
+// RefreshPanelUpdate queries GitHub for the latest release tag and compares it to
+// the running version, refreshing the cache. Best-effort and short-timeout, so a
+// slow or unreachable GitHub never hangs the dashboard.
+//
+// A failed check does NOT overwrite the cache: transient GitHub trouble should
+// leave the last good answer standing rather than replace it with "unknown".
+func (s *ServerService) RefreshPanelUpdate() (*PanelUpdateInfo, error) {
 	cur := config.GetVersion()
 	info := &PanelUpdateInfo{Current: cur, Latest: cur}
 
@@ -159,6 +197,7 @@ func (s *ServerService) CheckPanelUpdate() (*PanelUpdateInfo, error) {
 				}
 				info.Available = versionNewer(latest, cur)
 				info.URL = "https://github.com/" + panelRepo + "/releases/tag/" + tag
+				panelUpdateCache.Store(panelUpdateCached{info: info, at: time.Now()})
 				return info, nil
 			}
 		}
@@ -187,6 +226,7 @@ func (s *ServerService) CheckPanelUpdate() (*PanelUpdateInfo, error) {
 	info.Notes = notes
 	info.PublishedAt = rel.PublishedAt
 	info.URL = rel.HTMLURL
+	panelUpdateCache.Store(panelUpdateCached{info: info, at: time.Now()})
 	return info, nil
 }
 

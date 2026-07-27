@@ -176,6 +176,28 @@
             min="0"
         ></a-input-number>
     </a-form-item>
+    <a-form-item v-if="inbound.protocol === Protocols.OPENVPN">
+        <template slot="label">
+            <a-tooltip>
+                <template slot="title">
+                    <span>
+                        Max devices this account may have connected at once.
+                        OpenVPN authenticates by username, so this counts
+                        SESSIONS, not addresses — set it to 1 and only one person
+                        can use the account, even if they share it. 0 inherits the
+                        inbound's User Limit, which is also the ceiling.
+                    </span>
+                </template>
+                <span>User Limit </span>
+                <a-icon type="question-circle"></a-icon>
+            </a-tooltip>
+        </template>
+        <a-input-number
+            v-model.number="client.userLimit"
+            :min="0"
+            :max="64"
+        ></a-input-number>
+    </a-form-item>
     <a-form-item
         v-if="app.ipLimitEnable && client.limitIp > 0 && client.email && isEdit"
     >

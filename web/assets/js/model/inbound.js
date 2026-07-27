@@ -4064,6 +4064,7 @@ Inbound.OpenvpnSettings.OpenvpnUser = class extends XrayCommonClass {
     limitIp = 0,
     reset = 0,
     slot = undefined,
+    userLimit = 0,
     created_at = undefined,
     updated_at = undefined,
   ) {
@@ -4086,6 +4087,11 @@ Inbound.OpenvpnSettings.OpenvpnUser = class extends XrayCommonClass {
     // account was deleted. The browser NEVER invents one: undefined means "server
     // allocates".
     this.slot = slot;
+    // Per-account User Limit: how many devices may hold this account at once, 0 =
+    // inherit the inbound's. Kept on the model (not only in the form) because every
+    // save posts the whole client back through toJson, so a field the model does not
+    // carry would be erased on the next unrelated edit.
+    this.userLimit = userLimit;
     this.created_at = created_at;
     this.updated_at = updated_at;
   }
@@ -4108,6 +4114,7 @@ Inbound.OpenvpnSettings.OpenvpnUser = class extends XrayCommonClass {
           j.limitIp ?? j.ipLimit ?? 0,
           j.reset ?? 0,
           j.slot,
+          j.userLimit ?? 0,
           j.created_at,
           j.updated_at,
         ),
@@ -4132,6 +4139,7 @@ Inbound.OpenvpnSettings.OpenvpnUser = class extends XrayCommonClass {
       limitIp: this.limitIp,
       reset: this.reset,
       slot: this.slot,
+      userLimit: this.userLimit,
       created_at: this.created_at,
       updated_at: this.updated_at,
     };

@@ -58,7 +58,52 @@ const (
 	// PanelDownloadURL is the release asset both the in-panel updater and the CLI
 	// `update` subcommand download.
 	PanelDownloadURL = "https://github.com/" + panelRepo + "/releases/latest/download/" + PanelAsset
+	// panelLatestPage is the API-free way to learn the latest tag: GitHub redirects
+	// it to /releases/tag/<tag>, and that redirect is not rate limited.
+	panelLatestPage = "https://github.com/" + panelRepo + "/releases/latest"
 )
+
+// latestTagViaRedirect resolves the newest release tag without touching the API,
+// by reading where /releases/latest redirects to.
+//
+// The API allows 60 unauthenticated requests per hour PER IP, shared by
+// everything on the host. The panel checks for updates on every overview load,
+// so a busy operator, a second panel, or any other tooling on the same address
+// can exhaust the quota — and then the update button fails with a bare
+// "GitHub API returned status 403" that looks like a panel bug and leaves no way
+// to update at all. This path keeps the version check working through that.
+//
+// It yields only the tag: notes and timestamp live in the API response. The
+// dialog already handles empty notes, and a version number with no changelog is
+// far better than no answer.
+func latestTagViaRedirect() (string, error) {
+	client := &http.Client{
+		Timeout: 10 * time.Second,
+		CheckRedirect: func(*http.Request, []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+	req, err := http.NewRequest(http.MethodHead, panelLatestPage, nil)
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("User-Agent", "vpn-ui")
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+
+	loc := resp.Header.Get("Location")
+	if loc == "" {
+		return "", fmt.Errorf("no redirect from %s (status %d)", panelLatestPage, resp.StatusCode)
+	}
+	tag := loc[strings.LastIndex(loc, "/")+1:]
+	if tag == "" || tag == "latest" {
+		return "", fmt.Errorf("could not read a tag from %q", loc)
+	}
+	return tag, nil
+}
 
 // PanelUpdateInfo reports the running version vs. the latest published release,
 // plus the release notes the overview shows before an operator commits to
@@ -103,6 +148,20 @@ func (s *ServerService) CheckPanelUpdate() (*PanelUpdateInfo, error) {
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
+		// Rate limiting (403 with the quota exhausted, or 429) is not an outage —
+		// the release is right there, only the API is refusing to describe it. Fall
+		// back to the redirect so the check still answers.
+		if resp.StatusCode == http.StatusForbidden || resp.StatusCode == http.StatusTooManyRequests {
+			if tag, ferr := latestTagViaRedirect(); ferr == nil {
+				latest := strings.TrimPrefix(strings.TrimSpace(tag), "v")
+				if latest != "" {
+					info.Latest = latest
+				}
+				info.Available = versionNewer(latest, cur)
+				info.URL = "https://github.com/" + panelRepo + "/releases/tag/" + tag
+				return info, nil
+			}
+		}
 		return info, fmt.Errorf("GitHub API returned status %d", resp.StatusCode)
 	}
 

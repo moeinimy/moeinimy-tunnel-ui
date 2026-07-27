@@ -40,6 +40,7 @@ func initModels() error {
 		&model.Setting{},
 		&model.InboundClientIps{},
 		&xray.ClientTraffic{},
+		&model.ClientGroup{},
 		&model.HistoryOfSeeders{},
 		&model.CustomGeoResource{},
 	}

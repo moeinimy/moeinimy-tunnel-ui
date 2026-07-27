@@ -2322,6 +2322,83 @@ func (s *InboundService) AddTraffic(inboundTraffics []*xray.Traffic, clientTraff
 	return nil, (needRestart0 || needRestart1 || needRestart2), l2tpDisabledEmails, pptpDisabledEmails, ovpnDisabledEmails
 }
 
+// VpnInboundTraffic turns per-account VPN byte counts into per-inbound totals.
+//
+// An inbound's Traffic column is fed exclusively by Xray's own inbound stats, which
+// only sees what Xray carries. VPN clients reach the internet through the TPROXY
+// steering rules, so their bytes were billed to the dokodemo inbound and the column
+// filled in — but that made the inbound total a measure of the STEERING, not of the
+// inbound. The moment traffic leaves by any other route (the masquerade fallback
+// that catches an unmatched TPROXY rule, client-to-client, cross-inbound) Xray
+// counts nothing and the inbound reads zero while its own clients are visibly
+// moving data, which is what an operator reports as "the inbound's total traffic
+// doesn't work".
+//
+// The nft per-client counters have no such blind spot: they sit in prerouting and
+// count the client's packets whatever happens to them afterwards. Summing them per
+// inbound is therefore both a fix and a simplification — the inbound total becomes
+// the sum of its accounts by construction, instead of a second measurement that
+// agrees with them only while one particular data path is in use.
+//
+// Only VPN inbounds are derived here. For Xray-native protocols the two numbers
+// measure the same bytes, and adding this on top would double every inbound.
+func (s *InboundService) VpnInboundTraffic(traffics []*xray.ClientTraffic) []*xray.Traffic {
+	if len(traffics) == 0 {
+		return nil
+	}
+	inbounds, err := s.GetAllInbounds()
+	if err != nil {
+		return nil
+	}
+	byID := make(map[int]*model.Inbound, len(inbounds))
+	for _, in := range inbounds {
+		if isVpnProtocol(in.Protocol) {
+			byID[in.Id] = in
+		}
+	}
+	if len(byID) == 0 {
+		return nil
+	}
+
+	// The collected records carry only an email — the nft counters are keyed by
+	// client IP and account, and know nothing about inbound ids — so the owning
+	// inbound comes from the account's stored row.
+	emails := make([]string, 0, len(traffics))
+	for _, t := range traffics {
+		emails = append(emails, t.Email)
+	}
+	var rows []*xray.ClientTraffic
+	if err := database.GetDB().Model(xray.ClientTraffic{}).
+		Where("email IN (?)", emails).Find(&rows).Error; err != nil {
+		return nil
+	}
+	inboundOf := make(map[string]int, len(rows))
+	for _, r := range rows {
+		inboundOf[r.Email] = r.InboundId
+	}
+
+	sums := make(map[string]*xray.Traffic)
+	for _, t := range traffics {
+		in, ok := byID[inboundOf[t.Email]]
+		if !ok || (t.Up == 0 && t.Down == 0) {
+			continue
+		}
+		agg, ok := sums[in.Tag]
+		if !ok {
+			agg = &xray.Traffic{IsInbound: true, Tag: in.Tag}
+			sums[in.Tag] = agg
+		}
+		agg.Up += t.Up
+		agg.Down += t.Down
+	}
+
+	out := make([]*xray.Traffic, 0, len(sums))
+	for _, agg := range sums {
+		out = append(out, agg)
+	}
+	return out
+}
+
 func (s *InboundService) addInboundTraffic(tx *gorm.DB, traffics []*xray.Traffic) error {
 	if len(traffics) == 0 {
 		return nil

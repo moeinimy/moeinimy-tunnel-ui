@@ -134,10 +134,12 @@ const panelNotesLimit = 16 << 10
 // GitHub allows 60 unauthenticated API requests per hour PER IP, shared with
 // everything else on the host, so an operator with the dashboard open — or a
 // second panel on the same address — could exhaust the quota and turn the update
-// button into a bare 403. Caching turns a busy dashboard into a handful of
-// requests a day, and the refresh job below keeps the answer current without
-// anyone having to open the page.
-const panelUpdateTTL = 6 * time.Hour
+// button into a bare 403. Caching decouples the request rate from how often the
+// page is opened: at this TTL the panel asks GitHub twice an hour no matter how
+// many operators are watching, comfortably under the quota, while still noticing
+// a release within half an hour. The refresh job keeps it current with nobody
+// looking at all.
+const panelUpdateTTL = 30 * time.Minute
 
 type panelUpdateCached struct {
 	info *PanelUpdateInfo

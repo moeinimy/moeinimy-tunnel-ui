@@ -413,13 +413,14 @@ func (s *Server) startTask() {
 	// warm cache instead of calling GitHub on every load — which is what used to
 	// exhaust the 60-per-hour unauthenticated API quota and fail the update button
 	// with a 403. Once at startup (so a freshly restarted panel has an answer
-	// immediately, before the first tick), then on the interval.
+	// immediately, before the first tick), then every 30 minutes — matching
+	// panelUpdateTTL, so a tick always finds the cache due for a refresh.
 	go func() {
 		if _, err := (&service.ServerService{}).RefreshPanelUpdate(); err != nil {
 			logger.Debugf("panel update check: %v", err)
 		}
 	}()
-	s.cron.AddFunc("@every 6h", func() {
+	s.cron.AddFunc("@every 30m", func() {
 		if _, err := (&service.ServerService{}).RefreshPanelUpdate(); err != nil {
 			logger.Debugf("panel update check: %v", err)
 		}

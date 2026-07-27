@@ -138,7 +138,15 @@ func (j *XrayTrafficJob) Run() {
 		"wg-c":        j.radiusService.GetSessions("wg-c"),
 		"awg":         j.radiusService.GetSessions("awg"),
 	}
-	clientTraffics = append(clientTraffics, j.nftService.CollectAndResetTraffic(vpnSessions)...)
+	vpnTraffics := j.nftService.CollectAndResetTraffic(vpnSessions)
+	clientTraffics = append(clientTraffics, vpnTraffics...)
+
+	// A VPN inbound's own total is the sum of its accounts. Xray's inbound stats
+	// cover only what Xray carries, so they under-report (to zero) any VPN traffic
+	// that reaches the internet by another route — which left the inbound reading
+	// empty while its clients were visibly moving data. Derived from the same nft
+	// counters the clients are billed from, the two can no longer disagree.
+	traffics = append(traffics, j.inboundService.VpnInboundTraffic(vpnTraffics)...)
 
 	// MTProto and SSH are userspace relays: no client ever gets a tunnel IP, so neither
 	// can use the nft per-IP path above. Each keeps its own per-account byte counters

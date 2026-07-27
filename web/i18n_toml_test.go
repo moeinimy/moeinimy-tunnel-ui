@@ -156,6 +156,18 @@ var knownMissing = keySet(
 	"pages.tunnel.node.viewTunnels", "pages.tunnel.node.remove", "pages.tunnel.node.removeConfirm",
 	"pages.tunnel.node.empty", "pages.tunnel.node.execFailed",
 	"pages.tunnel.node.setupTitle", "pages.tunnel.node.setupHint", "pages.tunnel.node.setupNone",
+
+	// Combined accounts (one customer across OpenVPN/L2TP/VLESS on one shared
+	// allowance). Translated in en_US and fa_IR; the other locales render via the
+	// English fallback until translated.
+	"pages.combined.open", "pages.combined.title", "pages.combined.submit",
+	"pages.combined.desc", "pages.combined.name", "pages.combined.nameDesc",
+	"pages.combined.accounts", "pages.combined.credentials", "pages.combined.allowance",
+	"pages.combined.noInbound", "pages.combined.noInbounds", "pages.combined.emailPreview",
+	"pages.combined.usernameDesc", "pages.combined.uuid",
+	"pages.combined.sharedQuotaDesc", "pages.combined.sharedExpiryDesc",
+	"pages.combined.ipLimitDesc", "pages.combined.subIdDesc",
+	"pages.combined.created", "pages.combined.needName", "pages.combined.needProtocol",
 )
 
 // flattenKeys collapses nested TOML tables into dotted keys (e.g. "pages.core.title").

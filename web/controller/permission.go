@@ -230,6 +230,12 @@ const (
 	// a reseller shares with admins and with other resellers, so they reach
 	// accounts that are not theirs.
 	msgResellerNoInboundWide = "Resellers cannot run this across a whole inbound: it would reach accounts you do not own."
+	// A combined account is several accounts sharing ONE allowance, and the balance
+	// can only price one account at a time: charging per member bills the reseller
+	// three times for traffic the customer can spend once. Refused until a
+	// reservation that spans a group exists. Selling the protocols one at a time
+	// still works and is priced correctly.
+	msgResellerNoCombined = "Resellers cannot create a combined account yet: a shared allowance cannot be priced against your balance. Create the accounts one protocol at a time."
 )
 
 // denyForReseller refuses an operation outright when the caller is a reseller, and

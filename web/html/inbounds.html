@@ -95,6 +95,15 @@
                       <template v-if="!isMobile">{{ i18n
                         "pages.inbounds.addInbound" }}</template>
                     </a-button>
+                    <!-- One customer across several protocols in one form. Hidden
+                         from a reseller because the route refuses them: a shared
+                         allowance cannot be priced against a balance that charges
+                         per account, so the entry would only offer a dead end. -->
+                    <a-button v-if="!RESELLER.isReseller" icon="usergroup-add"
+                      @click="openCombinedAccount">
+                      <template v-if="!isMobile">{{ i18n
+                        "pages.combined.open" }}</template>
+                    </a-button>
                     <a-dropdown :trigger="['click']">
                       <a-button type="primary" icon="menu">
                         <template v-if="!isMobile">{{ i18n
@@ -900,6 +909,7 @@
 {{template "modals/inboundInfoModal"}}
 {{template "modals/clientsModal"}}
 {{template "modals/clientsBulkModal"}}
+{{template "modals/combinedClientModal"}}
 {{template "modals/wgcConfigModal"}}
 {{template "modals/awgConfigModal"}}
 {{template "modals/sshConfigModal"}}
@@ -2149,6 +2159,32 @@
             return clients.findIndex(item => item && item.password === client.password && item.email === client.email);
           default: return clients.findIndex(item => item && item.id === client.id && item.email === client.email);
         }
+      },
+      // One customer, several protocols, one allowance. The modal builds an account
+      // per protocol with the ordinary per-protocol constructors; this only posts
+      // them, so the accounts are byte-identical to hand-made ones.
+      openCombinedAccount() {
+        const usable = this.dbInbounds.filter(row =>
+          [Protocols.OPENVPN, Protocols.L2TP, Protocols.VLESS].includes(row.protocol));
+        if (usable.length === 0) {
+          this.$message.warning('{{ i18n "pages.combined.noInbounds" }}');
+          return;
+        }
+        combinedModal.show({
+          title: '{{ i18n "pages.combined.title"}}',
+          okText: '{{ i18n "pages.combined.submit"}}',
+          dbInbounds: this.dbInbounds,
+          confirm: async (payload) => {
+            await this.addCombinedAccount(payload, combinedModal);
+          },
+        });
+      },
+      async addCombinedAccount(payload, modal) {
+        // A JSON string in a "data" field, not a JSON body: the panel's axios
+        // form-urlencodes every request (assets/js/axios-init.js), so a nested
+        // payload has no other way through. Same convention as the tunnel page.
+        await this.submit('/panel/api/inbounds/combinedAccount/add',
+          { data: JSON.stringify(payload) }, modal);
       },
       async addClient(clients, dbInboundId, modal) {
         const data = {

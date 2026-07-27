@@ -392,10 +392,7 @@
       </div>
       <div class="bo-vpnui-body">
         <div>
-          <a rel="noopener" href="https://github.com/Sir-MmD/vpn-ui" target="_blank"
-            :style="{ color: 'inherit', textDecoration: 'none' }">
-            <div class="bo-vpnui-version num">v{{ .cur_ver }}</div>
-          </a>
+          <div class="bo-vpnui-version num">v{{ .cur_ver }}</div>
           <p v-if="panelUpdate.checked && !panelUpdate.available && !panelUpdate.checking"
             class="bo-status-line bo-status-line--ok">
             <svg class="bo-icon bo-icon-16" aria-hidden="true"><use href="#bo-i-check-circle"></use></svg>

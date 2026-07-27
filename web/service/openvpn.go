@@ -648,16 +648,32 @@ func (s *OpenVpnService) buildServerConfig(inbound *model.Inbound, settings *ope
 	b.WriteString(fmt.Sprintf("client-config-dir %s/ccd-%s\n", dir, proto))
 	// User Limit is enforced by the client-connect hook for EVERY K (>=1): it leases
 	// each device an IP from the account's published block and rejects/evicts past the
-	// cap. duplicate-cn is emitted ONLY for K>=2, where K devices legitimately share one
-	// CN (each on a distinct block IP). For K==1 it MUST stay off: with it on, two
-	// same-account clients can hold the SAME single block IP at once (OpenVPN allows
-	// duplicate CNs to co-occupy an ifconfig-push'd address), and the async "accept"
-	// eviction can't win the race against persistent auto-reconnecting clients — they
-	// both sit on the one IP with a routing conflict ("connected but no internet"). With
-	// duplicate-cn off, OpenVPN's native one-per-CN guarantees a single live session: the
-	// hook still refuses the 2nd device under "reject" (exit 1), while "accept" admits the
-	// newcomer and OpenVPN drops the old same-CN session cleanly.
-	if effectiveUserLimit(settings.UserLimit) >= 2 {
+	// cap. duplicate-cn decides who ARBITRATES a second device on one CN — the hook, or
+	// OpenVPN's native one-per-CN.
+	//
+	// K>=2 needs it on regardless: K devices legitimately share the CN, each on its own
+	// block IP.
+	//
+	// At K==1 it depends on the strategy, and this is what made "accept" unusable there.
+	// With it off, OpenVPN kicks the incumbent itself the moment the second device
+	// authenticates, BEFORE client-connect runs — so the hook never reaches its eviction
+	// path, never marks the slot, and simply hands the newcomer a free address. The
+	// evicted client auto-reconnects (resolv-retry infinite) a second later and OpenVPN
+	// kicks the newcomer for it, forever: the incumbent flickers once a second and the
+	// second user never holds the tunnel. Every part behaves as designed; nothing
+	// arbitrates.
+	//
+	// "reject" is correct with it off and stays off: OpenVPN's native handling and the
+	// hook's exit-1 agree, and the second device is refused. It is also the safer of the
+	// two, since no two sessions can ever share the single block IP.
+	//
+	// "accept" turns it on so the hook is the sole arbiter: it evicts the incumbent by
+	// real address, protects the slot (see ovpnEvictProtect in main.go), and the evicted
+	// peer's redial is REFUSED rather than admitted — which OpenVPN reports as
+	// AUTH_FAILED, and a client stops retrying on that instead of fighting back. The
+	// co-occupancy this comment used to warn about is now bounded by the evictor's
+	// handoff delay rather than lasting until one client gives up.
+	if effectiveUserLimit(settings.UserLimit) >= 2 || normUserLimitStrategy(settings.UserLimitStrategy) == "accept" {
 		b.WriteString("duplicate-cn\n")
 	}
 	if settings.ClientToClient {

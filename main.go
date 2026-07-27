@@ -1888,6 +1888,7 @@ func ovpnLeaseBlockIP(inboundId int, username, poolIP, sessionKey string) (strin
 			}
 			ovpnWriteLease(leaseDir, ip, sessionKey)
 			ovpnClearRelease(dir, proto, ip)
+			ovpnClearProtect(dir, proto, ip)
 			return ip, mask, false
 		}
 	}
@@ -1922,17 +1923,38 @@ func ovpnLeaseBlockIP(inboundId int, username, poolIP, sessionKey string) (strin
 	if ghostIP != "" {
 		ovpnWriteLease(leaseDir, ghostIP, sessionKey)
 		ovpnClearRelease(dir, proto, ghostIP)
+		ovpnClearProtect(dir, proto, ghostIP)
 		return ghostIP, mask, false
 	}
 
 	// Past that, the block really is held by live devices. "accept": evict the account's
 	// oldest device and take its address. "reject" (default): refuse.
 	if ovpnReadStrategy(dir, proto) == "accept" {
+		// A slot won by eviction is off limits for a moment, so the peer that was
+		// just evicted cannot immediately evict its way back in. See
+		// ovpnEvictProtect: without this the two clients trade the tunnel once a
+		// second forever and neither can hold it.
+		allProtected := true
+		for _, ip := range candidates {
+			if !ovpnSlotProtected(dir, proto, ip) {
+				allProtected = false
+				break
+			}
+		}
+		if allProtected {
+			return "", "", true
+		}
 		// A real device-cap hit: evict the oldest LIVE device and reuse its IP. The kill
 		// MUST happen AFTER this hook returns — client-connect runs synchronously and
 		// blocks OpenVPN's management loop — so hand it to the detached openvpn-evict
 		// helper. Killing by the pre-captured real address hits the OLD device.
-		victimIP, victimRAddr := ovpnOldestFromStatus(statusPath, candidates)
+		evictable := make([]string, 0, len(candidates))
+		for _, ip := range candidates {
+			if !ovpnSlotProtected(dir, proto, ip) {
+				evictable = append(evictable, ip)
+			}
+		}
+		victimIP, victimRAddr := ovpnOldestFromStatus(statusPath, evictable)
 		if victimIP == "" {
 			// The block is full by leases, but no device is in the (up to 5s-stale)
 			// status file yet, so it can't name a victim. Fall back to the OLDEST
@@ -1941,14 +1963,21 @@ func ovpnLeaseBlockIP(inboundId int, username, poolIP, sessionKey string) (strin
 			// address). WITHOUT this, "accept" wrongly behaved like "reject" for any
 			// device dialing within ~5s of the incumbents (the status hadn't flushed, so
 			// the eviction never fired) — the "accept always rejects" bug.
-			victimIP = oldestLeasedIP(leaseAge)
+			protectedAge := make(map[string]time.Duration, len(leaseAge))
+			for _, ip := range evictable {
+				if age, ok := leaseAge[ip]; ok {
+					protectedAge[ip] = age
+				}
+			}
+			victimIP = oldestLeasedIP(protectedAge)
 			if victimIP == "" {
-				return "", "", true // genuinely nothing leased to reuse — refuse
+				return "", "", true // genuinely nothing evictable to reuse — refuse
 			}
 		}
 		ovpnSpawnEvict(inboundId, proto, victimIP, victimRAddr)
 		ovpnWriteLease(leaseDir, victimIP, sessionKey)
 		ovpnClearRelease(dir, proto, victimIP)
+		ovpnProtectSlot(dir, proto, victimIP)
 		return victimIP, mask, false
 	}
 	return "", "", true // reject the new device
@@ -2062,6 +2091,62 @@ const ovpnReleaseTTL = 15 * time.Second
 // the evictor is a detached helper), so asking it from the hook would deadlock until the
 // timeout. The disconnect hook already knows exactly which address was freed, so it says
 // so here and the connect hook believes it over the stale file.
+// ovpnEvictProtect is how long a slot taken by eviction cannot itself be evicted.
+//
+// Without it, "accept" with User Limit 1 is an eviction war rather than a policy.
+// Both peers auto-reconnect (resolv-retry infinite, persist-tun), so device B
+// evicts A, A's client redials a second later and evicts B, B redials and evicts
+// A: the incumbent flickers once a second and the newcomer never holds the
+// tunnel. Whoever's client happens to back off less wins, which is usually the
+// one that was already connected — so the operator sees "accept refuses to hand
+// over" even though every eviction is firing exactly as written.
+//
+// Protecting the winner breaks the loop at its one asymmetry: the loser's redial
+// hits a full block with no evictable slot and is REFUSED, and OpenVPN reports a
+// failing client-connect to the client as AUTH_FAILED — which a client stops
+// retrying on, instead of backing off and trying forever. So the evicted peer
+// leaves rather than fighting back, which is what "accept" was supposed to mean.
+//
+// It applies ONLY to a slot won by eviction. Protecting every admission would
+// make "accept" behave like "reject" for the first minute of any session.
+const ovpnEvictProtect = 60 * time.Second
+
+// ovpnProtectSlot marks a block IP as won by eviction, as of now.
+func ovpnProtectSlot(dir, proto, blockIP string) {
+	if blockIP == "" {
+		return
+	}
+	protDir := filepath.Join(dir, "protected-"+proto)
+	if err := os.MkdirAll(protDir, 0755); err != nil {
+		return
+	}
+	_ = os.WriteFile(filepath.Join(protDir, blockIP), nil, 0644)
+}
+
+// ovpnSlotProtected reports whether this block IP was taken by eviction recently
+// enough to be off limits, expiring older markers as it goes.
+func ovpnSlotProtected(dir, proto, blockIP string) bool {
+	p := filepath.Join(dir, "protected-"+proto, blockIP)
+	fi, err := os.Stat(p)
+	if err != nil {
+		return false
+	}
+	if time.Since(fi.ModTime()) > ovpnEvictProtect {
+		os.Remove(p)
+		return false
+	}
+	return true
+}
+
+// ovpnClearProtect drops the marker when the slot is freed normally, so a
+// disconnect-and-redial inside the window is not refused by a stale protection.
+func ovpnClearProtect(dir, proto, blockIP string) {
+	if blockIP == "" {
+		return
+	}
+	os.Remove(filepath.Join(dir, "protected-"+proto, blockIP))
+}
+
 func ovpnWriteRelease(dir, proto, blockIP string) {
 	if blockIP == "" {
 		return
@@ -2180,7 +2265,12 @@ func openvpnEvict() {
 	if len(os.Args) >= 6 {
 		raddr = os.Args[5]
 	}
-	time.Sleep(1500 * time.Millisecond) // let the connect hook return first
+	// Let the connect hook return so OpenVPN resumes servicing its management
+	// socket. This delay is also exactly how long the victim and the newcomer both
+	// hold the block address at User Limit 1 (where they share the account's single
+	// IP), so it is kept as short as that handoff allows: the hook's remaining work
+	// after spawning us is one small file write.
+	time.Sleep(500 * time.Millisecond)
 
 	sock := fmt.Sprintf("/var/run/openvpn/mgmt-%d-%s.sock", inboundId, proto)
 	conn, err := net.Dial("unix", sock)
@@ -2363,6 +2453,7 @@ func openvpnDisconnect() {
 		// Tell the connect hook this address is free NOW; the status file will not say
 		// so for up to another 5s, and a redial in between would be refused.
 		ovpnWriteRelease(dir, proto, leased)
+		ovpnClearProtect(dir, proto, leased)
 		ip = leased
 	}
 

@@ -78,6 +78,11 @@ func (a *InboundController) initRouter(g *gin.RouterGroup) {
 	g.POST("/clientGroups/update/:id", requirePerm(model.PermEditClient), a.updateClientGroup)
 	g.POST("/clientGroups/del/:id", requirePerm(model.PermEditClient), a.delClientGroup)
 	g.POST("/clientGroups/membership", requirePerm(model.PermEditClient), a.setClientGroupMembership)
+	// One customer across several protocols in one step. It CREATES accounts, so it
+	// carries the create bit rather than the edit bit the group routes above use; the
+	// group it also writes is the entitlement those accounts are created against, not a
+	// separate thing to authorize.
+	g.POST("/combinedAccount/add", requirePerm(model.PermCreateClient), a.addCombinedAccount)
 
 	g.POST("/add", requirePerm(model.PermCreateInbound), a.addInbound)
 	g.POST("/del/:id", requirePerm(model.PermDeleteInbound), owns, a.delInbound)
@@ -806,29 +811,45 @@ func (a *InboundController) addInboundClient(c *gin.Context) {
 		}
 	}
 
-	if data.Protocol == model.L2TP {
-		a.onL2tpClientChanged()
-	} else if data.Protocol == model.PPTP {
-		a.onPptpClientChanged()
-	} else if data.Protocol == model.OPENVPN {
-		a.onOpenVpnClientChanged()
-	} else if data.Protocol == model.OPENCONNECT {
-		a.onOcservClientChanged()
-	} else if data.Protocol == model.SSTP {
-		a.onSstpClientChanged()
-	} else if data.Protocol == model.IKEV2 {
-		a.onIkev2ClientChanged()
-	} else if data.Protocol == model.WGC {
-		a.onWgcClientChanged()
-	} else if data.Protocol == model.AWG {
-		a.onAwgClientChanged()
-	} else if data.Protocol == model.MTPROTO {
-		a.onMtprotoClientChanged()
-	} else if data.Protocol == model.SSH {
-		a.onSshClientChanged()
-	} else if needRestart {
+	if !a.reloadClientsFor(data.Protocol) && needRestart {
 		a.xrayService.SetToNeedRestart()
 	}
+}
+
+// reloadClientsFor tells whichever daemon owns protocol that its account list changed,
+// and reports whether it found one. False means the protocol is Xray's own, which is
+// not reloaded here: Xray takes accounts through its API and only needs a restart when
+// that failed, so the caller decides from its own needRestart.
+//
+// One switch rather than a chain of else-ifs per call site: the combined-account route
+// has to do this for several protocols at once, and a second copy of the list is a copy
+// that can be missing whichever protocol is added next.
+func (a *InboundController) reloadClientsFor(protocol model.Protocol) bool {
+	switch protocol {
+	case model.L2TP:
+		a.onL2tpClientChanged()
+	case model.PPTP:
+		a.onPptpClientChanged()
+	case model.OPENVPN:
+		a.onOpenVpnClientChanged()
+	case model.OPENCONNECT:
+		a.onOcservClientChanged()
+	case model.SSTP:
+		a.onSstpClientChanged()
+	case model.IKEV2:
+		a.onIkev2ClientChanged()
+	case model.WGC:
+		a.onWgcClientChanged()
+	case model.AWG:
+		a.onAwgClientChanged()
+	case model.MTPROTO:
+		a.onMtprotoClientChanged()
+	case model.SSH:
+		a.onSshClientChanged()
+	default:
+		return false
+	}
+	return true
 }
 
 // copyInboundClients copies clients from source inbound to target inbound.
@@ -2091,10 +2112,83 @@ func (a *InboundController) setClientGroupMembership(c *gin.Context) {
 		GroupId int      `json:"groupId"`
 		Emails  []string `json:"emails"`
 	}
-	if err := c.ShouldBindJSON(&body); err != nil {
+	// bindData, not ShouldBindJSON: the panel's axios form-urlencodes every body it
+	// sends (see web/assets/js/axios-init.js), so a JSON-only bind is a route the
+	// BROWSER can never call — it only ever worked for curl.
+	if err := bindData(c, &body); err != nil {
 		jsonMsg(c, I18nWeb(c, "pages.inbounds.toasts.update"), err)
 		return
 	}
 	jsonMsg(c, I18nWeb(c, "pages.inbounds.toasts.update"),
 		a.clientGroupService.SetMembership(body.GroupId, body.Emails))
+}
+
+// addCombinedAccount creates one customer's accounts across several protocols at once —
+// OpenVPN for the phone, L2TP for the network that blocks everything else, VLESS for
+// the laptop — and puts them in a group, so the three of them spend ONE allowance.
+//
+// The accounts arrive fully built, one per inbound, in the same shape /addClient takes.
+// This handler is the part the service cannot do: authorize the inbounds they land on,
+// and afterwards reload the daemons behind them.
+func (a *InboundController) addCombinedAccount(c *gin.Context) {
+	// Refused for a reseller, deliberately. Every other create path prices exactly ONE
+	// account against their balance (PrepareClientCreate reserves per client email),
+	// and a combined account is several accounts sharing ONE allowance: pricing it per
+	// member charges three times for traffic that can only be spent once, and charging
+	// once needs a reservation spanning several accounts, which the reseller service
+	// has no notion of. Wrong by a factor of three is worse than absent, so this stays
+	// admin-only until that pricing exists.
+	if denyForReseller(c, msgResellerNoCombined) {
+		return
+	}
+
+	var body struct {
+		Group   model.ClientGroup        `json:"group"`
+		Members []service.CombinedMember `json:"members"`
+	}
+	// The panel's axios form-urlencodes every body, so this arrives as a JSON string in
+	// a "data" field; bindData still takes real JSON from an API client.
+	if err := bindData(c, &body); err != nil {
+		jsonMsg(c, I18nWeb(c, "pages.inbounds.toasts.create"), err)
+		return
+	}
+
+	// The target inbounds are BODY fields, so no route guard sees them — the same hole
+	// addInboundClient closes by hand, once per member here. Without it an admin
+	// holding only createClient provisions live accounts on another admin's inbounds,
+	// invisible in their own list and eating the victim's IP pool.
+	for _, m := range body.Members {
+		if !a.callerOwnsInbound(c, m.InboundId) {
+			jsonMsg(c, I18nWeb(c, "pages.inbounds.notFound"), errNotOwned)
+			return
+		}
+	}
+
+	result, err := a.clientGroupService.CreateCombined(&body.Group, body.Members)
+	if err != nil {
+		jsonMsg(c, I18nWeb(c, "somethingWentWrong"), err)
+		return
+	}
+	jsonMsgObj(c, I18nWeb(c, "pages.combined.created"), result, nil)
+
+	// Reload each daemon ONCE, however many of this customer's accounts landed on it: a
+	// reload regenerates that daemon's whole account list and restarts it, so doing it
+	// per account would bounce the same service twice for nothing.
+	daemonOwned := make(map[model.Protocol]bool, len(result.Members))
+	for _, m := range result.Members {
+		if _, seen := daemonOwned[m.Protocol]; seen {
+			continue
+		}
+		daemonOwned[m.Protocol] = a.reloadClientsFor(m.Protocol)
+	}
+	// Xray's own protocols take new accounts through its API and need a restart only
+	// where that failed. Read per member rather than off the batch: the VPN protocols
+	// go through that same API call, which cannot work for them, so their needRestart
+	// is always set and would otherwise restart the core after every combined account.
+	for _, m := range result.Members {
+		if m.NeedRestart && !daemonOwned[m.Protocol] {
+			a.xrayService.SetToNeedRestart()
+			break
+		}
+	}
 }

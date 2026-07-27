@@ -114,6 +114,17 @@
           :style="{ margin: '0 0 0 4px', fontSize: '11px', lineHeight: '16px', padding: '0 5px' }">
           {{ i18n "pages.client.frozen" }}
         </a-tag>
+        <!-- The traffic column shows this account's SHARE of a pooled allowance, not
+             its own bytes. That is a different meaning for the same-looking number,
+             so it is named on the row rather than left to be discovered in a
+             popover. -->
+        <a-tooltip v-if="clientGroup(record, client.email)" :overlay-class-name="themeSwitcher.currentTheme">
+          <template slot="title">{{ i18n "pages.combined.groupTagDesc" }}</template>
+          <a-tag color="purple"
+            :style="{ margin: '0 0 0 4px', fontSize: '11px', lineHeight: '16px', padding: '0 5px', cursor: 'default' }">
+            <a-icon type="usergroup-add" :style="{ marginRight: '3px' }"></a-icon>[[ clientGroup(record, client.email).name ]]
+          </a-tag>
+        </a-tooltip>
       </span>
       <template v-if="client.comment && client.comment.trim()">
         <a-tooltip v-if="client.comment.length > 50" :overlay-class-name="themeSwitcher.currentTheme">
@@ -131,11 +142,25 @@
   <a-popover :overlay-class-name="themeSwitcher.currentTheme">
     <template slot="content" v-if="client.email">
       <table cellpadding="2" width="100%">
+        <!-- For a grouped account the bar outside shows the GROUP's usage, so say
+             whose it is and how much of it is this account's. Without this line the
+             same figure on three rows reads as three separate customers. -->
+        <tr v-if="clientGroup(record, client.email)">
+          <td colspan="2" :style="{ textAlign: 'center' }">
+            {{ i18n "pages.combined.sharedWith" }}
+            <b>[[ clientGroup(record, client.email).name ]]</b>
+            ([[ clientGroup(record, client.email).members ]])
+          </td>
+        </tr>
+        <tr v-if="clientGroup(record, client.email)">
+          <td>{{ i18n "pages.combined.ownUsage" }}</td>
+          <td>[[ SizeFormatter.sizeFormat(getUpStats(record, client.email) + getDownStats(record, client.email)) ]]</td>
+        </tr>
         <tr>
           <td>↑[[ SizeFormatter.sizeFormat(getUpStats(record, client.email)) ]]</td>
           <td>↓[[ SizeFormatter.sizeFormat(getDownStats(record, client.email)) ]]</td>
         </tr>
-        <tr v-if="client.totalGB > 0">
+        <tr v-if="allowanceTotal(record, client) > 0">
           <td>{{ i18n "remained" }}</td>
           <td>[[ SizeFormatter.sizeFormat(getRemStats(record, client.email)) ]]</td>
         </tr>
@@ -147,14 +172,14 @@
         <td class="tr-table-bar" v-if="!client.enable">
           <a-progress :stroke-color="themeSwitcher.isDarkTheme ? 'rgb(72 84 105)' : '#bcbcbc'" :show-info="false" :percent="statsProgress(record, client.email)" />
         </td>
-        <td class="tr-table-bar" v-else-if="client.totalGB > 0">
+        <td class="tr-table-bar" v-else-if="allowanceTotal(record, client) > 0">
           <a-progress :stroke-color="clientStatsColor(record, client.email)" :show-info="false" :status="isClientDepleted(record, client.email)? 'exception' : ''" :percent="statsProgress(record, client.email)" />
         </td>
         <td v-else class="infinite-bar tr-table-bar">
           <a-progress :show-info="false" :percent="100"></a-progress>
         </td>
         <td class="tr-table-lt">
-          <template v-if="client.totalGB > 0">[[ client._totalGB + "GB" ]]</template>
+          <template v-if="allowanceTotal(record, client) > 0">[[ allowanceTotalGB(record, client) + "GB" ]]</template>
           <span v-else class="tr-infinity-ch">&infin;</span>
         </td>
       </tr>
@@ -269,10 +294,17 @@
           <td width="120px" v-if="!client.enable">
             <a-progress :stroke-color="themeSwitcher.isDarkTheme ? 'rgb(72 84 105)' : '#bcbcbc'" :show-info="false" :percent="statsProgress(record, client.email)" />
           </td>
-          <td width="120px" v-else-if="client.totalGB > 0">
+          <td width="120px" v-else-if="allowanceTotal(record, client) > 0">
             <a-popover :overlay-class-name="themeSwitcher.currentTheme">
               <template slot="content" v-if="client.email">
                 <table cellpadding="2" width="100%">
+                  <tr v-if="clientGroup(record, client.email)">
+                    <td colspan="2" :style="{ textAlign: 'center' }">
+                      {{ i18n "pages.combined.sharedWith" }}
+                      <b>[[ clientGroup(record, client.email).name ]]</b>
+                      ([[ clientGroup(record, client.email).members ]])
+                    </td>
+                  </tr>
                   <tr>
                     <td>↑[[ SizeFormatter.sizeFormat(getUpStats(record, client.email)) ]]</td>
                     <td>↓[[ SizeFormatter.sizeFormat(getDownStats(record, client.email)) ]]</td>
@@ -290,7 +322,7 @@
             <a-progress :stroke-color="themeSwitcher.isDarkTheme ? '#2c1e32':'#F2EAF1'" :show-info="false" :percent="100"></a-progress>
           </td>
           <td width="80px">
-            <template v-if="client.totalGB > 0">[[ client._totalGB + "GB" ]]</template>
+            <template v-if="allowanceTotal(record, client) > 0">[[ allowanceTotalGB(record, client) + "GB" ]]</template>
             <span v-else class="tr-infinity-ch">&infin;</span>
           </td>
         </tr>

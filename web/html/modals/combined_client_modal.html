@@ -1,0 +1,516 @@
+{{define "modals/combinedClientModal"}}
+<a-modal
+    id="combined-client-modal"
+    v-model="combinedModal.visible"
+    :title="combinedModal.title"
+    @ok="combinedModal.ok"
+    :confirm-loading="combinedModal.confirmLoading"
+    :closable="true"
+    :mask-closable="false"
+    :ok-text="combinedModal.okText"
+    cancel-text='{{ i18n "close" }}'
+    :class="themeSwitcher.currentTheme"
+>
+    <a-alert
+        type="info"
+        :show-icon="true"
+        :class="themeSwitcher.currentTheme"
+        :style="{ marginBottom: '16px' }"
+        message='{{ i18n "pages.combined.desc" }}'
+    ></a-alert>
+
+    <a-form
+        :colon="false"
+        :label-col="{ md: {span:8} }"
+        :wrapper-col="{ md: {span:14} }"
+    >
+        <a-form-item>
+            <template slot="label">
+                <a-tooltip>
+                    <template slot="title">
+                        <span>{{ i18n "pages.combined.nameDesc" }}</span>
+                    </template>
+                    {{ i18n "pages.combined.name" }}
+                    <a-icon type="question-circle"></a-icon>
+                </a-tooltip>
+            </template>
+            <a-input v-model.trim="combinedModal.name"></a-input>
+        </a-form-item>
+
+        <a-divider>{{ i18n "pages.combined.accounts" }}</a-divider>
+
+        <!-- One row per protocol. Each is independent: a customer who only wants
+             two of the three simply leaves the third off, and the group still
+             shares one allowance across whatever is left. -->
+        <a-form-item
+            v-for="slot in combinedModal.slots"
+            :key="slot.protocol"
+            :label="slot.label"
+        >
+            <a-space>
+                <a-switch
+                    v-model="slot.enabled"
+                    :disabled="combinedModal.inboundsFor(slot.protocol).length === 0"
+                ></a-switch>
+                <a-select
+                    v-model="slot.inboundId"
+                    :disabled="!slot.enabled || combinedModal.inboundsFor(slot.protocol).length === 0"
+                    :style="{ minWidth: '190px' }"
+                    :dropdown-class-name="themeSwitcher.currentTheme"
+                >
+                    <a-select-option
+                        v-for="row in combinedModal.inboundsFor(slot.protocol)"
+                        :key="row.id"
+                        :value="row.id"
+                        >[[ row.remark || ('#' + row.id) ]]</a-select-option
+                    >
+                </a-select>
+            </a-space>
+            <!-- The derived email, shown before anything is created: it is what the
+                 operator will look the account up by, and it is not what they typed. -->
+            <div :style="{ opacity: 0.65, lineHeight: '1.6' }">
+                <span v-if="combinedModal.inboundsFor(slot.protocol).length === 0"
+                    >{{ i18n "pages.combined.noInbound" }}</span
+                >
+                <span v-else-if="slot.enabled && combinedModal.name"
+                    >{{ i18n "pages.combined.emailPreview" }}: [[
+                    combinedModal.emailFor(slot) ]]</span
+                >
+            </div>
+        </a-form-item>
+
+        <a-divider>{{ i18n "pages.combined.credentials" }}</a-divider>
+
+        <!-- Username and password serve OpenVPN and L2TP together: username
+             uniqueness is per protocol, so one pair works for both and the
+             customer has one thing to remember. VLESS is not offered them
+             because it authenticates by UUID. -->
+        <template v-if="combinedModal.needsUserPass">
+            <a-form-item>
+                <template slot="label">
+                    <a-tooltip>
+                        <template slot="title">
+                            <span>{{ i18n "pages.combined.usernameDesc" }}</span>
+                        </template>
+                        {{ i18n "username" }}
+                        <a-icon
+                            @click="combinedModal.username = RandomUtil.randomLowerAndNum(8)"
+                            type="sync"
+                        ></a-icon>
+                    </a-tooltip>
+                </template>
+                <a-input v-model.trim="combinedModal.username"></a-input>
+            </a-form-item>
+            <a-form-item>
+                <template slot="label">
+                    <a-tooltip>
+                        <template slot="title">
+                            <span>{{ i18n "reset" }}</span>
+                        </template>
+                        {{ i18n "password" }}
+                        <a-icon
+                            @click="combinedModal.password = RandomUtil.randomSeq(10)"
+                            type="sync"
+                        ></a-icon>
+                    </a-tooltip>
+                </template>
+                <a-input v-model.trim="combinedModal.password"></a-input>
+            </a-form-item>
+        </template>
+
+        <template v-if="combinedModal.needsUuid">
+            <a-form-item>
+                <template slot="label">
+                    <a-tooltip>
+                        <template slot="title">
+                            <span>{{ i18n "reset" }}</span>
+                        </template>
+                        {{ i18n "pages.combined.uuid" }}
+                        <a-icon
+                            @click="combinedModal.uuid = RandomUtil.randomUUID()"
+                            type="sync"
+                        ></a-icon>
+                    </a-tooltip>
+                </template>
+                <a-input v-model.trim="combinedModal.uuid"></a-input>
+            </a-form-item>
+            <a-form-item label="Flow" v-if="canEnableTlsFlow">
+                <a-select
+                    v-model="combinedModal.flow"
+                    :dropdown-class-name="themeSwitcher.currentTheme"
+                >
+                    <a-select-option value="" selected
+                        >{{ i18n "none" }}</a-select-option
+                    >
+                    <a-select-option v-for="key in TLS_FLOW_CONTROL" :value="key"
+                        >[[ key ]]</a-select-option
+                    >
+                </a-select>
+            </a-form-item>
+        </template>
+
+        <a-divider>{{ i18n "pages.combined.allowance" }}</a-divider>
+
+        <a-form-item>
+            <template slot="label">
+                <a-tooltip>
+                    <template slot="title">
+                        <span>{{ i18n "pages.combined.sharedQuotaDesc" }}</span>
+                    </template>
+                    {{ i18n "pages.inbounds.totalFlow" }}
+                    <a-icon type="question-circle"></a-icon>
+                </a-tooltip>
+            </template>
+            <a-input-number
+                v-model.number="combinedModal.totalGB"
+                :min="0"
+            ></a-input-number>
+        </a-form-item>
+
+        <a-form-item>
+            <template slot="label">
+                <a-tooltip>
+                    <template slot="title">
+                        <span
+                            >{{ i18n "pages.combined.sharedExpiryDesc" }}</span
+                        >
+                    </template>
+                    {{ i18n "pages.inbounds.expireDate" }}
+                    <a-icon type="question-circle"></a-icon>
+                </a-tooltip>
+            </template>
+            <a-date-picker
+                v-if="datepicker == 'gregorian'"
+                :show-time="{ format: 'HH:mm:ss' }"
+                format="YYYY-MM-DD HH:mm:ss"
+                :dropdown-class-name="themeSwitcher.currentTheme"
+                v-model="combinedModal.expiryTime"
+            ></a-date-picker>
+            <a-persian-datepicker
+                v-else
+                placeholder='{{ i18n "pages.settings.datepickerPlaceholder" }}'
+                value="combinedModal.expiryTime"
+                v-model="combinedModal.expiryTime"
+            >
+            </a-persian-datepicker>
+        </a-form-item>
+
+        <a-form-item>
+            <template slot="label">
+                <a-tooltip>
+                    <template slot="title">
+                        <span>{{ i18n "pages.client.renewDesc" }}</span>
+                    </template>
+                    {{ i18n "pages.client.renew" }}
+                    <a-icon type="question-circle"></a-icon>
+                </a-tooltip>
+            </template>
+            <a-input-number
+                v-model.number="combinedModal.reset"
+                :min="0"
+            ></a-input-number>
+        </a-form-item>
+
+        <a-form-item v-if="app.ipLimitEnable">
+            <template slot="label">
+                <a-tooltip>
+                    <template slot="title">
+                        <span>{{ i18n "pages.combined.ipLimitDesc" }}</span>
+                    </template>
+                    <span>{{ i18n "pages.inbounds.IPLimit" }} </span>
+                    <a-icon type="question-circle"></a-icon>
+                </a-tooltip>
+            </template>
+            <a-input-number
+                v-model.number="combinedModal.limitIp"
+                :min="0"
+            ></a-input-number>
+        </a-form-item>
+
+        <a-form-item v-if="app.subSettings?.enable">
+            <template slot="label">
+                <a-tooltip>
+                    <template slot="title">
+                        <span>{{ i18n "pages.combined.subIdDesc" }}</span>
+                    </template>
+                    Subscription
+                    <a-icon
+                        @click="combinedModal.subId = RandomUtil.randomLowerAndNum(16)"
+                        type="sync"
+                    ></a-icon>
+                </a-tooltip>
+            </template>
+            <a-input v-model.trim="combinedModal.subId"></a-input>
+        </a-form-item>
+
+        <a-form-item v-if="app.tgBotEnable">
+            <template slot="label">
+                <a-tooltip>
+                    <template slot="title">
+                        <span>{{ i18n "pages.inbounds.telegramDesc" }}</span>
+                    </template>
+                    Telegram ChatID
+                    <a-icon type="question-circle"></a-icon>
+                </a-tooltip>
+            </template>
+            <a-input-number
+                :style="{ width: '50%' }"
+                v-model.number="combinedModal.tgId"
+                :min="0"
+            ></a-input-number>
+        </a-form-item>
+
+        <a-form-item label='{{ i18n "comment" }}'>
+            <a-input
+                type="textarea"
+                :auto-size="{ minRows: 1, maxRows: 3 }"
+                v-model="combinedModal.comment"
+            ></a-input>
+        </a-form-item>
+
+        <a-form-item label='{{ i18n "enable" }}'>
+            <a-switch v-model="combinedModal.enable"></a-switch>
+        </a-form-item>
+    </a-form>
+</a-modal>
+<script>
+    // The protocols a combined account is offered across, and the suffix each one's
+    // email gets.
+    //
+    // Suffixes exist because an email is the panel's GLOBAL account identity and is
+    // unique across every inbound: the three accounts belonging to one customer
+    // cannot all be called "ali". The suffix is what keeps them one readable family
+    // in the client list rather than three unrelated random names, and the form
+    // shows each derived email before anything is created.
+    const COMBINED_PROTOCOLS = [
+        { protocol: Protocols.OPENVPN, label: "OpenVPN", suffix: "ovpn" },
+        { protocol: Protocols.L2TP, label: "L2TP", suffix: "l2tp" },
+        { protocol: Protocols.VLESS, label: "VLESS", suffix: "vless" },
+    ];
+
+    // Protocols whose accounts log in with a username and a password. Username
+    // uniqueness is checked PER PROTOCOL by the backend, so OpenVPN and L2TP can
+    // share one pair — which is the whole point: the customer remembers one login.
+    const COMBINED_USERPASS = [Protocols.OPENVPN, Protocols.L2TP];
+
+    const combinedModal = {
+        visible: false,
+        confirmLoading: false,
+        title: "",
+        okText: "",
+        confirm: null,
+        dbInbounds: [],
+        slots: [],
+        name: "",
+        username: "",
+        password: "",
+        uuid: "",
+        flow: "",
+        totalGB: 0,
+        expiryTime: 0,
+        reset: 0,
+        limitIp: 0,
+        subId: "",
+        tgId: 0,
+        comment: "",
+        enable: true,
+
+        show({
+            title = "",
+            okText = '{{ i18n "sure" }}',
+            dbInbounds = [],
+            confirm = (payload) => {},
+        }) {
+            this.visible = true;
+            this.title = title;
+            this.okText = okText;
+            this.confirm = confirm;
+            this.dbInbounds = dbInbounds || [];
+            this.name = "";
+            this.username = RandomUtil.randomLowerAndNum(8);
+            this.password = RandomUtil.randomSeq(10);
+            this.uuid = RandomUtil.randomUUID();
+            this.flow = "";
+            this.totalGB = 0;
+            this.expiryTime = 0;
+            this.reset = 0;
+            this.limitIp = 0;
+            // One subscription id across all three, so a single subscription link
+            // carries whichever of them the client app understands.
+            this.subId = RandomUtil.randomLowerAndNum(16);
+            this.tgId = 0;
+            this.comment = "";
+            this.enable = true;
+            // A protocol with no inbound to put the account on starts off and cannot
+            // be switched on; the row stays visible so the operator can see WHY the
+            // customer will not get it.
+            this.slots = COMBINED_PROTOCOLS.map((p) => {
+                const rows = this.inboundsFor(p.protocol);
+                return {
+                    protocol: p.protocol,
+                    label: p.label,
+                    suffix: p.suffix,
+                    enabled: rows.length > 0,
+                    inboundId: rows.length > 0 ? rows[0].id : null,
+                };
+            });
+        },
+
+        inboundsFor(protocol) {
+            return this.dbInbounds.filter((row) => row.protocol === protocol);
+        },
+
+        emailFor(slot) {
+            const name = (this.name || "").trim();
+            return name ? name + "-" + slot.suffix : "";
+        },
+
+        activeSlots() {
+            return this.slots.filter((s) => s.enabled && s.inboundId);
+        },
+
+        get needsUserPass() {
+            return this.activeSlots().some((s) =>
+                COMBINED_USERPASS.includes(s.protocol),
+            );
+        },
+
+        get needsUuid() {
+            return this.activeSlots().some((s) => s.protocol === Protocols.VLESS);
+        },
+
+        // The shared expiry as a millisecond epoch. The datepickers hand back a
+        // moment (gregorian) or a number (persian), and an untouched field is 0.
+        expiryMillis() {
+            const t = this.expiryTime;
+            if (t == null || t === "") return 0;
+            return t.valueOf();
+        },
+
+        // One account, built by the SAME constructor the ordinary Add Client form
+        // uses. Building the per-protocol shapes here rather than server-side is
+        // what keeps there being one definition of each of them.
+        buildClient(slot) {
+            let client;
+            switch (slot.protocol) {
+                case Protocols.OPENVPN:
+                    client = new Inbound.OpenvpnSettings.OpenvpnUser();
+                    client.id = this.username;
+                    client.password = this.password;
+                    break;
+                case Protocols.L2TP:
+                    client = new Inbound.L2tpSettings.L2tpUser();
+                    client.id = this.username;
+                    client.password = this.password;
+                    break;
+                case Protocols.VLESS:
+                    client = new Inbound.VLESSSettings.VLESS();
+                    client.id = this.uuid;
+                    client.flow = this.flow;
+                    break;
+                default:
+                    return null;
+            }
+            client.email = this.emailFor(slot);
+            // Seeded with the GROUP's figures rather than left at zero. The traffic
+            // job mirrors the group onto its members every tick anyway, but not
+            // before the first one: an account created at totalGB 0 would be
+            // unlimited for as long as that took.
+            client.totalGB = NumberFormatter.toFixed(
+                this.totalGB * SizeFormatter.ONE_GB,
+                0,
+            );
+            client.expiryTime = this.expiryMillis();
+            client.reset = this.reset;
+            client.limitIp = this.limitIp;
+            client.subId = this.subId;
+            client.tgId = this.tgId;
+            client.comment = this.comment;
+            client.enable = this.enable;
+            return client;
+        },
+
+        ok() {
+            const name = (combinedModal.name || "").trim();
+            if (!name) {
+                Vue.prototype.$message.error(
+                    '{{ i18n "pages.combined.needName" }}',
+                );
+                return;
+            }
+            const active = combinedModal.activeSlots();
+            if (active.length === 0) {
+                Vue.prototype.$message.error(
+                    '{{ i18n "pages.combined.needProtocol" }}',
+                );
+                return;
+            }
+
+            const members = [];
+            for (const slot of active) {
+                const client = combinedModal.buildClient(slot);
+                if (!client) continue;
+                members.push({
+                    inboundId: slot.inboundId,
+                    // The exact shape /addClient takes, so the server runs the same
+                    // validation on these accounts as on a hand-made one.
+                    settings:
+                        '{"clients": [' + client.toString() + "]}",
+                });
+            }
+
+            ObjectUtil.execute(combinedModal.confirm, {
+                group: {
+                    name: name,
+                    total: NumberFormatter.toFixed(
+                        combinedModal.totalGB * SizeFormatter.ONE_GB,
+                        0,
+                    ),
+                    expiryTime: combinedModal.expiryMillis(),
+                    reset: combinedModal.reset,
+                    enable: combinedModal.enable,
+                    comment: combinedModal.comment,
+                },
+                members: members,
+            });
+        },
+
+        close() {
+            combinedModal.visible = false;
+            combinedModal.loading(false);
+        },
+        loading(loading = true) {
+            combinedModal.confirmLoading = loading;
+        },
+    };
+
+    const combinedModalApp = new Vue({
+        delimiters: ["[[", "]]"],
+        el: "#combined-client-modal",
+        data: {
+            combinedModal,
+            get datepicker() {
+                return app.datepicker;
+            },
+            // Flow is a property of the VLESS INBOUND's stream (TLS or Reality over
+            // TCP), not of the account, so the control only appears once an inbound
+            // that supports it has actually been picked.
+            get canEnableTlsFlow() {
+                const slot = combinedModal.slots.find(
+                    (s) => s.protocol === Protocols.VLESS,
+                );
+                if (!slot || !slot.enabled || !slot.inboundId) return false;
+                const row = combinedModal.dbInbounds.find(
+                    (r) => r.id === slot.inboundId,
+                );
+                if (!row) return false;
+                try {
+                    return new DBInbound(row).toInbound().canEnableTlsFlow();
+                } catch (e) {
+                    return false;
+                }
+            },
+        },
+    });
+</script>
+{{end}}

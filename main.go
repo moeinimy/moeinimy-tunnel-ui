@@ -2094,22 +2094,24 @@ const ovpnReleaseTTL = 15 * time.Second
 // ovpnEvictProtect is how long a slot taken by eviction cannot itself be evicted.
 //
 // Without it, "accept" with User Limit 1 is an eviction war rather than a policy.
-// Both peers auto-reconnect (resolv-retry infinite, persist-tun), so device B
-// evicts A, A's client redials a second later and evicts B, B redials and evicts
-// A: the incumbent flickers once a second and the newcomer never holds the
-// tunnel. Whoever's client happens to back off less wins, which is usually the
-// one that was already connected — so the operator sees "accept refuses to hand
-// over" even though every eviction is firing exactly as written.
+// Both peers auto-reconnect, so device B evicts A, A's client redials a second
+// later and evicts B, B redials and evicts A: the incumbent flickers once a
+// second and the newcomer never holds the tunnel.
 //
-// Protecting the winner breaks the loop at its one asymmetry: the loser's redial
-// hits a full block with no evictable slot and is REFUSED, and OpenVPN reports a
-// failing client-connect to the client as AUTH_FAILED — which a client stops
-// retrying on, instead of backing off and trying forever. So the evicted peer
-// leaves rather than fighting back, which is what "accept" was supposed to mean.
+// The window has to cover exactly one thing — the evicted client's OWN automatic
+// redial — and no more. That redial finds a full block with no evictable slot and
+// is REFUSED, which OpenVPN reports to the client as AUTH_FAILED; a client exits
+// on that (auth-retry defaults to none) instead of retrying forever, so the war
+// ends after a single round.
 //
-// It applies ONLY to a slot won by eviction. Protecting every admission would
-// make "accept" behave like "reject" for the first minute of any session.
-const ovpnEvictProtect = 60 * time.Second
+// So this is deliberately short. It is NOT a lockout: once it passes, EITHER side
+// can take the tunnel back by dialling again, which is the symmetry an operator
+// expects from "accept" — whoever connected last wins, both directions. At a
+// minute the evicted user could not get back in at all for a minute, which read
+// as the first user being banned rather than replaced. Twenty seconds outlasts
+// OpenVPN's reconnect backoff by a wide margin while staying below the time it
+// takes a person to notice and dial again.
+const ovpnEvictProtect = 20 * time.Second
 
 // ovpnProtectSlot marks a block IP as won by eviction, as of now.
 func ovpnProtectSlot(dir, proto, blockIP string) {

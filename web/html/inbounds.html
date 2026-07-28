@@ -2233,9 +2233,15 @@
           id: dbInboundId,
           settings: '{"clients": [' + clients.toString() + ']}',
         };
-        // Captured before the post: the emails are the only stable handle on the
-        // accounts once the list is re-read, and the response carries no ids.
-        const created = (clients || [])
+        // One argument, two shapes: the single-client modal confirms with ONE client
+        // object and the bulk modal with an array of them. `clients.toString()` above
+        // happens to serialise both (Array.prototype.toString joins with the comma the
+        // JSON list needs), which is why this had gone unnoticed — but iterating the
+        // object as if it were an array does not, and threw before the post was sent.
+        //
+        // Captured before the post either way: the emails are the only stable handle on
+        // the accounts once the list is re-read, and the response carries no ids.
+        const created = (Array.isArray(clients) ? clients : [clients])
           .filter(c => c && c.email)
           .map(c => ({ inboundId: dbInboundId, email: c.email }));
         const ok = await this.submit(`/panel/api/inbounds/addClient`, data, modal);

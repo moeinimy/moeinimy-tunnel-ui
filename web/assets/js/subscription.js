@@ -274,6 +274,13 @@
       copy,
       open,
       linkName,
+      // Copies a credential row by reading the value back out of the DOM, so no
+      // password is ever interpolated into markup or a JS string: the server rendered
+      // it once, HTML-escaped, and this reads the text node.
+      copyRow(e) {
+        const v = e.currentTarget.querySelector('.sub-acct-v:not(.is-note)');
+        if (v) copy(v.textContent.trim());
+      },
       selectFeed(key) {
         this.feed = key;
         if (this.qrOpen) this.$nextTick(() => drawQR('sub-qr-canvas', this.currentUrl));

@@ -102,7 +102,7 @@ func (a *SUBController) initRouter(g *gin.RouterGroup) {
 func (a *SUBController) subs(c *gin.Context) {
 	subId := c.Param("subid")
 	scheme, host, hostWithPort, hostHeader := a.subService.ResolveRequest(c)
-	subs, lastOnline, traffic, err := a.subService.GetSubs(subId, host)
+	subs, pageSubs, lastOnline, traffic, err := a.subService.GetSubs(subId, host)
 	// An empty link list is NOT an error: an account whose only inbounds are wg-c/awg
 	// has real usage and a real expiry to report, but no single-line raw form (its
 	// config comes from the Clash sub). Erroring here would hide the traffic/days page
@@ -139,11 +139,17 @@ func (a *SUBController) subs(c *gin.Context) {
 				// Remove trailing slash if exists, add subId, then add trailing slash
 				basePathStr = strings.TrimRight(basePathStr, "/") + "/" + subId + "/"
 			}
-			page := a.subService.BuildPageData(subId, hostHeader, traffic, lastOnline, subs, subURL, subJsonURL, subClashURL, basePathStr)
+			// pageSubs, not subs: the browser view lists only links a person can
+			// actually use, so the synthetic connection cards stay out of it.
+			page := a.subService.BuildPageData(subId, hostHeader, traffic, lastOnline, pageSubs, subURL, subJsonURL, subClashURL, basePathStr)
 			// OpenVPN and WireGuard cannot be set up from a link: the page offers their
 			// config files as downloads. Rendered only for the browser view, since a
 			// subscription client has no use for them.
 			page.Configs = a.subService.ConfigLinks(subId, host, scheme, hostWithPort, a.subPath)
+			// The username/password VPNs spelled out as fields. A customer holding only
+			// an OpenVPN account has no link to import, so without this the page would
+			// show them their usage and nothing to connect with.
+			page.Accounts = a.subService.Accounts(subId, host)
 			c.HTML(200, "subpage.html", gin.H{
 				"title":        "subscription.title",
 				"cur_ver":      config.GetVersion(),
@@ -171,6 +177,7 @@ func (a *SUBController) subs(c *gin.Context) {
 				"subClashUrl":  page.SubClashUrl,
 				"result":       page.Result,
 				"configs":      page.Configs,
+				"accounts":     page.Accounts,
 			})
 			return
 		}

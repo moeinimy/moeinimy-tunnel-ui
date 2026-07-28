@@ -4052,8 +4052,11 @@ Inbound.OpenvpnSettings.detectCipherMode = function (ciphers) {
 
 Inbound.OpenvpnSettings.OpenvpnUser = class extends XrayCommonClass {
   constructor(
-    id = RandomUtil.randomLowerAndNum(8),
-    password = RandomUtil.randomSeq(10),
+    // Not randomLowerAndNum/randomSeq: an OpenVPN login is typed by the customer, so
+    // it uses the friendlier alphabet (see RandomUtil.randomVpnSeq). The email stays
+    // as it was — it is the panel's own identifier, never handed out.
+    id = RandomUtil.randomVpnUser(),
+    password = RandomUtil.randomVpnPassword(),
     email = RandomUtil.randomLowerAndNum(9),
     enable = true,
     expiryTime = 0,

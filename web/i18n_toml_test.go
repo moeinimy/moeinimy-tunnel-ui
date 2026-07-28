@@ -204,6 +204,7 @@ var knownMissing = keySet(
 	"subscription.feedRaw", "subscription.desktop", "subscription.copyLink",
 	"subscription.showQr", "subscription.hideQr", "subscription.scanQr",
 	"subscription.addToApp", "subscription.addToAppDesc",
+	"subscription.accounts", "subscription.accountsDesc",
 )
 
 // flattenKeys collapses nested TOML tables into dotted keys (e.g. "pages.core.title").

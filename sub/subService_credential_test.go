@@ -149,7 +149,8 @@ func TestMtprotoAndSshCarryNativeLinkPlusCard(t *testing.T) {
 	s := cardService()
 	mt := credInbound(model.MTPROTO, 8443,
 		`{"clients":[{"email":"h","secret":"0123456789abcdef0123456789abcdef","modeClassic":true}]}`)
-	lines := strings.Split(s.getLink(mt, "h"), "\n")
+	raw, page := s.getLink(mt, "h")
+	lines := strings.Split(raw, "\n")
 	if len(lines) != 2 {
 		t.Fatalf("want tg:// + card, got %d line(s): %q", len(lines), lines)
 	}
@@ -157,4 +158,26 @@ func TestMtprotoAndSshCarryNativeLinkPlusCard(t *testing.T) {
 		t.Fatalf("first line should be the Telegram link: %q", lines[0])
 	}
 	parseCard(t, lines[1])
+	// The browser view keeps the Telegram link and drops the card: the card is an
+	// importer's handle on the account, and shown to a person it reads as a broken
+	// config carrying their own secret.
+	if page != lines[0] {
+		t.Fatalf("page form should be the native link alone, got %q", page)
+	}
+}
+
+// The credential VPNs have no native link at all, so their card is the whole raw entry —
+// and the browser view shows nothing, because SubService.Accounts spells the same account
+// out as fields on the same page.
+func TestCredentialVpnCardIsHiddenFromThePage(t *testing.T) {
+	s := cardService()
+	in := credInbound(model.OPENVPN, 1195, `{"clients":[{"email":"leyli","id":"leyli","password":"pw"}]}`)
+	raw, page := s.getLink(in, "leyli")
+	if raw == "" {
+		t.Fatal("a subscription importer still needs an entry for the account")
+	}
+	parseCard(t, raw)
+	if page != "" {
+		t.Fatalf("the page must not show a connection card, got %q", page)
+	}
 }

@@ -5,337 +5,229 @@
 <script src="{{ .base_path }}assets/ant-design-vue/antd.min.js"></script>
 <script src="{{ .base_path }}assets/js/util/index.js?{{ .cur_ver }}"></script>
 <script src="{{ .base_path }}assets/qrcode/qrious2.min.js?{{ .cur_ver }}"></script>
-<style>
-    .subscription-page tr-qr-box.qr-box {
-        display: inline-flex;
-        flex-direction: column;
-        align-items: center;
-        width: 220px;
-    }
-
-    .subscription-page tr-qr-box.qr-box .qr-tag {
-        width: 100%;
-        justify-content: center;
-    }
-
-    .subscription-page tr-qr-box.qr-box .qr-bg,
-    .subscription-page tr-qr-box.qr-box .qr-bg-sub {
-        margin-inline: auto;
-    }
-
-    /* Config-file downloads. Secondary to the Android/iOS buttons (which stay the one
-       accent-filled action on the page), so these are a neutral surface with the accent
-       kept for the icon and hover. Tokens carry the theme, so there is no dark/light pair
-       to keep in sync. Labels can be long ("AmneziaWG Device 2 cdn (my-inbound)"), hence
-       wrapping and an auto height instead of ant's nowrap single line. */
-    .subscription-page .sub-config-btn {
-        display: inline-flex;
-        align-items: center;
-        justify-content: center;
-        gap: var(--sp-2);
-        width: 100%;
-        max-width: 340px;
-        height: auto;
-        min-height: 40px;
-        padding: var(--sp-2) var(--sp-4);
-        white-space: normal;
-        line-height: var(--lh-tight);
-        text-align: center;
-        border-radius: var(--radius-sm);
-        background: var(--surface-2);
-        border: 1px solid var(--border);
-        color: var(--text);
-        box-shadow: none;
-        transition: background var(--dur-fast) var(--ease),
-            border-color var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
-    }
-
-    .subscription-page .sub-config-btn:hover,
-    .subscription-page .sub-config-btn:focus {
-        background: var(--surface);
-        border-color: var(--accent);
-        color: var(--accent);
-    }
-
-    .subscription-page .sub-config-btn .anticon {
-        color: var(--accent);
-    }
-
-    .subscription-page .subscription-link-box {
-        cursor: pointer;
-        border-radius: 12px;
-        padding: 25px 20px 15px 20px;
-        margin-top: -12px;
-        word-break: break-all;
-        font-size: 13px;
-        line-height: 1.5;
-        text-align: left;
-        font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
-        transition: all 0.3s;
-        box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
-    }
-
-    .dark.subscription-page .subscription-link-box {
-        background: rgba(0, 0, 0, 0.2);
-        border: 1px solid rgba(255, 255, 255, 0.1);
-        color: #fff;
-    }
-
-    .dark.subscription-page .subscription-link-box:hover {
-        background: rgba(0, 0, 0, 0.3);
-        border-color: rgba(255, 255, 255, 0.2);
-    }
-
-    .light.subscription-page .subscription-link-box {
-        background: rgba(0, 0, 0, 0.03);
-        border: 1px solid rgba(0, 0, 0, 0.08);
-        color: rgba(0, 0, 0, 0.85);
-    }
-
-    .light.subscription-page .subscription-link-box:hover {
-        background: rgba(0, 0, 0, 0.05);
-        border-color: rgba(0, 0, 0, 0.14);
-    }
-</style>
+<link rel="stylesheet" href="{{ .base_path }}assets/css/subscription.css?{{ .cur_ver }}">
 {{ template "page/head_end" .}}
 
 {{ template "page/body_start" .}}
-<a-layout id="app" v-cloak :class="themeSwitcher.currentTheme + ' subscription-page'">
-    <a-layout-content class="p-2">
-        <a-row type="flex" justify="center" class="mt-2">
-            <a-col :xs="24" :sm="22" :md="18" :lg="14" :xl="12">
-                <a-card hoverable class="subscription-card">
-                    <template #title>
-                        <a-space>
-                            <span>{{ i18n "subscription.title" }}</span>
-                            <a-tag>{{ .sId }}</a-tag>
-                        </a-space>
-                    </template>
-                    <template #extra>
-                        <a-popover :overlay-class-name="themeSwitcher.currentTheme" title='{{ i18n "menu.settings" }}'
-                            placement="bottomRight" trigger="click">
-                            <template #content>
-                                <a-space direction="vertical" :size="10">
-                                    <a-theme-switch-login></a-theme-switch-login>
-                                    <span>{{ i18n "pages.settings.language"
-                                        }}</span>
-                                    <a-select ref="selectLang" class="w-100" v-model="lang"
-                                        @change="LanguageManager.setLanguage(lang)"
-                                        :dropdown-class-name="themeSwitcher.currentTheme">
-                                        <a-select-option :value="l.value" label="English"
-                                            v-for="l in LanguageManager.supportedLanguages" :key="l.value">
-                                            <span role="img" :aria-label="l.name" v-text="l.icon"></span>
-                                            &nbsp;&nbsp;<span v-text="l.name"></span>
-                                        </a-select-option>
-                                    </a-select>
-                                </a-space>
-                            </template>
-                            <a-button shape="circle" icon="setting"></a-button>
-                        </a-popover>
-                    </template>
+<div id="app" v-cloak :class="themeSwitcher.currentTheme + ' subpage'">
+  <div class="subpage-shell">
 
-                    <a-form layout="vertical">
-                        <a-form-item>
-                            <a-space direction="vertical" align="center">
-                                <a-row type="flex" :gutter="[8,8]" justify="center" style="width:100%">
-                                    <a-col :xs="24" :sm="app.subJsonUrl || app.subClashUrl ? 12 : 24" style="text-align:center;">
-                                        <tr-qr-box class="qr-box">
-                                            <a-tag color="purple" class="qr-tag">
-                                                <span>{{ i18n
-                                                    "pages.settings.subSettings"}}</span>
-                                            </a-tag>
-                                            <tr-qr-bg class="qr-bg-sub">
-                                                <tr-qr-bg-inner class="qr-bg-sub-inner">
-                                                    <canvas id="qrcode" class="qr-cv" title='{{ i18n "copy" }}'
-                                                        @click="copy(app.subUrl)"></canvas>
-                                                </tr-qr-bg-inner>
-                                            </tr-qr-bg>
-                                        </tr-qr-box>
-                                    </a-col>
-                                    <a-col v-if="app.subJsonUrl" :xs="24" :sm="12" style="text-align:center;">
-                                        <tr-qr-box class="qr-box">
-                                            <a-tag color="purple" class="qr-tag">
-                                                <span>{{ i18n
-                                                    "pages.settings.subSettings"}}
-                                                    Json</span>
-                                            </a-tag>
-                                            <tr-qr-bg class="qr-bg-sub">
-                                                <tr-qr-bg-inner class="qr-bg-sub-inner">
-                                                    <canvas id="qrcode-subjson" class="qr-cv" title='{{ i18n "copy" }}'
-                                                        @click="copy(app.subJsonUrl)"></canvas>
-                                                </tr-qr-bg-inner>
-                                            </tr-qr-bg>
-                                        </tr-qr-box>
-                                    </a-col>
-                                    <a-col v-if="app.subClashUrl" :xs="24" :sm="12" style="text-align:center;">
-                                        <tr-qr-box class="qr-box">
-                                            <a-tag color="purple" class="qr-tag">
-                                                <span>Clash / Mihomo</span>
-                                            </a-tag>
-                                            <tr-qr-bg class="qr-bg-sub">
-                                                <tr-qr-bg-inner class="qr-bg-sub-inner">
-                                                    <canvas id="qrcode-subclash" class="qr-cv" title='{{ i18n "copy" }}'
-                                                        @click="copy(app.subClashUrl)"></canvas>
-                                                </tr-qr-bg-inner>
-                                            </tr-qr-bg>
-                                        </tr-qr-box>
-                                    </a-col>
-                                </a-row>
-                            </a-space>
-                        </a-form-item>
+    <!-- Header. The brand, not the word "subscription": this page is the customer's
+         only view of the service, so it should read as the service. -->
+    <header class="sub-head">
+      <div class="sub-head-brand">
+        <span class="sub-head-dot" :class="statusClass"></span>
+        <span class="sub-head-name">[[ brandName ]]</span>
+      </div>
+      <a-popover :overlay-class-name="themeSwitcher.currentTheme" placement="bottomRight"
+        trigger="click">
+        <template #content>
+          <a-space direction="vertical" :size="10">
+            <a-theme-switch-login></a-theme-switch-login>
+            <span>{{ i18n "pages.settings.language" }}</span>
+            <a-select ref="selectLang" class="w-100" v-model="lang"
+              @change="LanguageManager.setLanguage(lang)"
+              :dropdown-class-name="themeSwitcher.currentTheme">
+              <a-select-option :value="l.value" v-for="l in LanguageManager.supportedLanguages"
+                :key="l.value">
+                <span role="img" :aria-label="l.name" v-text="l.icon"></span>
+                &nbsp;&nbsp;<span v-text="l.name"></span>
+              </a-select-option>
+            </a-select>
+          </a-space>
+        </template>
+        <button class="sub-icon-btn" type="button" aria-label="settings">
+          <a-icon type="setting"></a-icon>
+        </button>
+      </a-popover>
+    </header>
 
-                        <a-form-item>
-                            <a-descriptions bordered :column="1" size="small">
-                                <a-descriptions-item label='{{ i18n "subscription.subId" }}'>[[
-                                    app.sId
-                                    ]]</a-descriptions-item>
-                                <a-descriptions-item label='{{ i18n "subscription.status" }}'>
-                                    <template v-if="isUnlimited">
-                                        <a-tag color="purple">{{ i18n
-                                            "subscription.unlimited" }}</a-tag>
-                                    </template>
-                                    <template v-else>
-                                        <a-tag :color="isActive ? 'green' : 'red'">[[
-                                            isActive ? '{{ i18n
-                                            "subscription.active" }}' : '{{ i18n
-                                            "subscription.inactive" }}'
-                                            ]]</a-tag>
-                                    </template>
-                                </a-descriptions-item>
-                                <a-descriptions-item label='{{ i18n "subscription.downloaded" }}'>[[
-                                    app.download
-                                    ]]</a-descriptions-item>
-                                <a-descriptions-item label='{{ i18n "subscription.uploaded" }}'>[[
-                                    app.upload
-                                    ]]</a-descriptions-item>
-                                <a-descriptions-item label='{{ i18n "usage" }}'>[[ app.used
-                                    ]]</a-descriptions-item>
-                                <a-descriptions-item label='{{ i18n "subscription.totalQuota" }}'>[[
-                                    app.total
-                                    ]]</a-descriptions-item>
-                                <a-descriptions-item v-if="app.totalByte > 0" label='{{ i18n "remained" }}'>[[
-                                    app.remained ]]</a-descriptions-item>
-                                <a-descriptions-item label='{{ i18n "lastOnline" }}'>
-                                    <template v-if="app.lastOnlineMs > 0">
-                                        [[ IntlUtil.formatDate(app.lastOnlineMs) ]]
-                                    </template>
-                                    <template v-else>
-                                        <span>-</span>
-                                    </template>
-                                </a-descriptions-item>
-                                <a-descriptions-item label='{{ i18n "subscription.expiry" }}'>
-                                    <template v-if="app.expireMs === 0">
-                                        {{ i18n "subscription.noExpiry" }}
-                                    </template>
-                                    <template v-else>
-                                        [[ IntlUtil.formatDate(app.expireMs) ]]
-                                    </template>
-                                </a-descriptions-item>
-                            </a-descriptions>
-                        </a-form-item>
-                    </a-form>
+    <!-- The one thing a customer opens this page to find out: how much is left, and
+         until when. Everything else on the page is instructions. -->
+    <section class="sub-card sub-hero">
+      <div class="sub-ring-wrap">
+        <svg class="sub-ring" viewBox="0 0 120 120" role="img" :aria-label="ringLabel">
+          <circle class="sub-ring-track" cx="60" cy="60" r="52"></circle>
+          <circle class="sub-ring-value" :class="statusClass" cx="60" cy="60" r="52"
+            :stroke-dasharray="ringCircumference"
+            :stroke-dashoffset="ringOffset"></circle>
+        </svg>
+        <div class="sub-ring-center">
+          <template v-if="isUnlimited">
+            <div class="sub-ring-big">[[ app.used ]]</div>
+            <div class="sub-ring-small">{{ i18n "usage" }}</div>
+          </template>
+          <template v-else>
+            <div class="sub-ring-big">[[ app.remained ]]</div>
+            <div class="sub-ring-small">{{ i18n "remained" }}</div>
+          </template>
+        </div>
+      </div>
 
-                    <br />
-                    <div v-for="(link, idx) in links" :key="link"
-                        style="position: relative; margin-bottom: 20px; text-align: center;">
-                        <div class="qr-box" style="display: inline-block; width: 100%; max-width: 100%;">
-                            <a-tag color="purple"
-                                style="margin-bottom: -10px; position: relative; z-index: 2; box-shadow: 0 2px 4px rgba(0,0,0,0.2);">
-                                <span>[[ linkName(link, idx) ]]</span>
-                            </a-tag>
-                            <div @click="copy(link)" class="subscription-link-box">
-                                [[ link ]]
-                            </div>
-                        </div>
-                    </div>
-                    <br />
+      <div class="sub-status">
+        <span class="sub-pill" :class="statusClass">[[ statusText ]]</span>
+        <span class="sub-expiry">[[ expiryText ]]</span>
+      </div>
 
-                    <!-- Config files: OpenVPN and WireGuard/AmneziaWG cannot be set up
-                         from a link, so their profiles are offered as downloads. Rendered
-                         server-side (the list depends on inbound settings and external
-                         proxies), plain <a download> so the browser saves the file. -->
-                    {{ if .configs }}
-                    <a-divider>{{ i18n "subscription.configFiles" }}</a-divider>
-                    <a-row type="flex" justify="center" :gutter="[8,8]" style="width:100%; margin-bottom: 16px;">
-                        {{ range .configs }}
-                        <a-col :xs="24" :sm="12" style="text-align:center;">
-                            <a class="ant-btn sub-config-btn" href="{{ .Url }}"
-                                download="{{ .Filename }}" title="{{ .Filename }}">
-                                <a-icon type="download"></a-icon>
-                                <span>{{ .Label }}</span>
-                            </a>
-                        </a-col>
-                        {{ end }}
-                    </a-row>
-                    {{ end }}
+      <div class="sub-meters">
+        <div class="sub-meter">
+          <a-icon type="arrow-down"></a-icon>
+          <div>
+            <div class="sub-meter-v">[[ app.download ]]</div>
+            <div class="sub-meter-k">{{ i18n "subscription.downloaded" }}</div>
+          </div>
+        </div>
+        <div class="sub-meter">
+          <a-icon type="arrow-up"></a-icon>
+          <div>
+            <div class="sub-meter-v">[[ app.upload ]]</div>
+            <div class="sub-meter-k">{{ i18n "subscription.uploaded" }}</div>
+          </div>
+        </div>
+        <div class="sub-meter">
+          <a-icon type="database"></a-icon>
+          <div>
+            <div class="sub-meter-v">
+              <template v-if="isUnlimited">∞</template>
+              <template v-else>[[ app.total ]]</template>
+            </div>
+            <div class="sub-meter-k">{{ i18n "subscription.totalQuota" }}</div>
+          </div>
+        </div>
+      </div>
+    </section>
 
-                    <a-form layout="vertical">
-                        <a-form-item>
-                            <a-row type="flex" justify="center" :gutter="[8,8]" style="width:100%">
-                                <a-col :xs="24" :sm="12" style="text-align:center;">
-                                    <!-- Android dropdown -->
-                                    <a-dropdown :trigger="['click']">
-                                        <a-button icon="android" :block="isMobile"
-                                            :style="{ marginTop: isMobile ? '6px' : 0 }" size="large" type="primary">
-                                            Android <a-icon type="down" />
-                                        </a-button>
-                                        <a-menu slot="overlay" :class="themeSwitcher.currentTheme">
-                                            <a-menu-item key="android-v2box"
-                                                @click="open('v2box://install-sub?url=' + encodeURIComponent(app.subUrl) + '&name=' + encodeURIComponent(app.sId))">V2Box</a-menu-item>
-                                            <a-menu-item key="android-v2rayng"
-                                                @click="open('v2rayng://install-config?url=' + encodeURIComponent(app.subUrl))">V2RayNG</a-menu-item>
-                                            <a-menu-item key="android-singbox"
-                                                @click="copy(app.subUrl)">Sing-box</a-menu-item>
-                                            <a-menu-item key="android-v2raytun"
-                                                @click="copy(app.subUrl)">V2RayTun</a-menu-item>
-                                            <a-menu-item key="android-npvtunnel" @click="copy(app.subUrl)">NPV
-                                                Tunnel</a-menu-item>
-                                            <a-menu-item key="android-happ"
-                                                @click="open('happ://add/' + app.subUrl)">Happ</a-menu-item>
-                                        </a-menu>
-                                    </a-dropdown>
-                                </a-col>
-                                <a-col :xs="24" :sm="12" style="text-align:center;">
-                                    <!-- iOS dropdown -->
-                                    <a-dropdown :trigger="['click']">
-                                        <a-button icon="apple" :block="isMobile"
-                                            :style="{ marginTop: isMobile ? '6px' : 0 }" size="large" type="primary">
-                                            iOS <a-icon type="down" />
-                                        </a-button>
-                                        <a-menu slot="overlay" :class="themeSwitcher.currentTheme">
-                                            <a-menu-item key="ios-shadowrocket"
-                                                @click="open(shadowrocketUrl)">Shadowrocket</a-menu-item>
-                                            <a-menu-item key="ios-v2box" @click="open(v2boxUrl)">V2Box</a-menu-item>
-                                            <a-menu-item key="ios-streisand"
-                                                @click="open(streisandUrl)">Streisand</a-menu-item>
-                                            <a-menu-item key="ios-v2raytun"
-                                                @click="copy(v2raytunUrl)">V2RayTun</a-menu-item>
-                                            <a-menu-item key="ios-npvtunnel" @click="copy(npvtunUrl)">NPV
-                                                Tunnel
-                                            </a-menu-item>
-                                            <a-menu-item key="ios-happ" @click="open(happUrl)">Happ</a-menu-item>
-                                        </a-menu>
-                                    </a-dropdown>
-                                </a-col>
-                            </a-row>
-                        </a-form-item>
-                    </a-form>
-                </a-card>
-            </a-col>
-        </a-row>
-    </a-layout-content>
-</a-layout>
+    <!-- The link itself. One primary action, because for most customers copying it
+         and pasting it into their app is the whole job. -->
+    <section class="sub-card">
+      <div class="sub-seg" v-if="feeds.length > 1">
+        <button v-for="f in feeds" :key="f.key" type="button"
+          class="sub-seg-btn" :class="{ 'is-on': feed === f.key }"
+          @click="selectFeed(f.key)">[[ f.label ]]</button>
+      </div>
+
+      <button class="sub-primary" type="button" @click="copy(currentUrl)">
+        <a-icon type="copy"></a-icon>
+        <span>{{ i18n "subscription.copyLink" }}</span>
+      </button>
+
+      <div class="sub-url" @click="copy(currentUrl)" :title="currentUrl">[[ currentUrl ]]</div>
+
+      <button class="sub-ghost" type="button" @click="toggleQr()">
+        <a-icon :type="qrOpen ? 'up' : 'qrcode'"></a-icon>
+        <span>[[ qrOpen ? '{{ i18n "subscription.hideQr" }}' : '{{ i18n "subscription.showQr" }}' ]]</span>
+      </button>
+
+      <div class="sub-qr" v-show="qrOpen">
+        <div class="sub-qr-frame">
+          <canvas id="sub-qr-canvas" @click="copy(currentUrl)"></canvas>
+        </div>
+        <div class="sub-qr-hint">{{ i18n "subscription.scanQr" }}</div>
+      </div>
+    </section>
+
+    <!-- The apps, as one grid per platform rather than two dropdowns: a customer knows
+         which phone they hold, and the platform they are on is pre-selected. -->
+    <section class="sub-card">
+      <h2 class="sub-h">{{ i18n "subscription.addToApp" }}</h2>
+      <div class="sub-seg">
+        <button v-for="p in platforms" :key="p.key" type="button"
+          class="sub-seg-btn" :class="{ 'is-on': platform === p.key }"
+          @click="platform = p.key">[[ p.label ]]</button>
+      </div>
+      <div class="sub-apps">
+        <button v-for="a in visibleApps" :key="a.name" type="button" class="sub-app"
+          @click="launch(a)">
+          <span class="sub-app-name">[[ a.name ]]</span>
+          <a-icon :type="a.mode === 'copy' ? 'copy' : 'arrow-right'" class="sub-app-ico"></a-icon>
+        </button>
+      </div>
+      <p class="sub-note">{{ i18n "subscription.addToAppDesc" }}</p>
+    </section>
+
+    <!-- Folded away by default: a customer following the buttons above never needs a
+         raw link, and a wall of them is what made the old page hard to read. -->
+    <section class="sub-card" v-if="links.length">
+      <button class="sub-fold" type="button" @click="linksOpen = !linksOpen">
+        <span>{{ i18n "subscription.individualLinks" }}</span>
+        <span class="sub-fold-right">
+          <span class="sub-count">[[ links.length ]]</span>
+          <a-icon :type="linksOpen ? 'up' : 'down'"></a-icon>
+        </span>
+      </button>
+      <div v-show="linksOpen" class="sub-fold-body">
+        <div v-for="(link, idx) in links" :key="link" class="sub-link">
+          <div class="sub-link-head">
+            <span class="sub-link-name">[[ linkName(link, idx) ]]</span>
+            <span class="sub-link-acts">
+              <button type="button" class="sub-icon-btn" @click="copy(link)"
+                :aria-label="'{{ i18n "copy" }}'"><a-icon type="copy"></a-icon></button>
+              <button type="button" class="sub-icon-btn" @click="toggleLinkQr(idx)"
+                aria-label="QR"><a-icon type="qrcode"></a-icon></button>
+            </span>
+          </div>
+          <div class="sub-url sub-url-sm" @click="copy(link)">[[ link ]]</div>
+          <div class="sub-qr" v-show="linkQr === idx">
+            <div class="sub-qr-frame">
+              <canvas :id="'sub-link-qr-' + idx"></canvas>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Config files: OpenVPN and WireGuard/AmneziaWG cannot be set up from a link, so
+         their profiles are offered as downloads. Rendered server-side (the list depends
+         on inbound settings and external proxies), plain <a download> so the browser
+         saves the file. -->
+    {{ if .configs }}
+    <section class="sub-card">
+      <h2 class="sub-h">{{ i18n "subscription.configFiles" }}</h2>
+      <div class="sub-files">
+        {{ range .configs }}
+        <a class="sub-file" href="{{ .Url }}" download="{{ .Filename }}" title="{{ .Filename }}">
+          <a-icon type="download"></a-icon>
+          <span>{{ .Label }}</span>
+        </a>
+        {{ end }}
+      </div>
+    </section>
+    {{ end }}
+
+    <footer class="sub-foot">
+      <span class="sub-foot-id">{{ i18n "subscription.subId" }}: <b>{{ .sId }}</b></span>
+      <span v-if="app.lastOnlineMs > 0" class="sub-foot-sep">·</span>
+      <span v-if="app.lastOnlineMs > 0">
+        {{ i18n "lastOnline" }}: [[ IntlUtil.formatDate(app.lastOnlineMs) ]]
+      </span>
+    </footer>
+  </div>
+</div>
 
 <!-- Bootstrap data for external JS -->
 <template id="subscription-data" data-sid="{{ .sId }}" data-sub-url="{{ .subUrl }}" data-subjson-url="{{ .subJsonUrl }}" data-subclash-url="{{ .subClashUrl }}"
     data-download="{{ .download }}" data-upload="{{ .upload }}" data-used="{{ .used }}" data-total="{{ .total }}"
     data-remained="{{ .remained }}" data-expire="{{ .expire }}" data-lastonline="{{ .lastOnline }}"
     data-downloadbyte="{{ .downloadByte }}" data-uploadbyte="{{ .uploadByte }}" data-totalbyte="{{ .totalByte }}"
-    data-datepicker="{{ .datepicker }}"></template>
+    data-datepicker="{{ .datepicker }}" data-brand="{{ .brand }}" data-subtitle="{{ .subTitle }}"></template>
 <textarea id="subscription-links" style="display:none">{{ range .result }}{{ . }}
 {{ end }}</textarea>
 
 {{template "component/aThemeSwitch" .}}
+<script>
+  // The strings subscription.js needs. It is a static asset served straight off disk,
+  // so it cannot resolve i18n itself; this is the one place the two meet.
+  window.SUB_I18N = {
+    active: '{{ i18n "subscription.active" }}',
+    expired: '{{ i18n "subscription.expired" }}',
+    depleted: '{{ i18n "subscription.depleted" }}',
+    unlimited: '{{ i18n "subscription.unlimited" }}',
+    noExpiry: '{{ i18n "subscription.noExpiry" }}',
+    daysLeft: '{{ i18n "subscription.daysLeft" }}',
+    feedRaw: '{{ i18n "subscription.feedRaw" }}',
+    desktop: '{{ i18n "subscription.desktop" }}',
+  };
+</script>
 <script src="{{ .base_path }}assets/js/subscription.js?{{ .cur_ver }}"></script>
 
 {{ template "page/body_end" .}}

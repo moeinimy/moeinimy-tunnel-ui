@@ -147,6 +147,11 @@ func (a *SUBController) subs(c *gin.Context) {
 			c.HTML(200, "subpage.html", gin.H{
 				"title":        "subscription.title",
 				"cur_ver":      config.GetVersion(),
+				// What the page calls itself to the customer. The operator's profile
+				// title when they set one — it is already the name their apps show for
+				// this subscription — and the panel's brand otherwise.
+				"brand":        config.GetBrand(),
+				"subTitle":     a.subTitle,
 				"host":         page.Host,
 				"base_path":    page.BasePath,
 				"sId":          page.SId,

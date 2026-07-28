@@ -90,6 +90,17 @@
 "inactive" = "Inactive"
 "unlimited" = "Unlimited"
 "noExpiry" = "No expiry"
+"expired" = "Expired"
+"depleted" = "Traffic finished"
+"daysLeft" = "days left"
+"feedRaw" = "Standard"
+"desktop" = "Desktop"
+"copyLink" = "Copy subscription link"
+"showQr" = "Show QR code"
+"hideQr" = "Hide QR code"
+"scanQr" = "Scan this with your app"
+"addToApp" = "Add to your app"
+"addToAppDesc" = "Pick your app and it opens with the subscription already filled in. Apps without a shortcut copy the link instead — paste it into the app's \"add subscription\" box."
 
 [menu]
 "navigation" = "Main navigation"

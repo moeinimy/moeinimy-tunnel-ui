@@ -174,6 +174,11 @@ var knownMissing = keySet(
 	"pages.combined.limits", "pages.combined.ipLimitVless",
 	"pages.combined.count", "pages.combined.countDesc",
 
+	// The customer editor.
+	"pages.combinedEdit.title", "pages.combinedEdit.desc",
+	"pages.combinedEdit.daysDesc", "pages.combinedEdit.enableDesc",
+	"pages.combinedEdit.accountEnableDesc", "pages.combinedEdit.needEmail",
+
 	// The cross-inbound Clients page. Translated in en_US and fa_IR; the other
 	// locales render via the English fallback until translated.
 	"menu.clients",

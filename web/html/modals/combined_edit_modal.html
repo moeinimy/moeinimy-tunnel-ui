@@ -1,0 +1,444 @@
+{{define "modals/combinedEditModal"}}
+<a-modal
+    id="combined-edit-modal"
+    v-model="combinedEditModal.visible"
+    :title="combinedEditModal.title"
+    @ok="combinedEditModal.ok"
+    :confirm-loading="combinedEditModal.confirmLoading"
+    :closable="true"
+    :mask-closable="false"
+    ok-text='{{ i18n "pages.client.submitEdit" }}'
+    cancel-text='{{ i18n "close" }}'
+    :class="themeSwitcher.currentTheme"
+    :width="isMobile ? '96vw' : 760"
+>
+    <a-alert
+        type="info"
+        :show-icon="true"
+        :class="themeSwitcher.currentTheme"
+        :style="{ marginBottom: '16px' }"
+        message='{{ i18n "pages.combinedEdit.desc" }}'
+    ></a-alert>
+
+    <!-- Half one: what the customer HAS. One copy, because one is all there is --
+         the group owns the quota, the dates and the switch, and enforceGroups
+         mirrors them onto every account on each traffic tick. Editing them per
+         account would be editing a value that is about to be overwritten. -->
+    <a-divider>{{ i18n "pages.combined.allowance" }}</a-divider>
+    <a-form
+        :colon="false"
+        :label-col="{ md: { span: 8 } }"
+        :wrapper-col="{ md: { span: 14 } }"
+    >
+        <a-form-item label='{{ i18n "pages.combined.name" }}'>
+            <a-input v-model.trim="combinedEditModal.name"></a-input>
+        </a-form-item>
+
+        <a-form-item>
+            <template slot="label">
+                <a-tooltip>
+                    <template slot="title">
+                        <span>{{ i18n "pages.combined.sharedQuotaDesc" }}</span>
+                    </template>
+                    {{ i18n "pages.inbounds.totalFlow" }}
+                    <a-icon type="question-circle"></a-icon>
+                </a-tooltip>
+            </template>
+            <a-input-number
+                v-model.number="combinedEditModal.totalGB"
+                :min="0"
+            ></a-input-number>
+            <!-- What they have actually spent, beside the field that caps it. It is
+                 the one figure no account row carries: each holds only its own bytes. -->
+            <div class="bo-muted" v-if="combinedEditModal.usedBytes >= 0">
+                [[ SizeFormatter.sizeFormat(combinedEditModal.usedBytes) ]]
+                <template v-if="combinedEditModal.totalGB > 0">
+                    / [[ combinedEditModal.totalGB ]]GB
+                </template>
+                <span v-else class="tr-infinity-ch">&infin;</span>
+            </div>
+        </a-form-item>
+
+        <a-form-item>
+            <template slot="label">
+                <a-tooltip>
+                    <template slot="title">
+                        <span>{{ i18n "pages.combined.delayedStartDesc" }}</span>
+                    </template>
+                    {{ i18n "pages.client.delayedStart" }}
+                    <a-icon type="question-circle"></a-icon>
+                </a-tooltip>
+            </template>
+            <a-switch v-model="combinedEditModal.delayedStart"></a-switch>
+        </a-form-item>
+
+        <a-form-item label='{{ i18n "pages.client.expireDays" }}'>
+            <a-input-number
+                v-model.number="combinedEditModal.days"
+                :min="0"
+            ></a-input-number>
+            <div class="bo-muted">{{ i18n "pages.combinedEdit.daysDesc" }}</div>
+        </a-form-item>
+
+        <a-form-item>
+            <template slot="label">
+                <a-tooltip>
+                    <template slot="title">
+                        <span>{{ i18n "pages.client.renewDesc" }}</span>
+                    </template>
+                    {{ i18n "pages.client.renew" }}
+                    <a-icon type="question-circle"></a-icon>
+                </a-tooltip>
+            </template>
+            <a-input-number
+                v-model.number="combinedEditModal.reset"
+                :min="0"
+            ></a-input-number>
+        </a-form-item>
+
+        <a-form-item label='{{ i18n "comment" }}'>
+            <a-input
+                type="textarea"
+                :auto-size="{ minRows: 1, maxRows: 3 }"
+                v-model="combinedEditModal.comment"
+            ></a-input>
+        </a-form-item>
+
+        <a-form-item label='{{ i18n "enable" }}'>
+            <a-switch v-model="combinedEditModal.enable"></a-switch>
+            <span class="bo-muted" :style="{ marginInlineStart: '10px' }"
+                >{{ i18n "pages.combinedEdit.enableDesc" }}</span
+            >
+        </a-form-item>
+    </a-form>
+
+    <!-- Half two: how they CONNECT. One panel per account, because this is exactly
+         the half that differs -- OpenVPN authenticates with a username and password
+         and counts sessions, VLESS with a UUID and counts addresses. There is no
+         single field here that could stand for both. -->
+    <a-divider>{{ i18n "pages.clients.groupMembers" }}</a-divider>
+
+    <a-collapse
+        :bordered="false"
+        v-model="combinedEditModal.openPanels"
+        :class="themeSwitcher.currentTheme"
+    >
+        <a-collapse-panel
+            v-for="(acc, idx) in combinedEditModal.accounts"
+            :key="String(idx)"
+        >
+            <template slot="header">
+                <a-space>
+                    <a-tag color="blue">[[ acc.protocol ]]</a-tag>
+                    <span>[[ acc.client.email ]]</span>
+                    <a-tag v-if="!acc.client.enable" color="red"
+                        >{{ i18n "disabled" }}</a-tag
+                    >
+                </a-space>
+            </template>
+
+            <a-form
+                :colon="false"
+                :label-col="{ md: { span: 8 } }"
+                :wrapper-col="{ md: { span: 14 } }"
+            >
+                <a-form-item label='{{ i18n "pages.inbounds.email" }}'>
+                    <a-input v-model.trim="acc.client.email"></a-input>
+                </a-form-item>
+
+                <!-- Username and password: the credential VPNs only. -->
+                <template v-if="acc.userPass">
+                    <a-form-item>
+                        <template slot="label">
+                            {{ i18n "username" }}
+                            <a-icon
+                                type="sync"
+                                @click="acc.client.id = RandomUtil.randomVpnUser()"
+                            ></a-icon>
+                        </template>
+                        <a-input v-model.trim="acc.client.id"></a-input>
+                    </a-form-item>
+                    <a-form-item>
+                        <template slot="label">
+                            {{ i18n "password" }}
+                            <a-icon
+                                type="sync"
+                                @click="acc.client.password = RandomUtil.randomVpnPassword()"
+                            ></a-icon>
+                        </template>
+                        <a-input v-model.trim="acc.client.password"></a-input>
+                    </a-form-item>
+                    <!-- What actually caps an OpenVPN account's devices: it counts
+                         SESSIONS. An IP Limit would publish to nothing here, because
+                         the core never sees a VPN client. -->
+                    <a-form-item v-if="acc.protocol === Protocols.OPENVPN">
+                        <template slot="label">
+                            <a-tooltip>
+                                <template slot="title">
+                                    <span>{{ i18n "pages.combined.userLimitDesc" }}</span>
+                                </template>
+                                {{ i18n "pages.combined.userLimit" }}
+                                <a-icon type="question-circle"></a-icon>
+                            </a-tooltip>
+                        </template>
+                        <a-input-number
+                            v-model.number="acc.client.userLimit"
+                            :min="0"
+                            :max="64"
+                        ></a-input-number>
+                    </a-form-item>
+                </template>
+
+                <!-- UUID and flow: the Xray-side protocols. -->
+                <template v-else>
+                    <a-form-item>
+                        <template slot="label">
+                            {{ i18n "pages.combined.uuid" }}
+                            <a-icon
+                                type="sync"
+                                @click="acc.client.id = RandomUtil.randomUUID()"
+                            ></a-icon>
+                        </template>
+                        <a-input v-model.trim="acc.client.id"></a-input>
+                    </a-form-item>
+                    <a-form-item label="Flow" v-if="acc.canFlow">
+                        <a-select
+                            v-model="acc.client.flow"
+                            :dropdown-class-name="themeSwitcher.currentTheme"
+                        >
+                            <a-select-option value="">{{ i18n "none" }}</a-select-option>
+                            <a-select-option
+                                v-for="key in TLS_FLOW_CONTROL"
+                                :key="key"
+                                :value="key"
+                                >[[ key ]]</a-select-option
+                            >
+                        </a-select>
+                    </a-form-item>
+                    <a-form-item v-if="app.ipLimitEnable">
+                        <template slot="label">
+                            <a-tooltip>
+                                <template slot="title">
+                                    <span>{{ i18n "pages.combined.ipLimitDesc" }}</span>
+                                </template>
+                                {{ i18n "pages.client.ipLimit" }}
+                                <a-icon type="question-circle"></a-icon>
+                            </a-tooltip>
+                        </template>
+                        <a-input-number
+                            v-model.number="acc.client.limitIp"
+                            :min="0"
+                        ></a-input-number>
+                    </a-form-item>
+                </template>
+
+                <a-form-item v-if="app.subSettings && app.subSettings.enable">
+                    <template slot="label">
+                        <a-tooltip>
+                            <template slot="title">
+                                <span>{{ i18n "pages.combined.subIdDesc" }}</span>
+                            </template>
+                            Subscription
+                            <a-icon type="question-circle"></a-icon>
+                        </a-tooltip>
+                    </template>
+                    <a-input v-model.trim="acc.client.subId"></a-input>
+                </a-form-item>
+
+                <a-form-item v-if="app.tgBotEnable" label="Telegram ChatID">
+                    <a-input-number
+                        :style="{ width: '60%' }"
+                        v-model.number="acc.client.tgId"
+                        :min="0"
+                    ></a-input-number>
+                </a-form-item>
+
+                <a-form-item label='{{ i18n "comment" }}'>
+                    <a-input v-model="acc.client.comment"></a-input>
+                </a-form-item>
+
+                <a-form-item label='{{ i18n "enable" }}'>
+                    <a-switch v-model="acc.client.enable"></a-switch>
+                    <span class="bo-muted" :style="{ marginInlineStart: '10px' }"
+                        >{{ i18n "pages.combinedEdit.accountEnableDesc" }}</span
+                    >
+                </a-form-item>
+            </a-form>
+        </a-collapse-panel>
+    </a-collapse>
+
+    <div
+        v-if="!combinedEditModal.accounts.length"
+        class="bo-muted"
+        :style="{ textAlign: 'center', padding: '18px' }"
+    >
+        {{ i18n "pages.clients.empty" }}
+    </div>
+</a-modal>
+<script>
+    // Editing a customer: their allowance, and each of the accounts that draws on it.
+    //
+    // It is a dialog of its own rather than a detour through the customers manager. An
+    // operator pressing edit on a row means "change this customer", and answering that
+    // with a two-pane administration screen -- list on one side, the customer somewhere
+    // in it -- is answering a different question. The manager still exists behind the
+    // Customers button, which IS the "show me everyone" question.
+    //
+    // The split is not cosmetic. A group OWNS the quota, the expiry, the renewal period
+    // and the master switch: enforceGroups writes all four onto every member on each
+    // traffic tick, so they can only be edited once, on the group. Everything else --
+    // the credential, the device limit, the account's own switch -- belongs to one
+    // account and cannot be shared, which is the whole reason a customer needs several
+    // accounts rather than one.
+    const combinedEditModal = {
+        visible: false,
+        confirmLoading: false,
+        title: "",
+        confirm: null,
+
+        groupId: 0,
+        name: "",
+        totalGB: 0,
+        days: 0,
+        delayedStart: false,
+        reset: 0,
+        enable: true,
+        comment: "",
+        usedBytes: -1,
+        accounts: [],
+        openPanels: [],
+
+        // members is [{ dbInbound, client, protocol }]. The clients handed in are
+        // already detached copies -- DBInbound.toInbound() parses the settings JSON
+        // afresh on every call -- so editing them cannot touch the table behind the
+        // dialog, and closing without saving discards the lot.
+        show({ title = "", group = null, members = [], usedBytes = -1, confirm = () => {} }) {
+            if (!group) return;
+            this.visible = true;
+            this.title = title || '{{ i18n "pages.combinedEdit.title" }}';
+            this.confirm = confirm;
+            this.confirmLoading = false;
+
+            this.groupId = group.id;
+            this.name = group.name || "";
+            this.totalGB = group.total > 0
+                ? NumberFormatter.toFixed(group.total / SizeFormatter.ONE_GB, 2)
+                : 0;
+            this.reset = group.reset || 0;
+            this.enable = group.enable !== false;
+            this.comment = group.comment || "";
+            this.usedBytes = usedBytes;
+
+            // The stored expiry is an absolute date, or a NEGATIVE duration when the
+            // clock has not started yet. The form asks for a number of days either way,
+            // because that is the shape an operator thinks in when extending someone.
+            this.delayedStart = group.expiryTime < 0;
+            if (group.expiryTime < 0) {
+                this.days = Math.round(-group.expiryTime / 86400000);
+            } else if (group.expiryTime > 0) {
+                this.days = Math.max(0,
+                    Math.ceil((group.expiryTime - Date.now()) / 86400000));
+            } else {
+                this.days = 0;
+            }
+
+            this.accounts = members.map((m) => ({
+                inboundId: m.dbInbound.id,
+                protocol: m.dbInbound.protocol,
+                // Captured BEFORE anything is edited: the update route identifies the
+                // account by its current credential, and the form is about to change it.
+                clientId: getClientIdentity(m.dbInbound.protocol, m.client),
+                originalEmail: m.client.email,
+                client: m.client,
+                userPass: COMBINED_EDIT_USERPASS.includes(m.dbInbound.protocol),
+                canFlow: combinedEditModal.flowSupported(m.dbInbound),
+            }));
+            // The first account open, the rest folded: a customer with two accounts is
+            // readable either way, but the allowance above is what is usually wanted.
+            this.openPanels = this.accounts.length ? ["0"] : [];
+        },
+
+        // Flow is a property of the VLESS INBOUND's stream (TLS or Reality over TCP),
+        // not of the account, so the control only exists where the inbound supports it.
+        flowSupported(dbInbound) {
+            try {
+                return dbInbound.toInbound().canEnableTlsFlow();
+            } catch (e) {
+                return false;
+            }
+        },
+
+        expiryMillis() {
+            const days = Math.max(0, Number(this.days) || 0);
+            if (days <= 0) return 0;
+            return this.delayedStart
+                ? -(days * 86400000)
+                : Date.now() + days * 86400000;
+        },
+
+        ok() {
+            const name = (combinedEditModal.name || "").trim();
+            if (!name) {
+                Vue.prototype.$message.error('{{ i18n "pages.combined.needName" }}');
+                return;
+            }
+            // An account with no email cannot be saved: the email is the panel's global
+            // account identity, and the backend refuses a blank one anyway. Caught here
+            // so the operator is told which panel to open rather than reading it off a
+            // failed request.
+            for (const acc of combinedEditModal.accounts) {
+                if (!(acc.client.email || "").trim()) {
+                    Vue.prototype.$message.error(
+                        '{{ i18n "pages.combinedEdit.needEmail" }} — ' + acc.protocol);
+                    return;
+                }
+            }
+            ObjectUtil.execute(combinedEditModal.confirm, {
+                group: {
+                    id: combinedEditModal.groupId,
+                    name: name,
+                    total: Math.round(
+                        (Number(combinedEditModal.totalGB) || 0) * SizeFormatter.ONE_GB),
+                    expiryTime: combinedEditModal.expiryMillis(),
+                    reset: Math.max(0, Number(combinedEditModal.reset) || 0),
+                    enable: combinedEditModal.enable,
+                    comment: combinedEditModal.comment || "",
+                },
+                accounts: combinedEditModal.accounts,
+            });
+        },
+
+        close() {
+            combinedEditModal.visible = false;
+            combinedEditModal.loading(false);
+        },
+        loading(loading = true) {
+            combinedEditModal.confirmLoading = loading;
+        },
+    };
+
+    // Protocols whose accounts log in with a username and a password rather than a
+    // UUID. Mirrors COMBINED_USERPASS in the create form; kept separate so this dialog
+    // still works on a customer holding a protocol the create form no longer offers.
+    const COMBINED_EDIT_USERPASS = [
+        Protocols.OPENVPN,
+        Protocols.L2TP,
+        Protocols.PPTP,
+        Protocols.SSTP,
+        Protocols.OPENCONNECT,
+        Protocols.IKEV2,
+    ];
+
+    const combinedEditModalApp = new Vue({
+        delimiters: ["[[", "]]"],
+        el: "#combined-edit-modal",
+        data: {
+            combinedEditModal,
+            themeSwitcher,
+            get isMobile() {
+                return app.isMobile;
+            },
+        },
+    });
+</script>
+{{end}}

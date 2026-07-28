@@ -548,6 +548,14 @@
 "configFile" = "Config file"
 "configFileHint" = "Download it from the config icon on this row."
 
+[pages.combinedEdit]
+"title" = "Edit customer"
+"desc" = "The allowance is shared by every account below. The credentials and device limits belong to one account each — that is why a customer needs more than one."
+"daysDesc" = "Days from now. 0 keeps it unlimited."
+"enableDesc" = "Turns the whole customer off."
+"accountEnableDesc" = "This protocol only."
+"needEmail" = "An account needs an email"
+
 [pages.clients]
 "title" = "Clients"
 "searchPlaceholder" = "Search account, customer, inbound, comment"

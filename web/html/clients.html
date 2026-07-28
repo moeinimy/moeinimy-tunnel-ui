@@ -621,6 +621,7 @@
 {{template "modals/textModal"}}
 {{template "modals/clientsModal"}}
 {{template "modals/combinedClientModal"}}
+{{template "modals/combinedEditModal"}}
 {{template "modals/clientCredentialsModal"}}
 {{template "modals/wgcConfigModal"}}
 {{template "modals/awgConfigModal"}}
@@ -1229,11 +1230,11 @@
         if (ok) this.showNewCredentials(created);
       },
       openEditClient(row) {
-        // A customer's row has no single account to edit: what an operator means by
-        // editing one is the allowance and who is on it, which is the customers dialog.
+        // A customer gets their own editor. Sending them through the customers manager
+        // answered a different question — "show me everyone, now find this one" — when
+        // what was asked was "change this customer".
         if (row.isGroup) {
-          this.groupsManager.visible = true;
-          this.openEditGroup(row.group);
+          this.openEditCustomer(row);
           return;
         }
         const r = this.resolveRow(row);
@@ -1453,6 +1454,61 @@
           comment: g.comment || '',
         };
       },
+      // The customer's own editor: their allowance on one side, each of their accounts
+      // on the other. Everything about them is reachable from the row they are on.
+      openEditCustomer(row) {
+        const members = [];
+        for (const m of (row.members || [])) {
+          const r = this.resolveRow(m);
+          // resolveRow re-parses the inbound's settings, so every client here is a
+          // detached copy: the form edits them freely and a cancel discards the lot.
+          if (r) members.push({ dbInbound: r.dbInbound, client: r.client });
+        }
+        if (!members.length) return;
+        combinedEditModal.show({
+          title: '{{ i18n "pages.combinedEdit.title" }} — ' + row.email,
+          group: row.group,
+          members,
+          usedBytes: row.used,
+          confirm: async (payload) => {
+            await this.saveCustomer(payload);
+          },
+        });
+      },
+
+      // Saves the allowance and every account it was opened with.
+      //
+      // The GROUP goes first, deliberately. If an account write fails the customer is
+      // left with the entitlement the operator just set and their old credentials, which
+      // is recoverable by reopening the dialog; the other order leaves new credentials
+      // billed against the old allowance, which reads as the save having half worked.
+      async saveCustomer(payload) {
+        combinedEditModal.loading(true);
+        try {
+          const g = payload.group;
+          const ok = await this.submit('/panel/api/inbounds/clientGroups/update/' + g.id, {
+            name: g.name, total: g.total, expiryTime: g.expiryTime,
+            reset: g.reset, enable: g.enable, comment: g.comment,
+          });
+          if (!ok) return;
+
+          for (const acc of payload.accounts) {
+            const data = {
+              id: acc.inboundId,
+              settings: '{"clients": [' + acc.client.toString() + ']}',
+            };
+            // clientId is the credential the account had when the dialog opened, which
+            // is how the route finds it — the body is what it becomes.
+            const done = await this.submit(
+              '/panel/api/inbounds/updateClient/' + acc.clientId, data);
+            if (!done) return;
+          }
+          combinedEditModal.close();
+        } finally {
+          combinedEditModal.loading(false);
+        }
+      },
+
       // A blank customer in the right-hand pane, saved by the same button as an edit.
       // id -1 is what tells saveGroup to create rather than update, and what keeps the
       // members half hidden: there is nothing to be a member of yet.

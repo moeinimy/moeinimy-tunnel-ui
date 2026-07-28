@@ -573,6 +573,10 @@
 "assignGroupDesc" = "Accounts in one group share a single quota and expiry. Removing an account gives it its own quota back."
 "noGroup" = "No group"
 "newGroup" = "New customer…"
+"pickGroup" = "Pick a customer on the left, or create one."
+"saveGroupFirst" = "Save the customer first, then add accounts to it."
+"addAccount" = "Add an account…"
+"removeFromGroup" = "Remove from this customer"
 
 [pages.combined]
 "open" = "Combined Account"
@@ -581,6 +585,8 @@
 "desc" = "Creates one account per protocol for the same customer and puts them in a group, so all of them spend a single traffic allowance and expire together."
 "name" = "Customer Name"
 "nameDesc" = "Names the group and prefixes each account's email (e.g. ali-ovpn, ali-vless)."
+"count" = "How many customers"
+"countDesc" = "Create this many customers in one pass. Each gets its own name, credentials and subscription link; the allowance below is the same for all of them."
 "accounts" = "Accounts to Create"
 "credentials" = "Credentials"
 "allowance" = "Shared Allowance"

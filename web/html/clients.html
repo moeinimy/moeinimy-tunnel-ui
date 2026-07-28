@@ -323,8 +323,164 @@
         </transition>
       </a-spin>
 
-      <!-- Move accounts between customers. Same endpoint whether it is one row or a
-           whole selection, so there is one code path to be wrong. -->
+      <!-- One dialog for customers, not three.
+           Splitting "which group is this account in", "what does the group cost" and
+           "which groups exist" across three separate modals meant every real task —
+           re-fund a customer and check it landed on all their accounts — was a tour of
+           the UI. This is a list on one side and, on the other, the two halves of a
+           customer: what they are entitled to, and which accounts draw on it. -->
+      <a-modal id="customers-modal"
+        title='{{ i18n "pages.clients.groups" }}'
+        :visible="groupsManager.visible"
+        :class="themeSwitcher.currentTheme"
+        :width="isMobile ? '96vw' : 980"
+        :footer="null"
+        @cancel="closeGroups()">
+        <div class="bo-cust">
+          <!-- left: every customer -->
+          <div class="bo-cust-list">
+            <a-input-search v-model.trim="groupsManager.search" allow-clear
+              placeholder='{{ i18n "search" }}' size="small"></a-input-search>
+            <a-button type="dashed" icon="plus" size="small" :block="true"
+              :style="{ marginTop: '8px' }" @click="newGroup()">
+              {{ i18n "pages.clients.newGroup" }}
+            </a-button>
+            <div class="bo-cust-scroll">
+              <div v-for="g in visibleGroups" :key="g.id"
+                class="bo-cust-item" :class="{ 'is-on': groupEdit.id === g.id }"
+                @click="openEditGroup(g)">
+                <div class="bo-cust-name">[[ g.name ]]</div>
+                <div class="bo-cust-sub">
+                  <a-tag :color="g.enable === false ? 'red' : 'purple'" :style="{ margin: 0 }">
+                    [[ g.members ]]</a-tag>
+                  <span class="bo-muted">
+                    [[ SizeFormatter.sizeFormat((g.up || 0) + (g.down || 0)) ]]<template
+                      v-if="g.total > 0"> / [[ SizeFormatter.sizeFormat(g.total) ]]</template>
+                  </span>
+                </div>
+              </div>
+              <div v-if="!visibleGroups.length" class="bo-muted"
+                :style="{ textAlign: 'center', padding: '18px' }">
+                {{ i18n "pages.clients.noGroups" }}
+              </div>
+            </div>
+          </div>
+
+          <!-- right: the selected customer, in two halves -->
+          <div class="bo-cust-pane" v-if="groupEdit.id !== null">
+            <div class="bo-cust-half">
+              <h4 class="bo-cust-h">{{ i18n "pages.combined.allowance" }}</h4>
+              <a-form layout="vertical">
+                <a-form-item label='{{ i18n "pages.combined.name" }}'>
+                  <a-input v-model.trim="groupEdit.name"></a-input>
+                </a-form-item>
+                <a-form-item label='{{ i18n "pages.inbounds.totalFlow" }} (GB)'>
+                  <a-input-number v-model="groupEdit.totalGB" :min="0" :style="{ width: '100%' }"></a-input-number>
+                  <div class="bo-muted">{{ i18n "pages.combined.sharedQuotaDesc" }}</div>
+                </a-form-item>
+                <!-- What the group has actually spent, beside the field that caps it:
+                     the number an operator is deciding against is the one they cannot
+                     see from the accounts, because each account holds only its own. -->
+                <a-form-item v-if="groupEdit.id > 0">
+                  <div class="bo-cust-usage">
+                    <span>[[ SizeFormatter.sizeFormat(groupUsed) ]]</span>
+                    <a-progress :show-info="false"
+                      :status="groupSpent ? 'exception' : ''"
+                      :percent="groupPercent"></a-progress>
+                    <span v-if="groupEdit.totalGB > 0">[[ groupEdit.totalGB ]]GB</span>
+                    <span v-else class="tr-infinity-ch">&infin;</span>
+                  </div>
+                </a-form-item>
+                <a-form-item label='{{ i18n "pages.client.expireDays" }}'>
+                  <a-input-number v-model="groupEdit.days" :min="0" :style="{ width: '100%' }"></a-input-number>
+                  <div class="bo-muted">{{ i18n "pages.clients.groupDaysDesc" }}</div>
+                </a-form-item>
+                <a-form-item>
+                  <a-switch v-model="groupEdit.delayedStart" size="small"></a-switch>
+                  <span :style="{ marginInlineStart: '8px' }">{{ i18n "pages.client.delayedStart" }}</span>
+                  <div class="bo-muted">{{ i18n "pages.combined.delayedStartDesc" }}</div>
+                </a-form-item>
+                <a-form-item label='{{ i18n "pages.client.renew" }}'>
+                  <a-input-number v-model="groupEdit.reset" :min="0" :style="{ width: '100%' }"></a-input-number>
+                </a-form-item>
+                <a-form-item>
+                  <a-switch v-model="groupEdit.enable" size="small"></a-switch>
+                  <span :style="{ marginInlineStart: '8px' }">{{ i18n "enable" }}</span>
+                </a-form-item>
+                <a-form-item label='{{ i18n "comment" }}'>
+                  <a-input v-model="groupEdit.comment"></a-input>
+                </a-form-item>
+              </a-form>
+              <a-space>
+                <a-button type="primary" :loading="groupEdit.loading" @click="saveGroup()">
+                  {{ i18n "sure" }}
+                </a-button>
+                <a-popconfirm v-if="groupEdit.id > 0" @confirm="delGroup(groupEdit.id)"
+                  title='{{ i18n "pages.clients.deleteGroupConfirm" }}'
+                  :overlay-class-name="themeSwitcher.currentTheme"
+                  ok-text='{{ i18n "delete" }}' ok-type="danger" cancel-text='{{ i18n "cancel" }}'>
+                  <a-button type="danger" ghost icon="delete">{{ i18n "delete" }}</a-button>
+                </a-popconfirm>
+              </a-space>
+            </div>
+
+            <div class="bo-cust-half">
+              <h4 class="bo-cust-h">
+                {{ i18n "pages.clients.groupMembers" }}
+                <a-tag :style="{ marginInlineStart: '6px' }">[[ groupMembers.length ]]</a-tag>
+              </h4>
+              <div class="bo-muted" v-if="groupEdit.id <= 0">
+                {{ i18n "pages.clients.saveGroupFirst" }}
+              </div>
+              <template v-else>
+                <div class="bo-cust-scroll">
+                  <div v-for="m in groupMembers" :key="m.key" class="bo-cust-member">
+                    <div>
+                      <div>[[ m.email ]]</div>
+                      <div class="bo-muted">
+                        <a-tag :style="{ margin: 0 }">[[ m.protocol ]]</a-tag>
+                        [[ m.inboundRemark || ('#' + m.inboundId) ]] ·
+                        [[ SizeFormatter.sizeFormat(m.ownUsed) ]]
+                      </div>
+                    </div>
+                    <a-tooltip>
+                      <template slot="title">{{ i18n "pages.clients.removeFromGroup" }}</template>
+                      <a-icon type="disconnect" class="delete-icon"
+                        @click="setMembership(0, [m.email])"></a-icon>
+                    </a-tooltip>
+                  </div>
+                  <div v-if="!groupMembers.length" class="bo-muted"
+                    :style="{ textAlign: 'center', padding: '18px' }">
+                    {{ i18n "pages.clients.empty" }}
+                  </div>
+                </div>
+                <!-- Adding is a search, not a dropdown of every account on the server:
+                     an operator adding to a customer knows the name they are looking for,
+                     and a select of a few thousand rows is unusable on a phone. -->
+                <a-select show-search :value="undefined" :filter-option="false"
+                  :style="{ width: '100%', marginTop: '10px' }"
+                  :dropdown-class-name="themeSwitcher.currentTheme"
+                  placeholder='{{ i18n "pages.clients.addAccount" }}'
+                  @search="q => groupsManager.memberSearch = q"
+                  @change="email => setMembership(groupEdit.id, [email])">
+                  <a-select-option v-for="r in addableRows" :key="r.key" :value="r.email">
+                    [[ r.email ]] — [[ r.protocol ]]
+                  </a-select-option>
+                </a-select>
+              </template>
+            </div>
+          </div>
+
+          <div class="bo-cust-pane bo-muted" v-else
+            :style="{ display: 'flex', alignItems: 'center', justifyContent: 'center' }">
+            {{ i18n "pages.clients.pickGroup" }}
+          </div>
+        </div>
+      </a-modal>
+
+      <!-- Moving accounts between customers from the table: the same membership call the
+           dialog above makes, kept as its own small step because it starts from a
+           selection rather than from a customer. -->
       <a-modal id="assign-group-modal"
         :title="'{{ i18n "pages.clients.assignGroup" }}'"
         :visible="assign.visible"
@@ -354,89 +510,6 @@
           </a-form-item>
           <a-alert type="info" :show-icon="true" :class="themeSwitcher.currentTheme"
             message='{{ i18n "pages.clients.assignGroupDesc" }}'></a-alert>
-        </a-form>
-      </a-modal>
-
-      <!-- The groups themselves: rename, re-fund, extend, switch off, delete. Without
-           this the only way to change a combined customer's allowance was to delete
-           and rebuild the accounts. -->
-      <a-modal id="groups-manager-modal"
-        title='{{ i18n "pages.clients.groups" }}'
-        :visible="groupsManager.visible"
-        :class="themeSwitcher.currentTheme"
-        :width="isMobile ? '96vw' : 760"
-        :footer="null"
-        @cancel="() => groupsManager.visible = false">
-        <a-table :columns="groupColumns" :data-source="groupList" :row-key="g => g.id"
-          size="small" :pagination="false" :scroll="{ x: true }">
-          <template slot="name" slot-scope="text, g">
-            <b>[[ g.name ]]</b>
-            <div class="bo-muted" v-if="g.comment">[[ g.comment ]]</div>
-          </template>
-          <template slot="usage" slot-scope="text, g">
-            [[ SizeFormatter.sizeFormat((g.up || 0) + (g.down || 0)) ]] /
-            <template v-if="g.total > 0">[[ SizeFormatter.sizeFormat(g.total) ]]</template>
-            <span v-else class="tr-infinity-ch">&infin;</span>
-          </template>
-          <template slot="expiry" slot-scope="text, g">
-            <a-tag v-if="g.expiryTime === 0" :style="{ border: 'none' }">∞</a-tag>
-            <a-tag v-else-if="g.expiryTime < 0">{{ i18n "pages.client.delayedStart" }}</a-tag>
-            <a-tag v-else :color="g.expiryTime <= now ? 'red' : ''">
-              [[ IntlUtil.formatRelativeTime(g.expiryTime) ]]</a-tag>
-          </template>
-          <template slot="actions" slot-scope="text, g">
-            <a-space :size="6">
-              <a-icon type="edit" class="normal-icon" :style="{ fontSize: '18px' }"
-                @click="openEditGroup(g)"></a-icon>
-              <a-popconfirm @confirm="delGroup(g)"
-                title='{{ i18n "pages.clients.deleteGroupConfirm" }}'
-                :overlay-class-name="themeSwitcher.currentTheme"
-                ok-text='{{ i18n "delete" }}' ok-type="danger" cancel-text='{{ i18n "cancel" }}'>
-                <a-icon type="delete" class="delete-icon" :style="{ fontSize: '18px' }"></a-icon>
-              </a-popconfirm>
-            </a-space>
-          </template>
-        </a-table>
-        <div v-if="!groupList.length" class="bo-muted" :style="{ textAlign: 'center', padding: '18px' }">
-          {{ i18n "pages.clients.noGroups" }}
-        </div>
-      </a-modal>
-
-      <a-modal id="edit-group-modal"
-        :title="groupEdit.title"
-        :visible="groupEdit.visible"
-        :confirm-loading="groupEdit.loading"
-        :class="themeSwitcher.currentTheme"
-        ok-text='{{ i18n "sure" }}' cancel-text='{{ i18n "close" }}'
-        @ok="() => saveGroup()"
-        @cancel="() => groupEdit.visible = false">
-        <a-form layout="vertical">
-          <a-form-item label='{{ i18n "pages.combined.name" }}'>
-            <a-input v-model.trim="groupEdit.name"></a-input>
-          </a-form-item>
-          <a-form-item label='{{ i18n "pages.inbounds.totalFlow" }} (GB)'>
-            <a-input-number v-model="groupEdit.totalGB" :min="0" :style="{ width: '100%' }"></a-input-number>
-            <div class="bo-muted">{{ i18n "pages.combined.sharedQuotaDesc" }}</div>
-          </a-form-item>
-          <a-form-item label='{{ i18n "pages.client.expireDays" }}'>
-            <a-input-number v-model="groupEdit.days" :min="0" :style="{ width: '100%' }"></a-input-number>
-            <div class="bo-muted">{{ i18n "pages.clients.groupDaysDesc" }}</div>
-          </a-form-item>
-          <a-form-item>
-            <a-switch v-model="groupEdit.delayedStart" size="small"></a-switch>
-            <span :style="{ marginInlineStart: '8px' }">{{ i18n "pages.client.delayedStart" }}</span>
-            <div class="bo-muted">{{ i18n "pages.combined.delayedStartDesc" }}</div>
-          </a-form-item>
-          <a-form-item label='{{ i18n "pages.client.renew" }}'>
-            <a-input-number v-model="groupEdit.reset" :min="0" :style="{ width: '100%' }"></a-input-number>
-          </a-form-item>
-          <a-form-item>
-            <a-switch v-model="groupEdit.enable" size="small"></a-switch>
-            <span :style="{ marginInlineStart: '8px' }">{{ i18n "enable" }}</span>
-          </a-form-item>
-          <a-form-item label='{{ i18n "comment" }}'>
-            <a-input v-model="groupEdit.comment"></a-input>
-          </a-form-item>
         </a-form>
       </a-modal>
 
@@ -579,9 +652,12 @@
       trafficDiff: 0,
       ipLimitEnable: false,
       assign: { visible: false, loading: false, groupId: 0, newName: '', targets: [] },
-      groupsManager: { visible: false },
+      groupsManager: { visible: false, search: '', memberSearch: '' },
+      // id null = nothing picked yet (the right pane is empty), -1 = a new customer
+      // being filled in, >0 = an existing one. The three states are what let one dialog
+      // do the work the three it replaced used to split between them.
       groupEdit: {
-        visible: false, loading: false, title: '', id: 0, name: '',
+        loading: false, id: null, name: '',
         totalGB: 0, days: 0, delayedStart: false, reset: 0, enable: true, comment: '',
       },
       bulkOps: {
@@ -609,18 +685,56 @@
         { title: '{{ i18n "enable" }}', scopedSlots: { customRender: 'enable' } },
         { title: '{{ i18n "pages.clients.colActions" }}', scopedSlots: { customRender: 'actions' } },
       ],
-      groupColumns: [
-        { title: '{{ i18n "pages.combined.name" }}', scopedSlots: { customRender: 'name' } },
-        { title: '{{ i18n "pages.inbounds.traffic" }}', scopedSlots: { customRender: 'usage' } },
-        { title: '{{ i18n "pages.inbounds.expireDate" }}', scopedSlots: { customRender: 'expiry' } },
-        { title: '{{ i18n "pages.clients.groupMembers" }}', dataIndex: 'members', width: 90 },
-        { title: '{{ i18n "pages.clients.colActions" }}', scopedSlots: { customRender: 'actions' }, width: 90 },
-      ],
     },
     computed: {
       // Groups are panel-wide, so a reseller is never shown them: /clientGroups would
       // hand them every other seller's customer names, and the role cannot create one.
       groupsUsable() { return !RESELLER.isReseller; },
+
+      // --- the customers dialog -----------------------------------------
+      visibleGroups() {
+        const q = (this.groupsManager.search || '').toLowerCase();
+        const list = this.groupList;
+        if (!q) return list;
+        return list.filter(g => (g.name || '').toLowerCase().includes(q)
+          || (g.comment || '').toLowerCase().includes(q));
+      },
+      // The accounts drawing on the selected customer's allowance, taken from the rows
+      // the table already built rather than fetched: membership lives on the traffic row
+      // that produced them, so the two can never disagree.
+      groupMembers() {
+        const id = this.groupEdit.id;
+        if (!id || id < 0) return [];
+        return this.rows.filter(r => r.group && r.group.id === id);
+      },
+      // Everything not already in THIS customer, narrowed by what was typed. Accounts
+      // belonging to another customer are offered too — moving one is a legitimate
+      // thing to do, and the backend's membership call is a move, not an insert.
+      addableRows() {
+        const id = this.groupEdit.id;
+        const q = (this.groupsManager.memberSearch || '').toLowerCase();
+        return this.rows
+          .filter(r => !(r.group && r.group.id === id))
+          .filter(r => !q || r.email.toLowerCase().includes(q)
+            || r.protocol.toLowerCase().includes(q))
+          .slice(0, 40);
+      },
+      // Read off the group, not summed from the member rows on screen: a filter or a
+      // search would otherwise change the customer's usage, and the group already holds
+      // the authoritative figure.
+      groupUsed() {
+        const g = this.clientGroups[this.groupEdit.id];
+        return g ? (g.up || 0) + (g.down || 0) : 0;
+      },
+      groupPercent() {
+        const total = (Number(this.groupEdit.totalGB) || 0) * SizeFormatter.ONE_GB;
+        if (total <= 0) return 100;
+        return Math.min(100, 100 * this.groupUsed / total);
+      },
+      groupSpent() {
+        const total = (Number(this.groupEdit.totalGB) || 0) * SizeFormatter.ONE_GB;
+        return total > 0 && this.groupUsed >= total;
+      },
       subEnabled() { return !!(this.subSettings && this.subSettings.enable); },
       groupList() {
         return Object.values(this.clientGroups)
@@ -1147,9 +1261,9 @@
         } else if (g.expiryTime > 0) {
           days = Math.max(0, Math.ceil((g.expiryTime - now) / 86400000));
         }
+        this.groupsManager.memberSearch = '';
         this.groupEdit = {
-          visible: true, loading: false,
-          title: '{{ i18n "pages.clients.editGroup" }} — ' + g.name,
+          loading: false,
           id: g.id, name: g.name,
           totalGB: g.total > 0 ? NumberFormatter.toFixed(g.total / SizeFormatter.ONE_GB, 2) : 0,
           days, delayedStart: delayed,
@@ -1157,6 +1271,22 @@
           enable: g.enable !== false,
           comment: g.comment || '',
         };
+      },
+      // A blank customer in the right-hand pane, saved by the same button as an edit.
+      // id -1 is what tells saveGroup to create rather than update, and what keeps the
+      // members half hidden: there is nothing to be a member of yet.
+      newGroup() {
+        this.groupsManager.memberSearch = '';
+        this.groupEdit = {
+          loading: false, id: -1, name: RandomUtil.randomCustomerName(),
+          totalGB: 0, days: 0, delayedStart: false, reset: 0, enable: true, comment: '',
+        };
+      },
+      closeGroups() {
+        this.groupsManager.visible = false;
+        // Cleared on close so reopening does not land on a customer that may have been
+        // deleted in between, with a form full of their figures.
+        this.groupEdit.id = null;
       },
       async saveGroup() {
         const e = this.groupEdit;
@@ -1171,25 +1301,45 @@
             ? -(days * 86400000)
             : Date.now() + days * 86400000;
         }
+        const body = {
+          name: e.name,
+          total: Math.round((Number(e.totalGB) || 0) * SizeFormatter.ONE_GB),
+          expiryTime,
+          reset: Math.max(0, Number(e.reset) || 0),
+          enable: e.enable,
+          comment: e.comment || '',
+        };
         e.loading = true;
         try {
-          const ok = await this.submit('/panel/api/inbounds/clientGroups/update/' + e.id, {
-            name: e.name,
-            total: Math.round((Number(e.totalGB) || 0) * SizeFormatter.ONE_GB),
-            expiryTime,
-            reset: Math.max(0, Number(e.reset) || 0),
-            enable: e.enable,
-            comment: e.comment || '',
-          });
-          if (ok) e.visible = false;
+          if (e.id === -1) {
+            // /add answers with the stored row, so the pane can switch straight to the
+            // customer that was just created and start taking members.
+            const created = await HttpUtil.post('/panel/api/inbounds/clientGroups/add', body);
+            if (!created.success || !created.obj || !created.obj.id) return;
+            await this.loadGroups();
+            const g = this.clientGroups[created.obj.id];
+            if (g) this.openEditGroup(g);
+            return;
+          }
+          await this.submit('/panel/api/inbounds/clientGroups/update/' + e.id, body);
         } finally {
           e.loading = false;
         }
       },
-      async delGroup(g) {
+      // Moves accounts in or out of a customer. groupId 0 is "out of every group", which
+      // is the same call — the backend hands those accounts their own quota back rather
+      // than leaving them on the one the group last wrote (ClientGroupService).
+      async setMembership(groupId, emails) {
+        if (!emails || !emails.length) return;
+        await this.submit('/panel/api/inbounds/clientGroups/membership',
+          { data: JSON.stringify({ groupId, emails }) });
+        this.groupsManager.memberSearch = '';
+      },
+      async delGroup(id) {
         // The members are released, not deleted: DelGroup clears their membership and
-        // SetMembership-style restore hands each of them its own quota back.
-        await this.submit('/panel/api/inbounds/clientGroups/del/' + g.id);
+        // restores each account's own quota.
+        const ok = await this.submit('/panel/api/inbounds/clientGroups/del/' + id);
+        if (ok) this.groupEdit.id = null;
       },
 
       // --- combined account ---------------------------------------------
@@ -1204,19 +1354,53 @@
           title: '{{ i18n "pages.combined.title"}}',
           okText: '{{ i18n "pages.combined.submit"}}',
           dbInbounds: this.dbInbounds,
-          confirm: async (payload) => {
-            await this.addCombinedAccount(payload, combinedModal);
+          confirm: async (payloads) => {
+            await this.addCombinedAccount(payloads, combinedModal);
           },
         });
       },
-      async addCombinedAccount(payload, modal) {
-        const created = (payload.members || []).map(m => ({
-          inboundId: m.inboundId,
-          email: this.emailFromSettings(m.settings),
-        }));
-        const ok = await this.submit('/panel/api/inbounds/combinedAccount/add',
-          { data: JSON.stringify(payload) }, modal);
-        if (ok) this.showNewCredentials(created);
+      // Creates one customer, or two hundred. The modal always hands over a list, so
+      // there is a single path here rather than one that works and one that is only
+      // exercised when someone types a number into a field.
+      //
+      // Posted one at a time on purpose: /combinedAccount/add is transactional per
+      // customer, so a name that collides with an existing account fails that customer
+      // alone and the rest still land. The list is re-read ONCE at the end instead of
+      // after each, which is what keeps a run of fifty from being fifty full reloads.
+      async addCombinedAccount(payloads, modal) {
+        const list = Array.isArray(payloads) ? payloads : [payloads];
+        const created = [];
+        let failed = 0;
+        if (modal && typeof modal.loading === 'function') modal.loading(true);
+        try {
+          for (const payload of list) {
+            // A JSON string in a "data" field, not a JSON body: the panel's axios
+            // form-urlencodes every request (assets/js/axios-init.js), so a nested
+            // payload has no other way through.
+            const msg = await HttpUtil.post('/panel/api/inbounds/combinedAccount/add',
+              { data: JSON.stringify(payload) });
+            if (!msg.success) { failed++; continue; }
+            for (const m of (payload.members || [])) {
+              created.push({ inboundId: m.inboundId, email: this.emailFromSettings(m.settings) });
+            }
+          }
+        } finally {
+          if (modal && typeof modal.loading === 'function') modal.loading(false);
+        }
+        if (created.length) {
+          if (modal && typeof modal.close === 'function') modal.close();
+          await this.__combinedReload();
+          this.showNewCredentials(created);
+        }
+        // Reported rather than swallowed: a partial run is the case where the operator
+        // most needs to know which half of what they asked for actually exists.
+        if (failed) {
+          this.$message.error(failed + ' / ' + list.length + ' ' +
+            '{{ i18n "pages.inbounds.toasts.create" }}');
+        }
+      },
+      async __combinedReload() {
+        await this.load();
       },
       emailFromSettings(settings) {
         try {

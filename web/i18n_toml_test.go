@@ -172,6 +172,7 @@ var knownMissing = keySet(
 	"pages.combined.userLimit", "pages.combined.userLimitDesc",
 	"pages.combined.delayedStartDesc",
 	"pages.combined.limits", "pages.combined.ipLimitVless",
+	"pages.combined.count", "pages.combined.countDesc",
 
 	// The cross-inbound Clients page. Translated in en_US and fa_IR; the other
 	// locales render via the English fallback until translated.
@@ -182,6 +183,8 @@ var knownMissing = keySet(
 	"pages.clients.statCustomers", "pages.clients.colClient",
 	"pages.clients.colCustomer", "pages.clients.colProtocol",
 	"pages.clients.colInbound", "pages.clients.empty",
+	"pages.clients.pickGroup", "pages.clients.saveGroupFirst",
+	"pages.clients.addAccount", "pages.clients.removeFromGroup",
 	"pages.clients.colActions", "pages.clients.allGroups", "pages.clients.groups",
 	"pages.clients.noGroups", "pages.clients.editGroup", "pages.clients.groupMembers",
 	"pages.clients.groupDaysDesc", "pages.clients.deleteGroupConfirm",

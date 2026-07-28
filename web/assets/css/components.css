@@ -881,6 +881,77 @@ body.dark .bo-theme-toggle .bo-i-moon { display:block; }
 
 .bo-cred-linkbox:hover { background:var(--bg-3,rgba(128,128,128,.2)); }
 
+/* --- the customers dialog ----------------------------------------------
+   A list of customers beside one customer's two halves. On a phone the three
+   columns stack, which is why nothing here is a table: a table of members would
+   scroll sideways inside a modal that is already scrolling. */
+.bo-cust {
+  display:grid;
+  grid-template-columns:minmax(180px,240px) 1fr;
+  gap:16px;
+  min-height:380px;
+}
+
+.bo-cust-list { display:flex; flex-direction:column; min-width:0; }
+
+/* Both scroll regions are capped rather than sized: a customer with two accounts
+   must not leave a tall empty box, and one with thirty must not push the save
+   button off the modal. */
+.bo-cust-scroll { margin-top:8px; overflow-y:auto; max-height:340px; min-height:0; }
+
+.bo-cust-item {
+  padding:8px 10px;
+  border-radius:8px;
+  cursor:pointer;
+  border:1px solid transparent;
+}
+
+.bo-cust-item:hover { background:var(--bg-2,rgba(128,128,128,.12)); }
+
+.bo-cust-item.is-on {
+  background:var(--bg-2,rgba(128,128,128,.12));
+  border-color:var(--accent);
+}
+
+.bo-cust-name { font-weight:var(--fw-medium,500); word-break:break-word; }
+.bo-cust-sub { display:flex; align-items:center; gap:6px; font-size:12px; margin-top:2px; }
+
+.bo-cust-pane {
+  display:grid;
+  grid-template-columns:1fr 1fr;
+  gap:16px;
+  min-width:0;
+}
+
+.bo-cust-half { min-width:0; }
+
+.bo-cust-h {
+  margin:0 0 10px;
+  font-size:13px;
+  text-transform:uppercase;
+  letter-spacing:.04em;
+  color:var(--text-3);
+}
+
+.bo-cust-usage { display:grid; grid-template-columns:auto 1fr auto; align-items:center; gap:8px; }
+
+.bo-cust-member {
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:8px;
+  padding:7px 0;
+  border-bottom:1px solid var(--line-1,rgba(128,128,128,.18));
+  word-break:break-all;
+}
+
+.bo-cust-member:last-child { border-bottom:none; }
+
+@media (max-width:768px) {
+  .bo-cust, .bo-cust-pane { grid-template-columns:1fr; }
+  .bo-cust-scroll { max-height:220px; }
+}
+
 /* Profile downloads (.ovpn). Deliberately quiet chips rather than buttons: the
    fields above them are the answer, and these are the attachment that goes with it. */
 .bo-cred-files { display:flex; flex-wrap:wrap; gap:8px; padding-top:8px; }

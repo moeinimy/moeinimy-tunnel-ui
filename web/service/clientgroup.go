@@ -83,8 +83,21 @@ func (s *ClientGroupService) UpdateGroup(g *model.ClientGroup) error {
 func (s *ClientGroupService) DelGroup(id int) error {
 	db := database.GetDB()
 	return db.Transaction(func(tx *gorm.DB) error {
+		// Collected before the membership is cleared: afterwards there is no way left
+		// to tell which accounts used to belong to this group.
+		var emails []string
+		if err := tx.Model(xray.ClientTraffic{}).Where("group_id = ?", id).
+			Pluck("email", &emails).Error; err != nil {
+			return err
+		}
 		if err := tx.Model(xray.ClientTraffic{}).Where("group_id = ?", id).
 			Update("group_id", 0).Error; err != nil {
+			return err
+		}
+		// Same reason as leaving a group one account at a time: the members' rows still
+		// carry the deleted group's quota and expiry, and without this a customer whose
+		// group was removed would keep whatever the group last wrote onto them.
+		if err := restoreOwnEntitlement(tx, emails); err != nil {
 			return err
 		}
 		return tx.Delete(model.ClientGroup{}, id).Error
@@ -106,28 +119,42 @@ func (s *ClientGroupService) SetMembership(groupId int, emails []string) error {
 			// there is nothing to write here.
 			return nil
 		}
-		// Leaving hands the account back its OWN entitlement. While it was a member,
-		// every tick of enforceGroups overwrote total/expiry_time/reset on its row with
-		// the group's, and nothing else would ever put the account's own figures back:
-		// an account released from a spent group would stay spent for good, and one
-		// released from a live group would keep spending an allowance it no longer
-		// belongs to. The inbound's settings JSON is where its own figures still are.
-		return tx.Exec(`
-			UPDATE client_traffics SET
-				total = COALESCE((SELECT JSON_EXTRACT(c.value,'$.totalGB') FROM inbounds,
-					JSON_EACH(JSON_EXTRACT(inbounds.settings,'$.clients')) AS c
-					WHERE inbounds.id = client_traffics.inbound_id
-					  AND JSON_EXTRACT(c.value,'$.email') = client_traffics.email), total),
-				expiry_time = COALESCE((SELECT JSON_EXTRACT(c.value,'$.expiryTime') FROM inbounds,
-					JSON_EACH(JSON_EXTRACT(inbounds.settings,'$.clients')) AS c
-					WHERE inbounds.id = client_traffics.inbound_id
-					  AND JSON_EXTRACT(c.value,'$.email') = client_traffics.email), expiry_time),
-				reset = COALESCE((SELECT JSON_EXTRACT(c.value,'$.reset') FROM inbounds,
-					JSON_EACH(JSON_EXTRACT(inbounds.settings,'$.clients')) AS c
-					WHERE inbounds.id = client_traffics.inbound_id
-					  AND JSON_EXTRACT(c.value,'$.email') = client_traffics.email), reset)
-			WHERE email IN (?)`, emails).Error
+		// Leaving hands the account back its OWN entitlement.
+		return restoreOwnEntitlement(tx, emails)
 	})
+}
+
+// restoreOwnEntitlement copies each account's own quota, expiry and renewal period out
+// of its inbound's settings JSON and back onto its traffic row.
+//
+// It exists because a group OWNS those three while an account belongs to one: every tick
+// of enforceGroups overwrites them with the group's. Nothing else would ever put the
+// account's own figures back, so an account released from a spent group would stay spent
+// for good, and one released from a live group would go on spending an allowance it no
+// longer belongs to. The settings JSON is the only place its own figures survived.
+//
+// COALESCE keeps the current value when the JSON has nothing to say — an account whose
+// client row has since been removed keeps what it had rather than silently becoming
+// unlimited.
+func restoreOwnEntitlement(tx *gorm.DB, emails []string) error {
+	if len(emails) == 0 {
+		return nil
+	}
+	return tx.Exec(`
+		UPDATE client_traffics SET
+			total = COALESCE((SELECT JSON_EXTRACT(c.value,'$.totalGB') FROM inbounds,
+				JSON_EACH(JSON_EXTRACT(inbounds.settings,'$.clients')) AS c
+				WHERE inbounds.id = client_traffics.inbound_id
+				  AND JSON_EXTRACT(c.value,'$.email') = client_traffics.email), total),
+			expiry_time = COALESCE((SELECT JSON_EXTRACT(c.value,'$.expiryTime') FROM inbounds,
+				JSON_EACH(JSON_EXTRACT(inbounds.settings,'$.clients')) AS c
+				WHERE inbounds.id = client_traffics.inbound_id
+				  AND JSON_EXTRACT(c.value,'$.email') = client_traffics.email), expiry_time),
+			reset = COALESCE((SELECT JSON_EXTRACT(c.value,'$.reset') FROM inbounds,
+				JSON_EACH(JSON_EXTRACT(inbounds.settings,'$.clients')) AS c
+				WHERE inbounds.id = client_traffics.inbound_id
+				  AND JSON_EXTRACT(c.value,'$.email') = client_traffics.email), reset)
+		WHERE email IN (?)`, emails).Error
 }
 
 // enforceGroups mirrors each group's entitlement onto its members and expires them

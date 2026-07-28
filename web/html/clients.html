@@ -801,22 +801,49 @@
               depleted: (total > 0 && used >= total) ||
                 (expiryTime > 0 && expiryTime <= this.now),
               expiryTime,
+              // When the account came into being, used only for ordering. Accounts
+              // predating the column have no value; they sort oldest, which is what
+              // they are. Parsed once here rather than in the comparator, which runs
+              // O(n log n) times per keystroke of the search box.
+              createdAt: this.parseCreated(c.created_at),
             });
           }
         }
-        // Ordered by CUSTOMER, so a combined account's protocols land next to each
-        // other instead of wherever their inbounds happen to fall. An ungrouped
-        // account is its own customer and sorts by its own name, so the two kinds
-        // interleave alphabetically rather than the groups being exiled to one end.
+        // NEWEST FIRST, by customer.
+        //
+        // Alphabetical order was wrong for the thing this page is actually used for:
+        // an operator creates an account and then wants to do something with it — copy
+        // its details, check it, hand it over — and under an alphabetical sort a new
+        // "zahra" landed on page four. What was just made is what is wanted, so it is
+        // at the top.
+        //
+        // The unit of ordering is the CUSTOMER, not the account: a combined customer's
+        // accounts must stay adjacent, so the whole block sorts by the newest account in
+        // it. Otherwise a customer's OpenVPN and VLESS rows, created a second apart,
+        // could be split by another customer created between them.
+        const blockKey = (r) => (r.group ? 'g' + r.group.id : 'e' + r.email);
+        const newestOf = new Map();
+        for (const r of out) {
+          const k = blockKey(r);
+          newestOf.set(k, Math.max(newestOf.get(k) || 0, r.createdAt));
+        }
         out.sort((a, b) => {
-          const ka = a.group ? a.group.name : a.email;
-          const kb = b.group ? b.group.name : b.email;
-          const byCustomer = ka.toLowerCase().localeCompare(kb.toLowerCase());
-          if (byCustomer !== 0) return byCustomer;
-          // Same name from two different customers must not interleave.
-          const ga = a.group ? a.group.id : 0, gb = b.group ? b.group.id : 0;
-          if (ga !== gb) return ga - gb;
-          return a.protocol.localeCompare(b.protocol) || a.email.localeCompare(b.email);
+          const ka = blockKey(a), kb = blockKey(b);
+          if (ka !== kb) {
+            const byAge = newestOf.get(kb) - newestOf.get(ka);
+            if (byAge !== 0) return byAge;
+            // Same instant, or both unknown: fall back to something stable, or the
+            // table would reshuffle on every refresh.
+            const na = a.group ? a.group.name : a.email;
+            const nb = b.group ? b.group.name : b.email;
+            return na.toLowerCase().localeCompare(nb.toLowerCase())
+              || ka.localeCompare(kb);
+          }
+          // Within one customer, oldest first: the order they were created in reads as
+          // the order they were meant in.
+          return a.createdAt - b.createdAt
+            || a.protocol.localeCompare(b.protocol)
+            || a.email.localeCompare(b.email);
         });
         return out;
       },
@@ -959,6 +986,15 @@
       },
 
       // --- resolving a row back to the objects the modals want -----------
+      // created_at is epoch milliseconds, stamped by the backend on every account it
+      // writes (InboundService). Accounts that predate the column have none, and an
+      // imported inbound can carry anything at all, so a string is parsed as a date and
+      // everything else sorts OLDEST — a bad value must never pin a row to the top.
+      parseCreated(value) {
+        if (!value) return 0;
+        const t = typeof value === 'number' ? value : Date.parse(value);
+        return Number.isFinite(t) ? t : 0;
+      },
       dbInboundOf(row) {
         return this.dbInbounds.find(i => i.id === row.inboundId) || null;
       },
@@ -1086,9 +1122,15 @@
           id: dbInboundId,
           settings: '{"clients": [' + clients.toString() + ']}',
         };
-        // Captured before the post: the emails are the only stable handle on the
-        // accounts once the list is re-read, and the response carries no ids.
-        const created = (clients || [])
+        // One argument, two shapes: the single-client modal confirms with ONE client
+        // object and the bulk modal with an array of them. `clients.toString()` above
+        // serialises both (Array.prototype.toString joins with the comma the JSON list
+        // needs); iterating the object as if it were an array does not, and threw
+        // before the request was ever sent.
+        //
+        // Captured before the post either way: the emails are the only stable handle on
+        // the accounts once the list is re-read, and the response carries no ids.
+        const created = (Array.isArray(clients) ? clients : [clients])
           .filter(c => c && c.email)
           .map(c => ({ inboundId: dbInboundId, email: c.email }));
         const ok = await this.submit('/panel/api/inbounds/addClient', data, modal);

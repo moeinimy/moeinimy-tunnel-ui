@@ -39,6 +39,13 @@
       <a-icon :style="{ fontSize: '22px', marginInlineStart: '14px' }" class="normal-icon" type="link" v-if="app.subSettings?.enable && client.subId" @click="showQrcode(record.id,client);"></a-icon>
     </a-tooltip>
     <a-tooltip>
+      <template slot="title">{{ i18n "pages.credentials.show" }}</template>
+      <!-- Every field the customer needs, in one sheet. The icons around it each lead
+           to one piece (a QR, a subscription, an edit form); this is the whole answer
+           to "what do I send them", re-openable long after the account was created. -->
+      <a-icon :style="{ fontSize: '22px', marginInlineStart: '14px' }" class="normal-icon" type="solution" @click="showClientCredentials(record,client);"></a-icon>
+    </a-tooltip>
+    <a-tooltip>
       <template slot="title">{{ i18n "pages.client.edit" }}</template>
       <a-icon :style="{ fontSize: '22px' }" class="normal-icon" type="edit" @click="openEditClient(record.id,client);"></a-icon>
     </a-tooltip>
@@ -246,6 +253,10 @@
       <a-menu-item v-if="app.subSettings?.enable && client.subId" @click="showQrcode(record.id,client);">
         <a-icon :style="{ fontSize: '14px' }" type="link"></a-icon>
         {{ i18n "pages.settings.subSettings" }}
+      </a-menu-item>
+      <a-menu-item @click="showClientCredentials(record,client);">
+        <a-icon :style="{ fontSize: '14px' }" type="solution"></a-icon>
+        {{ i18n "pages.credentials.show" }}
       </a-menu-item>
       <a-menu-item @click="openEditClient(record.id,client);">
         <a-icon :style="{ fontSize: '14px' }" type="edit"></a-icon>

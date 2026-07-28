@@ -58,24 +58,92 @@
                     <a-select-option value="depleted">{{ i18n "depleted" }}</a-select-option>
                     <a-select-option value="disabled">{{ i18n "disabled" }}</a-select-option>
                   </a-select>
+                  <a-select v-if="groupsUsable" v-model="groupFilter" :style="{ minWidth: '170px' }"
+                    :dropdown-class-name="themeSwitcher.currentTheme">
+                    <a-select-option value="">{{ i18n "pages.clients.allGroups" }}</a-select-option>
+                    <a-select-option v-for="g in groupList" :key="g.id" :value="String(g.id)">
+                      [[ g.name ]]</a-select-option>
+                  </a-select>
                   <a-button icon="reload" @click="load(true)" :loading="spinning"></a-button>
                   <span class="bo-muted" v-if="filtered.length !== rows.length">
                     [[ filtered.length ]] / [[ rows.length ]]
                   </span>
+
+                  <span :style="{ flex: '1 1 auto' }"></span>
+
+                  <!-- Creating an account without leaving for the inbounds tab: pick
+                       the inbound, then the ordinary client form. -->
+                  <a-dropdown :trigger="['click']" v-if="addableInbounds.length">
+                    <a-button type="primary" icon="plus">
+                      {{ i18n "pages.client.add" }} <a-icon type="down"></a-icon>
+                    </a-button>
+                    <a-menu slot="overlay" :class="themeSwitcher.currentTheme">
+                      <a-menu-item v-for="db in addableInbounds" :key="db.id"
+                        @click="openAddClient(db)">
+                        <a-tag>[[ db.protocol ]]</a-tag>[[ db.remark || ('#' + db.id) ]]
+                      </a-menu-item>
+                    </a-menu>
+                  </a-dropdown>
+                  <a-button v-if="groupsUsable" icon="usergroup-add" @click="openCombinedAccount()">
+                    {{ i18n "pages.combined.open" }}
+                  </a-button>
+                  <a-button v-if="groupsUsable" icon="team" @click="groupsManager.visible = true">
+                    {{ i18n "pages.clients.groups" }}
+                  </a-button>
+                </div>
+
+                <!-- The selection bar only exists while something is selected: an
+                     always-present row of disabled buttons reads as broken. -->
+                <div v-if="selectedCount > 0" class="bo-selbar">
+                  <a-tag color="purple">[[ selectedCount ]] {{ i18n "pages.clients.selected" }}</a-tag>
+                  <a-button size="small" icon="thunderbolt" @click="openBulkOps()">
+                    {{ i18n "pages.inbounds.bulkOperations" }}
+                  </a-button>
+                  <a-button v-if="groupsUsable" size="small" icon="usergroup-add"
+                    @click="openAssignGroup(null)">
+                    {{ i18n "pages.clients.assignGroup" }}
+                  </a-button>
+                  <a-button size="small" icon="solution" @click="showSelectedCredentials()">
+                    {{ i18n "pages.credentials.show" }}
+                  </a-button>
+                  <a-button size="small" icon="file-text"
+                    @click="exportTxt(selectedTargets(), 'accounts')">
+                    {{ i18n "pages.inbounds.exportTxt" }}
+                  </a-button>
+                  <a-button size="small" icon="file-pdf"
+                    @click="exportPdf(selectedTargets(), 'accounts')">
+                    {{ i18n "pages.inbounds.exportPdf" }}
+                  </a-button>
+                  <a-button size="small" @click="clearSelection()">
+                    {{ i18n "pages.clients.clearSelection" }}
+                  </a-button>
                 </div>
               </a-card>
 
               <a-card hoverable :body-style="{ padding: isMobile ? '8px' : '16px' }">
                 <a-table :columns="columns" :data-source="filtered" :row-key="r => r.key"
-                  :pagination="{ pageSize: 25, showSizeChanger: true, pageSizeOptions: ['25','50','100','200'] }"
+                  :pagination="{ pageSize: pageSize, showSizeChanger: true, pageSizeOptions: ['25','50','100','200'] }"
                   :scroll="{ x: true }" size="middle"
                   :row-class-name="rowClass" @change="onTableChange">
+
+                  <template slot="selectHeader">
+                    <a-tooltip>
+                      <template slot="title">{{ i18n "pages.inbounds.selectAllClients" }}</template>
+                      <a-checkbox :checked="allFilteredSelected" :indeterminate="someFilteredSelected"
+                        @change="e => toggleSelectAll(e.target.checked)"></a-checkbox>
+                    </a-tooltip>
+                  </template>
+                  <template slot="select" slot-scope="text, row">
+                    <a-checkbox :checked="isSelected(row)"
+                      @change="e => toggleSelect(row, e.target.checked)"></a-checkbox>
+                  </template>
 
                   <template slot="client" slot-scope="text, row">
                     <a-space direction="horizontal" :size="2">
                       <a-tooltip>
                         <template slot="title">
-                          <template v-if="row.depleted">{{ i18n "depleted" }}</template>
+                          <template v-if="row.frozen">{{ i18n "pages.client.frozen" }}</template>
+                          <template v-else-if="row.depleted">{{ i18n "depleted" }}</template>
                           <template v-else-if="!row.enable">{{ i18n "disabled" }}</template>
                           <template v-else-if="row.online">{{ i18n "online" }}</template>
                           <template v-else>{{ i18n "offline" }}</template>
@@ -91,13 +159,23 @@
                   </template>
 
                   <!-- The point of the page: the customer, spelled once per row, so
-                       the three accounts of a combined one read as one person
-                       instead of three unrelated names in three different inbounds. -->
+                       the accounts of a combined one read as one person instead of
+                       unrelated names in different inbounds. Clicking the cell is how
+                       an account is moved between customers. -->
                   <template slot="group" slot-scope="text, row">
                     <a-tooltip v-if="row.group" :overlay-class-name="themeSwitcher.currentTheme">
                       <template slot="title">{{ i18n "pages.combined.groupTagDesc" }}</template>
-                      <a-tag color="purple" :style="{ cursor: 'default' }">
+                      <a-tag color="purple" :style="{ cursor: groupsUsable ? 'pointer' : 'default' }"
+                        @click="groupsUsable && openAssignGroup(row)">
                         <a-icon type="usergroup-add" :style="{ marginRight: '3px' }"></a-icon>[[ row.group.name ]]
+                      </a-tag>
+                    </a-tooltip>
+                    <!-- Dashed and quiet, so an unassigned account reads as an empty
+                         slot to fill rather than as a customer named "Customer group". -->
+                    <a-tooltip v-else-if="groupsUsable" :overlay-class-name="themeSwitcher.currentTheme">
+                      <template slot="title">{{ i18n "pages.clients.assignGroupDesc" }}</template>
+                      <a-tag class="bo-cg-add" @click="openAssignGroup(row)">
+                        <a-icon type="plus" :style="{ marginRight: '3px' }"></a-icon>{{ i18n "pages.clients.noGroup" }}
                       </a-tag>
                     </a-tooltip>
                     <span v-else class="bo-muted">—</span>
@@ -168,6 +246,71 @@
                       </a-tag>
                     </a-tooltip>
                   </template>
+
+                  <template slot="enable" slot-scope="text, row">
+                    <a-switch :checked="row.clientEnable"
+                      @change="state => switchEnableClient(row, state)"></a-switch>
+                  </template>
+
+                  <!-- One dropdown rather than the inbounds page's icon strip: this
+                       table already carries the customer, the inbound and the protocol,
+                       and a dozen icons on top of that is where the row stops being
+                       readable. Everything the inbounds tab offers is in here. -->
+                  <template slot="actions" slot-scope="text, row">
+                    <a-space :size="4">
+                      <a-tooltip>
+                        <template slot="title">{{ i18n "pages.credentials.show" }}</template>
+                        <a-icon type="solution" class="normal-icon" :style="{ fontSize: '20px' }"
+                          @click="rowCredentials(row)"></a-icon>
+                      </a-tooltip>
+                      <a-tooltip>
+                        <template slot="title">{{ i18n "pages.client.edit" }}</template>
+                        <a-icon type="edit" class="normal-icon" :style="{ fontSize: '20px' }"
+                          @click="openEditClient(row)"></a-icon>
+                      </a-tooltip>
+                      <a-dropdown :trigger="['click']">
+                        <a-icon type="ellipsis" :style="{ fontSize: '20px', cursor: 'pointer' }"
+                          @click="e => e.preventDefault()"></a-icon>
+                        <a-menu slot="overlay" :class="themeSwitcher.currentTheme">
+                          <a-menu-item v-if="rowHasLink(row)" @click="showQrcode(row)">
+                            <a-icon type="qrcode"></a-icon> {{ i18n "qrCode" }}
+                          </a-menu-item>
+                          <a-menu-item v-if="row.protocol === Protocols.WGC" @click="showWgcConfig(row)">
+                            <a-icon type="qrcode"></a-icon> WireGuard Config
+                          </a-menu-item>
+                          <a-menu-item v-if="row.protocol === Protocols.AWG" @click="showAwgConfig(row)">
+                            <a-icon type="qrcode"></a-icon> AmneziaWG Config
+                          </a-menu-item>
+                          <a-menu-item v-if="row.protocol === Protocols.SSH" @click="showSshConfig(row)">
+                            <a-icon type="qrcode"></a-icon> SSH Config
+                          </a-menu-item>
+                          <a-menu-item v-if="subEnabled && row.subId" @click="showQrcode(row)">
+                            <a-icon type="link"></a-icon> {{ i18n "pages.settings.subSettings" }}
+                          </a-menu-item>
+                          <a-menu-item v-if="groupsUsable" @click="openAssignGroup(row)">
+                            <a-icon type="usergroup-add"></a-icon> {{ i18n "pages.clients.assignGroup" }}
+                          </a-menu-item>
+                          <a-menu-item @click="resetClientTraffic(row)">
+                            <a-icon type="retweet"></a-icon> {{ i18n "pages.inbounds.resetTraffic" }}
+                          </a-menu-item>
+                          <a-menu-item @click="toggleFreeze(row)">
+                            <a-icon type="pause-circle"></a-icon>
+                            [[ row.frozen ? '{{ i18n "pages.client.unfreeze" }}' : '{{ i18n "pages.client.freeze" }}' ]]
+                          </a-menu-item>
+                          <a-menu-item @click="exportTxt([{ inboundId: row.inboundId, email: row.email }], row.email)">
+                            <a-icon type="file-text"></a-icon> {{ i18n "pages.inbounds.exportTxt" }}
+                          </a-menu-item>
+                          <a-menu-item @click="exportPdf([{ inboundId: row.inboundId, email: row.email }], row.email)">
+                            <a-icon type="file-pdf"></a-icon> {{ i18n "pages.inbounds.exportPdf" }}
+                          </a-menu-item>
+                          <a-menu-item @click="delClient(row)">
+                            <a-icon type="delete" :style="{ color: '#e04141' }"></a-icon>
+                            <span :style="{ color: '#e04141' }">{{ i18n "delete" }}</span>
+                          </a-menu-item>
+                        </a-menu>
+                      </a-dropdown>
+                    </a-space>
+                  </template>
                 </a-table>
 
                 <div v-if="!rows.length && !spinning" class="bo-muted"
@@ -179,13 +322,224 @@
           </a-row>
         </transition>
       </a-spin>
+
+      <!-- Move accounts between customers. Same endpoint whether it is one row or a
+           whole selection, so there is one code path to be wrong. -->
+      <a-modal id="assign-group-modal"
+        :title="'{{ i18n "pages.clients.assignGroup" }}'"
+        :visible="assign.visible"
+        :confirm-loading="assign.loading"
+        :class="themeSwitcher.currentTheme"
+        ok-text='{{ i18n "sure" }}' cancel-text='{{ i18n "close" }}'
+        @ok="() => runAssignGroup()"
+        @cancel="() => assign.visible = false">
+        <a-form layout="vertical">
+          <a-form-item label='{{ i18n "pages.inbounds.bulkTargetCount" }}'>
+            <a-tag color="purple">[[ assign.targets.length ]]</a-tag>
+            <span class="bo-muted" v-if="assign.targets.length === 1">[[ assign.targets[0].email ]]</span>
+          </a-form-item>
+          <a-form-item label='{{ i18n "pages.clients.assignGroup" }}'>
+            <a-select v-model="assign.groupId" :dropdown-class-name="themeSwitcher.currentTheme"
+              :style="{ width: '100%' }">
+              <a-select-option :value="0">{{ i18n "pages.clients.noGroup" }}</a-select-option>
+              <a-select-option v-for="g in groupList" :key="g.id" :value="g.id">
+                [[ g.name ]] ([[ g.members ]])
+              </a-select-option>
+              <a-select-option :value="-1">{{ i18n "pages.clients.newGroup" }}</a-select-option>
+            </a-select>
+          </a-form-item>
+          <a-form-item v-if="assign.groupId === -1" label='{{ i18n "pages.combined.name" }}'>
+            <a-input v-model.trim="assign.newName"
+              placeholder='{{ i18n "pages.combined.nameDesc" }}'></a-input>
+          </a-form-item>
+          <a-alert type="info" :show-icon="true" :class="themeSwitcher.currentTheme"
+            message='{{ i18n "pages.clients.assignGroupDesc" }}'></a-alert>
+        </a-form>
+      </a-modal>
+
+      <!-- The groups themselves: rename, re-fund, extend, switch off, delete. Without
+           this the only way to change a combined customer's allowance was to delete
+           and rebuild the accounts. -->
+      <a-modal id="groups-manager-modal"
+        title='{{ i18n "pages.clients.groups" }}'
+        :visible="groupsManager.visible"
+        :class="themeSwitcher.currentTheme"
+        :width="isMobile ? '96vw' : 760"
+        :footer="null"
+        @cancel="() => groupsManager.visible = false">
+        <a-table :columns="groupColumns" :data-source="groupList" :row-key="g => g.id"
+          size="small" :pagination="false" :scroll="{ x: true }">
+          <template slot="name" slot-scope="text, g">
+            <b>[[ g.name ]]</b>
+            <div class="bo-muted" v-if="g.comment">[[ g.comment ]]</div>
+          </template>
+          <template slot="usage" slot-scope="text, g">
+            [[ SizeFormatter.sizeFormat((g.up || 0) + (g.down || 0)) ]] /
+            <template v-if="g.total > 0">[[ SizeFormatter.sizeFormat(g.total) ]]</template>
+            <span v-else class="tr-infinity-ch">&infin;</span>
+          </template>
+          <template slot="expiry" slot-scope="text, g">
+            <a-tag v-if="g.expiryTime === 0" :style="{ border: 'none' }">∞</a-tag>
+            <a-tag v-else-if="g.expiryTime < 0">{{ i18n "pages.client.delayedStart" }}</a-tag>
+            <a-tag v-else :color="g.expiryTime <= now ? 'red' : ''">
+              [[ IntlUtil.formatRelativeTime(g.expiryTime) ]]</a-tag>
+          </template>
+          <template slot="actions" slot-scope="text, g">
+            <a-space :size="6">
+              <a-icon type="edit" class="normal-icon" :style="{ fontSize: '18px' }"
+                @click="openEditGroup(g)"></a-icon>
+              <a-popconfirm @confirm="delGroup(g)"
+                title='{{ i18n "pages.clients.deleteGroupConfirm" }}'
+                :overlay-class-name="themeSwitcher.currentTheme"
+                ok-text='{{ i18n "delete" }}' ok-type="danger" cancel-text='{{ i18n "cancel" }}'>
+                <a-icon type="delete" class="delete-icon" :style="{ fontSize: '18px' }"></a-icon>
+              </a-popconfirm>
+            </a-space>
+          </template>
+        </a-table>
+        <div v-if="!groupList.length" class="bo-muted" :style="{ textAlign: 'center', padding: '18px' }">
+          {{ i18n "pages.clients.noGroups" }}
+        </div>
+      </a-modal>
+
+      <a-modal id="edit-group-modal"
+        :title="groupEdit.title"
+        :visible="groupEdit.visible"
+        :confirm-loading="groupEdit.loading"
+        :class="themeSwitcher.currentTheme"
+        ok-text='{{ i18n "sure" }}' cancel-text='{{ i18n "close" }}'
+        @ok="() => saveGroup()"
+        @cancel="() => groupEdit.visible = false">
+        <a-form layout="vertical">
+          <a-form-item label='{{ i18n "pages.combined.name" }}'>
+            <a-input v-model.trim="groupEdit.name"></a-input>
+          </a-form-item>
+          <a-form-item label='{{ i18n "pages.inbounds.totalFlow" }} (GB)'>
+            <a-input-number v-model="groupEdit.totalGB" :min="0" :style="{ width: '100%' }"></a-input-number>
+            <div class="bo-muted">{{ i18n "pages.combined.sharedQuotaDesc" }}</div>
+          </a-form-item>
+          <a-form-item label='{{ i18n "pages.client.expireDays" }}'>
+            <a-input-number v-model="groupEdit.days" :min="0" :style="{ width: '100%' }"></a-input-number>
+            <div class="bo-muted">{{ i18n "pages.clients.groupDaysDesc" }}</div>
+          </a-form-item>
+          <a-form-item>
+            <a-switch v-model="groupEdit.delayedStart" size="small"></a-switch>
+            <span :style="{ marginInlineStart: '8px' }">{{ i18n "pages.client.delayedStart" }}</span>
+            <div class="bo-muted">{{ i18n "pages.combined.delayedStartDesc" }}</div>
+          </a-form-item>
+          <a-form-item label='{{ i18n "pages.client.renew" }}'>
+            <a-input-number v-model="groupEdit.reset" :min="0" :style="{ width: '100%' }"></a-input-number>
+          </a-form-item>
+          <a-form-item>
+            <a-switch v-model="groupEdit.enable" size="small"></a-switch>
+            <span :style="{ marginInlineStart: '8px' }">{{ i18n "enable" }}</span>
+          </a-form-item>
+          <a-form-item label='{{ i18n "comment" }}'>
+            <a-input v-model="groupEdit.comment"></a-input>
+          </a-form-item>
+        </a-form>
+      </a-modal>
+
+      <!-- The same operations, and the same backend endpoint, as the inbounds tab's
+           bulk dialog: days, traffic, enable/disable, freeze and delete. -->
+      <a-modal id="clients-bulk-ops-modal"
+        title='{{ i18n "pages.inbounds.bulkOperations" }}'
+        :visible="bulkOps.visible"
+        :confirm-loading="bulkOps.confirmLoading"
+        ok-text='{{ i18n "pages.inbounds.apply" }}'
+        cancel-text='{{ i18n "close" }}'
+        :class="themeSwitcher.currentTheme"
+        :mask-closable="false"
+        @ok="() => runBulkOps()"
+        @cancel="() => bulkOps.visible = false">
+        <a-form layout="vertical">
+          <a-form-item label='{{ i18n "pages.inbounds.bulkTargetCount" }}'>
+            <a-tag color="purple">[[ selectedCount ]]</a-tag>
+          </a-form-item>
+          <a-form-item label='{{ i18n "pages.inbounds.operation" }}'>
+            <a-select v-model="bulkOps.op" :dropdown-class-name="themeSwitcher.currentTheme">
+              <a-select-option v-if="bulkOpAllowed('addDays')" value="addDays">{{ i18n "pages.inbounds.opAddDays" }}</a-select-option>
+              <a-select-option v-if="bulkOpAllowed('subDays')" value="subDays">{{ i18n "pages.inbounds.opSubDays" }}</a-select-option>
+              <a-select-option value="addTraffic">{{ i18n "pages.inbounds.opAddTraffic" }}</a-select-option>
+              <a-select-option value="subTraffic">{{ i18n "pages.inbounds.opSubTraffic" }}</a-select-option>
+              <a-select-option value="enable">{{ i18n "pages.inbounds.opEnable" }}</a-select-option>
+              <a-select-option value="disable">{{ i18n "pages.inbounds.opDisable" }}</a-select-option>
+              <a-select-option value="freeze">{{ i18n "pages.inbounds.opFreeze" }}</a-select-option>
+              <a-select-option value="unfreeze">{{ i18n "pages.inbounds.opUnfreeze" }}</a-select-option>
+              <a-select-option value="delete">{{ i18n "pages.inbounds.opDelete" }}</a-select-option>
+            </a-select>
+          </a-form-item>
+          <a-form-item v-if="bulkIsNumericOp" label='{{ i18n "pages.inbounds.amount" }}'>
+            <a-input-number v-model="bulkOps.amount" :min="0"
+              :style="{ width: bulkIsTrafficOp ? '58%' : '100%' }"></a-input-number>
+            <a-select v-if="bulkIsTrafficOp" v-model="bulkOps.unit"
+              :style="{ width: '38%', marginInlineStart: '4%' }"
+              :dropdown-class-name="themeSwitcher.currentTheme">
+              <a-select-option value="GB">GB</a-select-option>
+              <a-select-option value="MB">MB</a-select-option>
+            </a-select>
+            <span v-else :style="{ marginInlineStart: '8px' }">{{ i18n "pages.inbounds.days" }}</span>
+          </a-form-item>
+          <a-divider :style="{ margin: '8px 0' }"></a-divider>
+          <a-space direction="vertical" :size="10" :style="{ width: '100%' }">
+            <div>
+              <a-switch v-model="bulkOps.skipFirstUse" size="small"></a-switch>
+              <span :style="{ marginInlineStart: '8px' }">{{ i18n "pages.inbounds.skipFirstUse" }}</span>
+            </div>
+            <div>
+              <a-switch v-model="bulkOps.skipUnlimited" size="small"></a-switch>
+              <span :style="{ marginInlineStart: '8px' }">{{ i18n "pages.inbounds.skipUnlimited" }}</span>
+            </div>
+            <div>
+              <a-switch v-model="bulkOps.skipDisabled" size="small"></a-switch>
+              <span :style="{ marginInlineStart: '8px' }">{{ i18n "pages.inbounds.skipDisabled" }}</span>
+            </div>
+          </a-space>
+          <div v-if="bulkOps.progress.running || bulkOps.progress.done > 0" :style="{ marginTop: '14px' }">
+            <a-progress :percent="bulkProgressPercent"
+              :status="bulkOps.progress.running ? 'active' : 'success'"></a-progress>
+            <div :style="{ marginTop: '4px', fontSize: '12px', opacity: 0.75 }">
+              [[ bulkOps.progress.done ]] / [[ bulkOps.progress.total ]]
+            </div>
+          </div>
+        </a-form>
+      </a-modal>
 {{template "page/shell_end" . }}
 
 {{template "page/body_scripts" .}}
+<script src="{{ .base_path }}assets/qrcode/qrious2.min.js?{{ .cur_ver }}"></script>
+<script src="{{ .base_path }}assets/uri/URI.min.js?{{ .cur_ver }}"></script>
+<script src="{{ .base_path }}assets/js/model/reality_targets.js?{{ .cur_ver }}"></script>
+<script src="{{ .base_path }}assets/js/model/inbound.js?{{ .cur_ver }}"></script>
+<script src="{{ .base_path }}assets/js/model/dbinbound.js?{{ .cur_ver }}"></script>
+<script src="{{ .base_path }}assets/jspdf/jspdf.umd.min.js?{{ .cur_ver }}"></script>
+<script src="{{ .base_path }}assets/js/util/export.js?{{ .cur_ver }}"></script>
 {{template "component/aSidebar" .}}
 {{template "component/aThemeSwitch" .}}
+{{template "component/aPersianDatepicker" .}}
+{{template "modals/promptModal"}}
+{{template "modals/qrcodeModal"}}
+{{template "modals/textModal"}}
+{{template "modals/clientsModal"}}
+{{template "modals/combinedClientModal"}}
+{{template "modals/clientCredentialsModal"}}
+{{template "modals/wgcConfigModal"}}
+{{template "modals/awgConfigModal"}}
+{{template "modals/sshConfigModal"}}
 
 <script>
+  // Two of them are withheld from a reseller, for the same reasons as on the
+  // inbounds page: subDays is refused outright by the server, and addDays is
+  // recomputed from the traffic when their profile prices duration by the GB.
+  function isBulkOpAllowed(op) {
+    if (op === 'subDays' && RESELLER.isReseller) return false;
+    if (op === 'addDays' && (Number(RESELLER.daysPerGb) || 0) > 0) return false;
+    return true;
+  }
+  const BULK_OPS = ['addDays', 'subDays', 'addTraffic', 'subTraffic',
+    'enable', 'disable', 'freeze', 'unfreeze', 'delete'];
+  const DEFAULT_BULK_OP = BULK_OPS.find(isBulkOpAllowed) || 'addTraffic';
+
   const app = new Vue({
     delimiters: ['[[', ']]'],
     mixins: [MediaQueryMixin],
@@ -197,6 +551,9 @@
       // custom.css are scoped per page, and this table renders the same markup.
       pageClass: 'clients-page',
       spinning: false,
+      // DBInbound instances, not the raw rows: every shared modal on this page
+      // (client, qr, credentials) is built around toInbound(), and the clients it
+      // hands back are the typed objects those modals edit and serialise.
       dbInbounds: [],
       // Keyed by id, exactly as the inbounds page holds them: a grouped account's own
       // row carries only its own bytes, so the shared figure exists nowhere else.
@@ -205,11 +562,38 @@
       search: '',
       protocolFilter: '',
       stateFilter: '',
+      groupFilter: '',
+      // "inboundId:email" of every checked row. Keyed rather than held as objects so a
+      // reload does not silently drop the selection along with the row instances.
+      selected: {},
       // True once a column sorter is active, i.e. the rows are no longer in customer
       // order and a customer's accounts may not be adjacent any more.
       sorterActive: false,
       now: Date.now(),
+      pageSize: 25,
+      // Panel-wide settings the shared modals read straight off `app`.
+      subSettings: { enable: false, subTitle: '', subURI: '', subJsonURI: '', subJsonEnable: false },
+      remarkModel: '-ieo',
+      datepicker: 'gregorian',
+      tgBotEnable: false,
+      trafficDiff: 0,
+      ipLimitEnable: false,
+      assign: { visible: false, loading: false, groupId: 0, newName: '', targets: [] },
+      groupsManager: { visible: false },
+      groupEdit: {
+        visible: false, loading: false, title: '', id: 0, name: '',
+        totalGB: 0, days: 0, delayedStart: false, reset: 0, enable: true, comment: '',
+      },
+      bulkOps: {
+        visible: false, confirmLoading: false, op: DEFAULT_BULK_OP, amount: 0, unit: 'GB',
+        skipFirstUse: false, skipUnlimited: false, skipDisabled: false,
+        progress: { running: false, done: 0, total: 0, applied: 0, skipped: 0 },
+      },
       columns: [
+        // No `title`: ant renders slots.title instead, and a title alongside it is
+        // dead weight that the inbounds table's own select column also omits.
+        { width: 30, align: 'center', slots: { title: 'selectHeader' },
+          scopedSlots: { customRender: 'select' } },
         { title: '{{ i18n "pages.clients.colClient" }}', scopedSlots: { customRender: 'client' },
           sorter: (a, b) => a.email.localeCompare(b.email) },
         { title: '{{ i18n "pages.clients.colCustomer" }}', scopedSlots: { customRender: 'group' },
@@ -222,9 +606,36 @@
           sorter: (a, b) => a.used - b.used },
         { title: '{{ i18n "pages.inbounds.expireDate" }}', scopedSlots: { customRender: 'expiry' },
           sorter: (a, b) => (a.expiryTime || Infinity) - (b.expiryTime || Infinity) },
+        { title: '{{ i18n "enable" }}', scopedSlots: { customRender: 'enable' } },
+        { title: '{{ i18n "pages.clients.colActions" }}', scopedSlots: { customRender: 'actions' } },
+      ],
+      groupColumns: [
+        { title: '{{ i18n "pages.combined.name" }}', scopedSlots: { customRender: 'name' } },
+        { title: '{{ i18n "pages.inbounds.traffic" }}', scopedSlots: { customRender: 'usage' } },
+        { title: '{{ i18n "pages.inbounds.expireDate" }}', scopedSlots: { customRender: 'expiry' } },
+        { title: '{{ i18n "pages.clients.groupMembers" }}', dataIndex: 'members', width: 90 },
+        { title: '{{ i18n "pages.clients.colActions" }}', scopedSlots: { customRender: 'actions' }, width: 90 },
       ],
     },
     computed: {
+      // Groups are panel-wide, so a reseller is never shown them: /clientGroups would
+      // hand them every other seller's customer names, and the role cannot create one.
+      groupsUsable() { return !RESELLER.isReseller; },
+      subEnabled() { return !!(this.subSettings && this.subSettings.enable); },
+      groupList() {
+        return Object.values(this.clientGroups)
+          .sort((a, b) => (a.name || '').localeCompare(b.name || ''));
+      },
+      // Inbounds an account can be added to. A single-user inbound has no client list
+      // to append to, and an IKEv2 that already holds its one account is refused by
+      // the server, so neither is offered.
+      addableInbounds() {
+        return this.dbInbounds.filter(db => {
+          if (typeof db.isMultiUser === 'function' && !db.isMultiUser()) return false;
+          if (db.isIkev2SingleClient() && (this.getInboundClients(db) || []).length >= 1) return false;
+          return true;
+        });
+      },
       // One flat row per account, across every inbound. Built once per load rather
       // than resolved per cell: the table sorts and filters over these, and a cell
       // that recomputed a group lookup would do it on every keystroke of the search.
@@ -253,17 +664,25 @@
             const total = group ? (group.total || 0) : (st ? (st.total || 0) : (c.totalGB || 0));
             const used = up + down;
             const expiryTime = st ? (st.expiryTime || 0) : (c.expiryTime || 0);
+            // clientEnable is the switch in the account's own settings — what the
+            // operator set. `enable` on the traffic row is what the system currently
+            // enforces, and the two differ exactly while a group is spent. The switch
+            // must reflect the operator's setting or flipping it appears to do nothing.
+            const clientEnable = c.enable !== false;
             out.push({
               key: dbInbound.id + ':' + c.email,
               email: c.email,
               comment: c.comment || '',
+              subId: c.subId || '',
               protocol: dbInbound.protocol,
               inboundId: dbInbound.id,
               inboundRemark: dbInbound.remark,
               group, up, down, total, used,
               ownUsed: ownUp + ownDown,
               percent: total > 0 ? Math.min(100, 100 * used / total) : 100,
-              enable: st ? !!st.enable : (c.enable !== false),
+              enable: st ? !!st.enable : clientEnable,
+              clientEnable,
+              frozen: !clientEnable && Number(c.expiryTime) < 0,
               online: this.onlineClients.includes(c.email),
               depleted: (total > 0 && used >= total) ||
                 (expiryTime > 0 && expiryTime <= this.now),
@@ -291,6 +710,7 @@
         const q = this.search.toLowerCase();
         const rows = this.rows.filter(r => {
           if (this.protocolFilter && r.protocol !== this.protocolFilter) return false;
+          if (this.groupFilter && String(r.group ? r.group.id : 0) !== this.groupFilter) return false;
           switch (this.stateFilter) {
             case 'grouped': if (!r.group) return false; break;
             case 'online': if (!r.online) return false; break;
@@ -334,41 +754,46 @@
       },
       onlineCount() { return this.rows.filter(r => r.online).length; },
       depletedCount() { return this.rows.filter(r => r.depleted).length; },
+      selectedCount() { return Object.keys(this.selected).length; },
+      // Select-all covers what is ON SCREEN, not the whole table: a filter is the
+      // operator saying which accounts they mean, and a checkbox that silently
+      // reached past it would be the last thing they expect before a bulk delete.
+      allFilteredSelected() {
+        return this.filtered.length > 0 && this.filtered.every(r => this.selected[r.key]);
+      },
+      someFilteredSelected() {
+        return !this.allFilteredSelected && this.filtered.some(r => this.selected[r.key]);
+      },
+      bulkIsTrafficOp() { return ['addTraffic', 'subTraffic'].includes(this.bulkOps.op); },
+      bulkIsNumericOp() {
+        return ['addDays', 'subDays', 'addTraffic', 'subTraffic'].includes(this.bulkOps.op);
+      },
+      bulkProgressPercent() {
+        const p = this.bulkOps.progress;
+        return p.total > 0 ? Math.floor((p.done / p.total) * 100) : 0;
+      },
     },
     methods: {
-      // Ties a customer's accounts together visually: a tinted band with one
-      // continuous accent bar down its side, so three rows read as one person
-      // rather than three strangers who happen to be adjacent.
-      //
-      // The colour is the group id modulo a small palette, not a per-group hue,
-      // because it only has to separate NEIGHBOURING blocks — and a class can carry
-      // it, where an arbitrary hue would need an inline style per row.
-      rowClass(row) {
-        if (!row || !row.group) return '';
-        const parts = ['bo-cg', 'bo-cg-' + (row.group.id % 5)];
-        // The block shape is only drawn while the rows really are adjacent. A column
-        // sorter reorders them, and corners left rounded in the wrong places read as
-        // a rendering fault; the band and bar stay, so the customer is still legible.
-        if (!this.sorterActive && row.blockPos) parts.push('bo-cg-' + row.blockPos);
-        return parts.join(' ');
-      },
-      onTableChange(pagination, filters, sorter) {
-        this.sorterActive = !!(sorter && sorter.order);
-      },
+      // --- loading ------------------------------------------------------
       async load(showSpinner = false) {
         if (showSpinner) this.spinning = true;
         const msg = await HttpUtil.get('/panel/api/inbounds/list');
-        if (msg.success) this.dbInbounds = msg.obj || [];
+        if (msg.success) {
+          this.dbInbounds = (msg.obj || []).map(row => new DBInbound(row));
+        }
         await this.loadGroups();
         await this.loadOnline();
         this.now = Date.now();
+        // A row that no longer exists must not stay checked: the next bulk run would
+        // post a target the server cannot find, and the count on screen would lie.
+        this.pruneSelection();
         this.spinning = false;
       },
       // Failure-tolerant and raw-axios, like the inbounds page: this decorates a list
       // that already loaded, and a red toast because a secondary fetch blipped would
       // be worse than a figure that is one refresh stale.
       async loadGroups() {
-        if (RESELLER.isReseller) return;
+        if (!this.groupsUsable) return;
         try {
           const resp = await axios.get('/panel/api/inbounds/clientGroups');
           const body = resp && resp.data ? resp.data : null;
@@ -390,8 +815,570 @@
           console.warn('online clients refresh failed', e);
         }
       },
+      // The panel-wide settings the shared modals read off `app`: without them the
+      // client form renders without its subscription/telegram/IP-limit sections and
+      // the QR modal cannot build a subscription URL.
+      async loadDefaults() {
+        const msg = await HttpUtil.post('/panel/setting/defaultSettings');
+        if (!msg.success) return;
+        const s = msg.obj || {};
+        this.subSettings = {
+          enable: s.subEnable,
+          subTitle: s.subTitle,
+          subURI: s.subURI,
+          subJsonURI: s.subJsonURI,
+          subJsonEnable: s.subJsonEnable,
+        };
+        this.remarkModel = s.remarkModel || '-ieo';
+        this.datepicker = s.datepicker;
+        this.tgBotEnable = s.tgBotEnable;
+        this.trafficDiff = s.trafficDiff * 1073741824;
+        this.ipLimitEnable = s.ipLimitEnable;
+        if (s.pageSize > 0) this.pageSize = s.pageSize;
+      },
+      // The single funnel for every write on this page, mirroring the inbounds tab's:
+      // post, then re-read, so what is on screen is what the server stored.
+      async submit(url, data, modal) {
+        const msg = await HttpUtil.postWithModal(url, data, modal);
+        if (msg.success) await this.load();
+        return msg.success;
+      },
+
+      // --- resolving a row back to the objects the modals want -----------
+      dbInboundOf(row) {
+        return this.dbInbounds.find(i => i.id === row.inboundId) || null;
+      },
+      getInboundClients(dbInbound) {
+        if (!dbInbound) return null;
+        const inbound = dbInbound.toInbound();
+        return inbound && inbound.clients ? inbound.clients : null;
+      },
+      // Single definition in model/inbound.js, mirrored by clientIdentityKey() in
+      // web/service/inbound.go. Do not inline the switch here again.
+      getClientId(protocol, client) {
+        return getClientIdentity(protocol, client);
+      },
+      // The typed client object behind a row. The rows themselves are parsed straight
+      // out of the settings JSON for speed; everything that EDITS goes through here so
+      // it works on the same instances the modals serialise.
+      clientOf(row) {
+        const dbInbound = this.dbInboundOf(row);
+        if (!dbInbound) return null;
+        const clients = this.getInboundClients(dbInbound);
+        if (!clients || !Array.isArray(clients)) return null;
+        const idx = clients.findIndex(c => c && c.email === row.email);
+        return idx < 0 ? null : clients[idx];
+      },
+      // Both halves at once, plus the index, since every editing path needs all three.
+      resolveRow(row) {
+        const dbInbound = this.dbInboundOf(row);
+        if (!dbInbound) return null;
+        const clients = this.getInboundClients(dbInbound);
+        if (!clients || !Array.isArray(clients)) return null;
+        const index = clients.findIndex(c => c && c.email === row.email);
+        if (index < 0) return null;
+        return { dbInbound, clients, index, client: clients[index] };
+      },
+      rowHasLink(row) {
+        const dbInbound = this.dbInboundOf(row);
+        if (!dbInbound || typeof dbInbound.hasLink !== 'function') return false;
+        if (!dbInbound.hasLink()) return false;
+        if (row.protocol !== Protocols.MTPROTO) return true;
+        // MTProto with every mode off has no usable link, so it gets no QR at all
+        // rather than a modal that opens empty.
+        const c = this.clientOf(row);
+        return !!(c && (c.modeClassic || c.modeSecure || c.modeTls));
+      },
+      // A dokodemo-fronted inbound carries the real address on its root; the QR and
+      // info modals must show what the customer can actually reach.
+      checkFallback(dbInbound) {
+        const newDbInbound = new DBInbound(dbInbound);
+        if (dbInbound.listen && dbInbound.listen.startsWith('@')) {
+          const rootDb = this.dbInbounds.find(db => {
+            if (!['trojan', 'vless'].includes(db.protocol)) return false;
+            const i = db.toInbound();
+            return i && i.isTcp && i.settings.fallbacks
+              && i.settings.fallbacks.find(f => f.dest === dbInbound.listen);
+          });
+          if (rootDb) {
+            const rootInbound = rootDb.toInbound();
+            newDbInbound.listen = rootDb.listen;
+            newDbInbound.port = rootDb.port;
+            const newInbound = newDbInbound.toInbound();
+            newInbound.stream.security = rootInbound.stream.security;
+            newInbound.stream.tls = rootInbound.stream.tls;
+            newInbound.stream.externalProxy = rootInbound.stream.externalProxy;
+            newDbInbound.streamSettings = newInbound.stream.toString();
+          }
+        }
+        return newDbInbound;
+      },
+
+      // --- per-row actions ----------------------------------------------
+      showQrcode(row) {
+        const r = this.resolveRow(row);
+        if (!r) return;
+        qrModal.show('{{ i18n "qrCode"}}', this.checkFallback(r.dbInbound), r.client);
+      },
+      showWgcConfig(row) { wgcConfigModal.show(row.inboundId, this.clientOf(row)); },
+      showAwgConfig(row) { awgConfigModal.show(row.inboundId, this.clientOf(row)); },
+      showSshConfig(row) { sshConfigModal.show(row.inboundId, this.clientOf(row)); },
+      rowCredentials(row) {
+        const r = this.resolveRow(row);
+        if (!r) return;
+        this.showClientCredentials(r.dbInbound, r.client);
+      },
+      showClientCredentials(dbInbound, client) {
+        credentialsModal.show({
+          headline: '{{ i18n "pages.credentials.headlineExisting" }}',
+          pairs: [{ dbInbound, client }],
+        });
+      },
+      // Every checked account in one sheet — the answer to "send this customer
+      // everything" when they hold accounts across several inbounds.
+      showSelectedCredentials() {
+        const pairs = [];
+        for (const row of this.selectedRows()) {
+          const r = this.resolveRow(row);
+          if (r) pairs.push({ dbInbound: r.dbInbound, client: r.client });
+        }
+        if (!pairs.length) {
+          this.$message.warning('{{ i18n "pages.inbounds.exportNoneSelected" }}');
+          return;
+        }
+        credentialsModal.show({
+          headline: '{{ i18n "pages.credentials.headlineExisting" }}',
+          pairs,
+        });
+      },
+      openAddClient(dbInbound) {
+        if (dbInbound.isIkev2SingleClient() &&
+            (this.getInboundClients(dbInbound) || []).length >= 1) {
+          this.$message.warning('This IKEv2 inbound allows only one account.');
+          return;
+        }
+        clientModal.show({
+          title: '{{ i18n "pages.client.add"}}',
+          okText: '{{ i18n "pages.client.submitAdd"}}',
+          dbInbound: dbInbound,
+          confirm: async (clients, dbInboundId) => {
+            await this.addClient(clients, dbInboundId, clientModal);
+          },
+          isEdit: false,
+        });
+      },
+      async addClient(clients, dbInboundId, modal) {
+        const data = {
+          id: dbInboundId,
+          settings: '{"clients": [' + clients.toString() + ']}',
+        };
+        // Captured before the post: the emails are the only stable handle on the
+        // accounts once the list is re-read, and the response carries no ids.
+        const created = (clients || [])
+          .filter(c => c && c.email)
+          .map(c => ({ inboundId: dbInboundId, email: c.email }));
+        const ok = await this.submit('/panel/api/inbounds/addClient', data, modal);
+        if (ok) this.showNewCredentials(created);
+      },
+      openEditClient(row) {
+        const r = this.resolveRow(row);
+        if (!r) return;
+        clientModal.show({
+          title: '{{ i18n "pages.client.edit"}}',
+          okText: '{{ i18n "pages.client.submitEdit"}}',
+          dbInbound: r.dbInbound,
+          index: r.index,
+          confirm: async (client, dbInboundId, clientId) => {
+            clientModal.loading();
+            await this.updateClient(client, dbInboundId, clientId);
+            clientModal.close();
+          },
+          isEdit: true,
+        });
+      },
+      async updateClient(client, dbInboundId, clientId) {
+        const data = {
+          id: dbInboundId,
+          settings: '{"clients": [' + client.toString() + ']}',
+        };
+        await this.submit(`/panel/api/inbounds/updateClient/${clientId}`, data, clientModal);
+      },
+      async switchEnableClient(row, state) {
+        const r = this.resolveRow(row);
+        if (!r) return;
+        this.spinning = true;
+        try {
+          r.client.enable = !!state;
+          await this.updateClient(r.client, r.dbInbound.id,
+            this.getClientId(r.dbInbound.protocol, r.client));
+        } finally {
+          this.spinning = false;
+        }
+      },
+      resetClientTraffic(row) {
+        this.$confirm({
+          title: '{{ i18n "pages.inbounds.resetTraffic"}}' + ' ' + row.email,
+          content: '{{ i18n "pages.inbounds.resetTrafficContent"}}',
+          class: themeSwitcher.currentTheme,
+          okText: '{{ i18n "reset"}}',
+          cancelText: '{{ i18n "cancel"}}',
+          onOk: () => this.submit('/panel/api/inbounds/' + row.inboundId +
+            '/resetClientTraffic/' + row.email),
+        });
+      },
+      delClient(row) {
+        const r = this.resolveRow(row);
+        if (!r) return;
+        this.$confirm({
+          title: '{{ i18n "pages.inbounds.deleteClient"}}' + ' ' + row.email,
+          content: '{{ i18n "pages.inbounds.deleteClientContent"}}',
+          class: themeSwitcher.currentTheme,
+          okText: '{{ i18n "delete"}}',
+          cancelText: '{{ i18n "cancel"}}',
+          onOk: async () => {
+            const clientId = this.getClientId(r.dbInbound.protocol, r.client);
+            await this.submit(`/panel/api/inbounds/${row.inboundId}/delClient/${clientId}`);
+          },
+        });
+      },
+      // Freeze/unfreeze go through the bulk endpoint (single target) so the time-lock
+      // math stays in one place: freeze disables and locks the remaining days,
+      // unfreeze re-enables and resumes them.
+      async toggleFreeze(row) {
+        const op = row.frozen ? 'unfreeze' : 'freeze';
+        this.spinning = true;
+        try {
+          const payload = {
+            op, days: 0, amountBytes: 0,
+            skipFirstUse: false, skipUnlimited: false, skipDisabled: false,
+            targets: [{ inboundId: row.inboundId, email: row.email }],
+          };
+          const msg = await HttpUtil.post('/panel/api/inbounds/bulkUpdateClients',
+            { data: JSON.stringify(payload) });
+          if (msg.success) {
+            this.$message.success(op === 'freeze'
+              ? '{{ i18n "pages.client.freeze" }}' : '{{ i18n "pages.client.unfreeze" }}');
+            await this.load();
+          }
+        } finally {
+          this.spinning = false;
+        }
+      },
+
+      // --- selection ----------------------------------------------------
+      isSelected(row) { return !!this.selected[row.key]; },
+      toggleSelect(row, on) {
+        // Vue 2 cannot see a plain property added to an object, hence $set/$delete.
+        if (on) this.$set(this.selected, row.key, { inboundId: row.inboundId, email: row.email });
+        else this.$delete(this.selected, row.key);
+      },
+      toggleSelectAll(on) {
+        for (const row of this.filtered) this.toggleSelect(row, on);
+      },
+      clearSelection() { this.selected = {}; },
+      pruneSelection() {
+        const live = new Set(this.rows.map(r => r.key));
+        for (const key of Object.keys(this.selected)) {
+          if (!live.has(key)) this.$delete(this.selected, key);
+        }
+      },
+      selectedRows() {
+        return this.rows.filter(r => this.selected[r.key]);
+      },
+      selectedTargets() {
+        return Object.values(this.selected).map(t => ({ inboundId: t.inboundId, email: t.email }));
+      },
+
+      // --- groups -------------------------------------------------------
+      // row === null means "the whole selection"; a row means just that account.
+      openAssignGroup(row) {
+        const targets = row
+          ? [{ inboundId: row.inboundId, email: row.email }]
+          : this.selectedTargets();
+        if (!targets.length) {
+          this.$message.warning('{{ i18n "pages.inbounds.exportNoneSelected" }}');
+          return;
+        }
+        this.assign = {
+          visible: true, loading: false, newName: '', targets,
+          // Pre-selects the group the row is already in, so opening it on a grouped
+          // account and pressing OK is a no-op rather than a silent removal.
+          groupId: row && row.group ? row.group.id : 0,
+        };
+      },
+      async runAssignGroup() {
+        const a = this.assign;
+        let groupId = a.groupId;
+        a.loading = true;
+        try {
+          if (groupId === -1) {
+            const name = (a.newName || '').trim();
+            if (!name) {
+              this.$message.error('{{ i18n "pages.combined.needName" }}');
+              return;
+            }
+            // A group made here starts unlimited and enabled: the operator is sorting
+            // accounts into a customer, not selling them anything yet, and a quota
+            // guessed at this point would silently cap accounts that already had one.
+            const created = await HttpUtil.post('/panel/api/inbounds/clientGroups/add',
+              { name, total: 0, expiryTime: 0, reset: 0, enable: true, comment: '' });
+            if (!created.success || !created.obj || !created.obj.id) return;
+            groupId = created.obj.id;
+          }
+          const ok = await this.submit('/panel/api/inbounds/clientGroups/membership',
+            { data: JSON.stringify({ groupId, emails: a.targets.map(t => t.email) }) });
+          if (ok) {
+            a.visible = false;
+            this.clearSelection();
+          }
+        } finally {
+          a.loading = false;
+        }
+      },
+      openEditGroup(g) {
+        // The stored expiry is an absolute date; the form asks for a number of days,
+        // which is the shape an operator actually thinks in when extending a customer.
+        // A negative expiry is a delayed start and is stored as a NEGATIVE duration.
+        const now = Date.now();
+        let days = 0, delayed = false;
+        if (g.expiryTime < 0) {
+          delayed = true;
+          days = Math.round(-g.expiryTime / 86400000);
+        } else if (g.expiryTime > 0) {
+          days = Math.max(0, Math.ceil((g.expiryTime - now) / 86400000));
+        }
+        this.groupEdit = {
+          visible: true, loading: false,
+          title: '{{ i18n "pages.clients.editGroup" }} — ' + g.name,
+          id: g.id, name: g.name,
+          totalGB: g.total > 0 ? NumberFormatter.toFixed(g.total / SizeFormatter.ONE_GB, 2) : 0,
+          days, delayedStart: delayed,
+          reset: g.reset || 0,
+          enable: g.enable !== false,
+          comment: g.comment || '',
+        };
+      },
+      async saveGroup() {
+        const e = this.groupEdit;
+        if (!e.name) {
+          this.$message.error('{{ i18n "pages.combined.needName" }}');
+          return;
+        }
+        const days = Math.max(0, Number(e.days) || 0);
+        let expiryTime = 0;
+        if (days > 0) {
+          expiryTime = e.delayedStart
+            ? -(days * 86400000)
+            : Date.now() + days * 86400000;
+        }
+        e.loading = true;
+        try {
+          const ok = await this.submit('/panel/api/inbounds/clientGroups/update/' + e.id, {
+            name: e.name,
+            total: Math.round((Number(e.totalGB) || 0) * SizeFormatter.ONE_GB),
+            expiryTime,
+            reset: Math.max(0, Number(e.reset) || 0),
+            enable: e.enable,
+            comment: e.comment || '',
+          });
+          if (ok) e.visible = false;
+        } finally {
+          e.loading = false;
+        }
+      },
+      async delGroup(g) {
+        // The members are released, not deleted: DelGroup clears their membership and
+        // SetMembership-style restore hands each of them its own quota back.
+        await this.submit('/panel/api/inbounds/clientGroups/del/' + g.id);
+      },
+
+      // --- combined account ---------------------------------------------
+      openCombinedAccount() {
+        const usable = this.dbInbounds.filter(row =>
+          [Protocols.OPENVPN, Protocols.VLESS].includes(row.protocol));
+        if (usable.length === 0) {
+          this.$message.warning('{{ i18n "pages.combined.noInbounds" }}');
+          return;
+        }
+        combinedModal.show({
+          title: '{{ i18n "pages.combined.title"}}',
+          okText: '{{ i18n "pages.combined.submit"}}',
+          dbInbounds: this.dbInbounds,
+          confirm: async (payload) => {
+            await this.addCombinedAccount(payload, combinedModal);
+          },
+        });
+      },
+      async addCombinedAccount(payload, modal) {
+        const created = (payload.members || []).map(m => ({
+          inboundId: m.inboundId,
+          email: this.emailFromSettings(m.settings),
+        }));
+        const ok = await this.submit('/panel/api/inbounds/combinedAccount/add',
+          { data: JSON.stringify(payload) }, modal);
+        if (ok) this.showNewCredentials(created);
+      },
+      emailFromSettings(settings) {
+        try {
+          const parsed = typeof settings === 'string' ? JSON.parse(settings) : settings;
+          const first = (parsed && parsed.clients || [])[0];
+          return first ? first.email : '';
+        } catch (e) {
+          return '';
+        }
+      },
+      // Resolved against the JUST-RELOADED inbounds rather than the posted payload:
+      // the server mints subIds and normalises passwords, and what it stored is what
+      // the customer will actually connect with.
+      showNewCredentials(created) {
+        const pairs = [];
+        for (const item of (created || [])) {
+          if (!item || !item.email) continue;
+          const dbInbound = this.dbInbounds.find(row => row.id === item.inboundId);
+          if (!dbInbound) continue;
+          const client = (this.getInboundClients(dbInbound) || [])
+            .find(c => c && c.email === item.email);
+          if (client) pairs.push({ dbInbound, client });
+        }
+        if (!pairs.length) return;
+        credentialsModal.show({
+          headline: pairs.length > 1
+            ? '{{ i18n "pages.credentials.headlineMany" }}'
+            : '{{ i18n "pages.credentials.headline" }}',
+          pairs,
+        });
+      },
+
+      // --- bulk ---------------------------------------------------------
+      bulkOpAllowed(op) { return isBulkOpAllowed(op); },
+      openBulkOps() {
+        if (!this.selectedCount) {
+          this.$message.warning('{{ i18n "pages.inbounds.exportNoneSelected" }}');
+          return;
+        }
+        this.bulkOps.progress = { running: false, done: 0, total: 0, applied: 0, skipped: 0 };
+        // A previous run may have left an operation that is no longer offered; an
+        // a-select pointed at a hidden option renders the bare value string.
+        if (!isBulkOpAllowed(this.bulkOps.op)) this.bulkOps.op = DEFAULT_BULK_OP;
+        this.bulkOps.visible = true;
+      },
+      async runBulkOps() {
+        const b = this.bulkOps;
+        const targets = this.selectedTargets();
+        if (!targets.length) return;
+        if (b.op === 'delete') {
+          const ok = await new Promise(resolve => this.$confirm({
+            title: '{{ i18n "pages.inbounds.deleteClient" }}',
+            content: '{{ i18n "pages.inbounds.deleteClientContent" }}',
+            class: themeSwitcher.currentTheme,
+            okText: '{{ i18n "delete" }}', okType: 'danger',
+            cancelText: '{{ i18n "cancel" }}',
+            onOk: () => resolve(true), onCancel: () => resolve(false),
+          }));
+          if (!ok) return;
+        }
+        const amount = Math.max(0, Number(b.amount) || 0);
+        const bytes = b.unit === 'MB' ? 1024 * 1024 : 1024 * 1024 * 1024;
+        const base = {
+          op: b.op,
+          days: this.bulkIsTrafficOp ? 0 : amount,
+          amountBytes: this.bulkIsTrafficOp ? Math.round(amount * bytes) : 0,
+          skipFirstUse: b.skipFirstUse,
+          skipUnlimited: b.skipUnlimited,
+          skipDisabled: b.skipDisabled,
+        };
+        // Batched so the dialog can show real progress: the backend takes an arbitrary
+        // target list, so this is an honest count, not an animation.
+        const BATCH = 20;
+        const batches = [];
+        for (let i = 0; i < targets.length; i += BATCH) batches.push(targets.slice(i, i + BATCH));
+        b.confirmLoading = true;
+        b.progress = { running: true, done: 0, total: targets.length, applied: 0, skipped: 0 };
+        let ok = true;
+        for (const batch of batches) {
+          const msg = await HttpUtil.post('/panel/api/inbounds/bulkUpdateClients',
+            { data: JSON.stringify(Object.assign({}, base, { targets: batch })) });
+          if (!msg.success) { ok = false; break; }
+          const r = msg.obj || {};
+          b.progress.applied += (r.applied || 0);
+          b.progress.skipped += (r.skipped || 0);
+          b.progress.done += batch.length;
+        }
+        b.progress.running = false;
+        b.confirmLoading = false;
+        // Reloaded whether or not the whole run landed: batches are applied one request
+        // at a time, so a run that broke on batch three still changed the first two.
+        await this.load();
+        if (ok) {
+          b.visible = false;
+          this.$message.success('{{ i18n "pages.inbounds.bulkDone" }} ' +
+            '{{ i18n "pages.inbounds.bulkAffected" }}: ' + b.progress.applied +
+            ' {{ i18n "pages.inbounds.bulkSkipped" }}: ' + b.progress.skipped);
+          this.clearSelection();
+        }
+      },
+
+      // --- export (txt / pdf) -------------------------------------------
+      // AccountExport reads dbInbounds, getInboundClients, getSumStats and remarkModel
+      // off whatever page object it is handed, which is why this page provides all four.
+      async exportTxt(targets, filename) {
+        if (!targets || !targets.length) {
+          this.$message.warning('{{ i18n "pages.inbounds.exportNoneSelected" }}');
+          return;
+        }
+        try {
+          const cards = await AccountExport.buildCards(this, targets);
+          if (!cards.length) {
+            this.$message.warning('{{ i18n "pages.inbounds.exportNoneSelected" }}');
+            return;
+          }
+          AccountExport.txt(cards, filename || 'accounts');
+        } catch (e) { this.$message.error('Export failed: ' + (e && e.message ? e.message : e)); }
+      },
+      async exportPdf(targets, filename) {
+        if (!targets || !targets.length) {
+          this.$message.warning('{{ i18n "pages.inbounds.exportNoneSelected" }}');
+          return;
+        }
+        try {
+          const cards = await AccountExport.buildCards(this, targets);
+          if (!cards.length) {
+            this.$message.warning('{{ i18n "pages.inbounds.exportNoneSelected" }}');
+            return;
+          }
+          AccountExport.pdf(cards, filename || 'accounts');
+        } catch (e) { this.$message.error('Export failed: ' + (e && e.message ? e.message : e)); }
+      },
+      // The bytes the account is billed for — the GROUP's when it is in one, which is
+      // already what the row carries, so the exporter and the table cannot disagree.
+      getSumStats(dbInbound, email) {
+        const row = this.rows.find(r => r.inboundId === dbInbound.id && r.email === email);
+        return row ? row.used : 0;
+      },
+
+      // --- presentation --------------------------------------------------
+      // Ties a customer's accounts together visually: a tinted band with one
+      // continuous accent bar down its side, so several rows read as one person
+      // rather than strangers who happen to be adjacent.
+      //
+      // The colour is the group id modulo a small palette, not a per-group hue,
+      // because it only has to separate NEIGHBOURING blocks — and a class can carry
+      // it, where an arbitrary hue would need an inline style per row.
+      rowClass(row) {
+        if (!row || !row.group) return '';
+        const parts = ['bo-cg', 'bo-cg-' + (row.group.id % 5)];
+        // The block shape is only drawn while the rows really are adjacent. A column
+        // sorter reorders them, and corners left rounded in the wrong places read as
+        // a rendering fault; the band and bar stay, so the customer is still legible.
+        if (!this.sorterActive && row.blockPos) parts.push('bo-cg-' + row.blockPos);
+        return parts.join(' ');
+      },
+      onTableChange(pagination, filters, sorter) {
+        this.sorterActive = !!(sorter && sorter.order);
+      },
     },
     async mounted() {
+      await this.loadDefaults();
       await this.load(true);
     },
   });

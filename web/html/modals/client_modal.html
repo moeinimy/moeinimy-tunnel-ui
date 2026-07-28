@@ -73,9 +73,12 @@
                 if (this.clients[index].expiryTime < 0) {
                     this.delayedStart = true;
                 }
+                // this.clients, not the bare `clients` this used to read: that was an
+                // implicit global the inbounds page happened to leave behind on its way
+                // here, so the modal only worked when opened from that one caller.
                 this.oldClientId = this.getClientId(
                     dbInbound.protocol,
-                    clients[index],
+                    this.clients[index],
                 );
             } else {
                 this.addClient(this.inbound, this.clients);

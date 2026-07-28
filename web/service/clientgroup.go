@@ -96,8 +96,38 @@ func (s *ClientGroupService) SetMembership(groupId int, emails []string) error {
 	if len(emails) == 0 {
 		return nil
 	}
-	return database.GetDB().Model(xray.ClientTraffic{}).
-		Where("email IN (?)", emails).Update("group_id", groupId).Error
+	return database.GetDB().Transaction(func(tx *gorm.DB) error {
+		if err := tx.Model(xray.ClientTraffic{}).
+			Where("email IN (?)", emails).Update("group_id", groupId).Error; err != nil {
+			return err
+		}
+		if groupId != 0 {
+			// Joining: enforceGroups overwrites the entitlement on the next tick, so
+			// there is nothing to write here.
+			return nil
+		}
+		// Leaving hands the account back its OWN entitlement. While it was a member,
+		// every tick of enforceGroups overwrote total/expiry_time/reset on its row with
+		// the group's, and nothing else would ever put the account's own figures back:
+		// an account released from a spent group would stay spent for good, and one
+		// released from a live group would keep spending an allowance it no longer
+		// belongs to. The inbound's settings JSON is where its own figures still are.
+		return tx.Exec(`
+			UPDATE client_traffics SET
+				total = COALESCE((SELECT JSON_EXTRACT(c.value,'$.totalGB') FROM inbounds,
+					JSON_EACH(JSON_EXTRACT(inbounds.settings,'$.clients')) AS c
+					WHERE inbounds.id = client_traffics.inbound_id
+					  AND JSON_EXTRACT(c.value,'$.email') = client_traffics.email), total),
+				expiry_time = COALESCE((SELECT JSON_EXTRACT(c.value,'$.expiryTime') FROM inbounds,
+					JSON_EACH(JSON_EXTRACT(inbounds.settings,'$.clients')) AS c
+					WHERE inbounds.id = client_traffics.inbound_id
+					  AND JSON_EXTRACT(c.value,'$.email') = client_traffics.email), expiry_time),
+				reset = COALESCE((SELECT JSON_EXTRACT(c.value,'$.reset') FROM inbounds,
+					JSON_EACH(JSON_EXTRACT(inbounds.settings,'$.clients')) AS c
+					WHERE inbounds.id = client_traffics.inbound_id
+					  AND JSON_EXTRACT(c.value,'$.email') = client_traffics.email), reset)
+			WHERE email IN (?)`, emails).Error
+	})
 }
 
 // enforceGroups mirrors each group's entitlement onto its members and expires them

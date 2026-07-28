@@ -824,6 +824,79 @@ body.dark .bo-theme-toggle .bo-i-moon { display:block; }
    its own — which the resellers page already used and the clients page uses for its
    stat captions — rendered at full emphasis and read as a heading. */
 .bo-muted { color:var(--text-3); }
+
+/* The connection-details sheet. Every value here is going to be read aloud, typed
+   into a phone, or copied, so values are monospaced and each row carries its own
+   copy control rather than making the operator select text by hand. */
+.bo-cred {
+  border:1px solid var(--line-1,rgba(128,128,128,.25));
+  border-radius:10px;
+  padding:12px 14px;
+}
+
+.bo-cred-head {
+  display:flex;
+  align-items:center;
+  gap:6px;
+  flex-wrap:wrap;
+  margin-bottom:8px;
+}
+
+.bo-cred-row {
+  display:grid;
+  grid-template-columns:minmax(90px,34%) 1fr auto;
+  gap:8px;
+  align-items:center;
+  padding:4px 0;
+}
+
+.bo-cred-label { color:var(--text-3); font-size:12px; }
+
+.bo-cred-value { word-break:break-all; }
+
+.bo-cred-mono {
+  font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+  font-size:13px;
+}
+
+.bo-cred-copy { cursor:pointer; opacity:.65; }
+.bo-cred-copy:hover { opacity:1; }
+
+.bo-cred-link { padding:6px 0 2px; }
+
+/* Links get the full width: a share link wrapped into a 1fr cell is unreadable,
+   and the whole box is the copy target so it does not need aiming at. */
+.bo-cred-linkbox {
+  margin-top:4px;
+  padding:8px 10px;
+  border-radius:8px;
+  background:var(--bg-2,rgba(128,128,128,.12));
+  font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+  font-size:12px;
+  word-break:break-all;
+  cursor:pointer;
+  max-height:110px;
+  overflow:auto;
+}
+
+.bo-cred-linkbox:hover { background:var(--bg-3,rgba(128,128,128,.2)); }
+
+/* Profile downloads (.ovpn). Deliberately quiet chips rather than buttons: the
+   fields above them are the answer, and these are the attachment that goes with it. */
+.bo-cred-files { display:flex; flex-wrap:wrap; gap:8px; padding-top:8px; }
+
+.bo-cred-file {
+  display:inline-flex;
+  align-items:center;
+  padding:5px 10px;
+  border-radius:8px;
+  border:1px solid var(--line-1,rgba(128,128,128,.25));
+  font-size:12px;
+  color:var(--text-1);
+}
+
+.bo-cred-file:hover { border-color:var(--accent); color:var(--accent); }
+
 .bo-spec-val.bo-muted { color:var(--text-3); font-weight:var(--fw-medium,500); }
 .bo-spec-ico--health { color:var(--ok); }
 .bo-spec-ico--panel { color:var(--accent); }

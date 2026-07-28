@@ -910,6 +910,7 @@
 {{template "modals/clientsModal"}}
 {{template "modals/clientsBulkModal"}}
 {{template "modals/combinedClientModal"}}
+{{template "modals/clientCredentialsModal"}}
 {{template "modals/wgcConfigModal"}}
 {{template "modals/awgConfigModal"}}
 {{template "modals/sshConfigModal"}}
@@ -2219,15 +2220,74 @@
         // A JSON string in a "data" field, not a JSON body: the panel's axios
         // form-urlencodes every request (assets/js/axios-init.js), so a nested
         // payload has no other way through. Same convention as the tunnel page.
-        await this.submit('/panel/api/inbounds/combinedAccount/add',
+        const created = (payload.members || []).map(m => ({
+          inboundId: m.inboundId,
+          email: this.emailFromSettings(m.settings),
+        }));
+        const ok = await this.submit('/panel/api/inbounds/combinedAccount/add',
           { data: JSON.stringify(payload) }, modal);
+        if (ok) this.showNewCredentials(created);
       },
       async addClient(clients, dbInboundId, modal) {
         const data = {
           id: dbInboundId,
           settings: '{"clients": [' + clients.toString() + ']}',
         };
-        await this.submit(`/panel/api/inbounds/addClient`, data, modal);
+        // Captured before the post: the emails are the only stable handle on the
+        // accounts once the list is re-read, and the response carries no ids.
+        const created = (clients || [])
+          .filter(c => c && c.email)
+          .map(c => ({ inboundId: dbInboundId, email: c.email }));
+        const ok = await this.submit(`/panel/api/inbounds/addClient`, data, modal);
+        if (ok) this.showNewCredentials(created);
+      },
+      // The one client inside a combined member's settings blob. The modal builds
+      // exactly one per member, so a list is not worth the ceremony.
+      emailFromSettings(settings) {
+        try {
+          const parsed = typeof settings === 'string' ? JSON.parse(settings) : settings;
+          const first = (parsed && parsed.clients || [])[0];
+          return first ? first.email : '';
+        } catch (e) {
+          return '';
+        }
+      },
+      // Everything the customer needs, shown the moment the account exists, so the
+      // operator never has to go back through the list collecting it field by field.
+      // Resolved against the JUST-RELOADED inbounds rather than the posted payload:
+      // the server mints subIds and normalises passwords, and what it stored is what
+      // the customer will actually connect with.
+      showNewCredentials(created) {
+        const pairs = this.resolveClients(created);
+        if (!pairs.length) return;
+        credentialsModal.show({
+          headline: pairs.length > 1
+            ? '{{ i18n "pages.credentials.headlineMany" }}'
+            : '{{ i18n "pages.credentials.headline" }}',
+          pairs,
+        });
+      },
+      // Re-opens the same sheet for an account that already exists.
+      showClientCredentials(dbInbound, client) {
+        credentialsModal.show({
+          headline: '{{ i18n "pages.credentials.headlineExisting" }}',
+          pairs: [{ dbInbound, client }],
+        });
+      },
+      // [{inboundId, email}] -> [{dbInbound, client}], silently dropping anything the
+      // reload did not turn up (a reseller who cannot see the inbound, a create that
+      // partially failed) rather than rendering a half-empty row.
+      resolveClients(created) {
+        const pairs = [];
+        for (const item of (created || [])) {
+          if (!item || !item.email) continue;
+          const dbInbound = this.dbInbounds.find(row => row.id === item.inboundId);
+          if (!dbInbound) continue;
+          const client = (this.getInboundClients(dbInbound) || [])
+            .find(c => c && c.email === item.email);
+          if (client) pairs.push({ dbInbound, client });
+        }
+        return pairs;
       },
       async updateClient(client, dbInboundId, clientId) {
         const data = {
@@ -2500,6 +2560,10 @@
           // which is why the balance refresh sits here rather than at each caller.
           await this.refreshResellerBalance();
         }
+        // Returned so a caller can act on the result AFTER the list has been
+        // re-read — which is what lets the credentials sheet look the new accounts
+        // up in fresh data rather than echoing back what it just posted.
+        return msg.success;
       },
       // Two buckets only: protocols carried by the Xray core, and everything
       // else. An earlier version split this four ways and painted the families

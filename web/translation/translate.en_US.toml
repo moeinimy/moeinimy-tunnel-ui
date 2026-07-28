@@ -557,6 +557,7 @@
 "needEmail" = "An account needs an email"
 
 [pages.clients]
+"renew" = "Renew (same as before)"
 "data" = "Data"
 "exportJson" = "Export accounts (JSON)"
 "importJson" = "Import accounts (JSON)"

@@ -25,28 +25,32 @@ import (
 var xrayTemplateConfig string
 
 var defaultValueMap = map[string]string{
-	"xrayTemplateConfig":          xrayTemplateConfig,
-	"webListen":                   "",
-	"webDomain":                   "",
-	"webPort":                     "2083",
-	"webCertFile":                 "",
-	"webKeyFile":                  "",
-	"secret":                      random.Seq(32),
-	"webBasePath":                 "/",
-	"sessionMaxAge":               "360",
-	"pageSize":                    "25",
-	"expireDiff":                  "0",
-	"trafficDiff":                 "0",
-	"remarkModel":                 "-ieo",
-	"serverName":                  "",
-	"timeLocation":                "Local",
-	"tgBotEnable":                 "false",
-	"tgBotToken":                  "",
-	"tgBotProxy":                  "",
-	"tgBotAPIServer":              "",
-	"tgBotChatId":                 "",
-	"tgRunTime":                   "@daily",
-	"tgBotBackup":                 "false",
+	"xrayTemplateConfig": xrayTemplateConfig,
+	"webListen":          "",
+	"webDomain":          "",
+	"webPort":            "2083",
+	"webCertFile":        "",
+	"webKeyFile":         "",
+	"secret":             random.Seq(32),
+	"webBasePath":        "/",
+	"sessionMaxAge":      "360",
+	"pageSize":           "25",
+	"expireDiff":         "0",
+	"trafficDiff":        "0",
+	"remarkModel":        "-ieo",
+	"serverName":         "",
+	"timeLocation":       "Local",
+	"tgBotEnable":        "false",
+	"tgBotToken":         "",
+	"tgBotProxy":         "",
+	"tgBotAPIServer":     "",
+	"tgBotChatId":        "",
+	"tgRunTime":          "@daily",
+	"tgBotBackup":        "false",
+	// SIX fields: the panel's cron is built with cron.WithSeconds(), so a
+	// five-field expression does not parse and the job silently never runs.
+	// 04:00:00 daily.
+	"tgBotBackupCron":             "0 0 4 * * *",
 	"tgBotLoginNotify":            "true",
 	"tgCpu":                       "80",
 	"tgLang":                      "en-US",
@@ -371,6 +375,13 @@ func (s *SettingService) SetTgbotRuntime(time string) error {
 
 func (s *SettingService) GetTgBotBackup() (bool, error) {
 	return s.getBool("tgBotBackup")
+}
+
+// GetTgBotBackupCron is when the nightly database backup is sent, as a cron expression.
+// Separate from the stats-notification schedule on purpose: those answer different
+// questions, and a backup that follows a reporting schedule is a backup nobody chose.
+func (s *SettingService) GetTgBotBackupCron() (string, error) {
+	return s.getString("tgBotBackupCron")
 }
 
 func (s *SettingService) GetTgBotLoginNotify() (bool, error) {

@@ -10,6 +10,7 @@ import (
 
 	"github.com/mhsanaei/3x-ui/v2/database/model"
 	"github.com/mhsanaei/3x-ui/v2/logger"
+	"github.com/mhsanaei/3x-ui/v2/util/common"
 	"github.com/mhsanaei/3x-ui/v2/web/service"
 	"github.com/mhsanaei/3x-ui/v2/web/session"
 	"github.com/mhsanaei/3x-ui/v2/web/websocket"
@@ -20,19 +21,19 @@ import (
 
 // InboundController handles HTTP requests related to Xray inbounds management.
 type InboundController struct {
-	inboundService service.InboundService
-	xrayService    service.XrayService
+	inboundService     service.InboundService
+	xrayService        service.XrayService
 	clientGroupService service.ClientGroupService
-	l2tpService    service.L2tpService
-	pptpService    service.PptpService
-	openvpnService service.OpenVpnService
-	ocservService  service.OcservService
-	sstpService    service.SstpService
-	ikev2Service   service.Ikev2Service
-	wgcService     service.WgcService
-	awgService     service.AwgService
-	mtprotoService service.MtprotoService
-	sshService     service.SshService
+	l2tpService        service.L2tpService
+	pptpService        service.PptpService
+	openvpnService     service.OpenVpnService
+	ocservService      service.OcservService
+	sstpService        service.SstpService
+	ikev2Service       service.Ikev2Service
+	wgcService         service.WgcService
+	awgService         service.AwgService
+	mtprotoService     service.MtprotoService
+	sshService         service.SshService
 }
 
 // NewInboundController creates a new InboundController and sets up its routes.
@@ -78,6 +79,7 @@ func (a *InboundController) initRouter(g *gin.RouterGroup) {
 	g.POST("/clientGroups/update/:id", requirePerm(model.PermEditClient), a.updateClientGroup)
 	g.POST("/clientGroups/del/:id", requirePerm(model.PermEditClient), a.delClientGroup)
 	g.POST("/clientGroups/membership", requirePerm(model.PermEditClient), a.setClientGroupMembership)
+	g.POST("/clientGroups/renew/:id", requirePerm(model.PermEditClient), a.renewClientGroup)
 	// One customer across several protocols in one step. It CREATES accounts, so it
 	// carries the create bit rather than the edit bit the group routes above use; the
 	// group it also writes is the entitlement those accounts are created against, not a
@@ -2121,6 +2123,75 @@ func (a *InboundController) setClientGroupMembership(c *gin.Context) {
 	}
 	jsonMsg(c, I18nWeb(c, "pages.inbounds.toasts.update"),
 		a.clientGroupService.SetMembership(body.GroupId, body.Emails))
+}
+
+// renewClientGroup gives a customer the terms they originally bought, again.
+//
+// It is one endpoint rather than "read the plan, then call update" from the browser
+// because the two halves must not be able to drift apart: the quota, the new expiry and
+// the re-enable are one decision, and a renewal that set the date but not the quota
+// would leave a customer live with nothing to spend.
+//
+// The clock starts NOW, not at the old expiry. A customer who lapsed for a week and came
+// back is buying thirty days from today; adding to a date in the past would silently sell
+// them three weeks.
+func (a *InboundController) renewClientGroup(c *gin.Context) {
+	id, err := strconv.Atoi(c.Param("id"))
+	if err != nil {
+		jsonMsg(c, I18nWeb(c, "pages.inbounds.toasts.update"), err)
+		return
+	}
+	var body struct {
+		// Optional overrides, so renewing on different terms records those as the new
+		// plan rather than leaving the old one to reassert itself next time.
+		Total *int64 `json:"total"`
+		Days  *int   `json:"days"`
+	}
+	_ = bindData(c, &body)
+
+	group, err := a.clientGroupService.GetGroup(id)
+	if err != nil {
+		jsonMsg(c, I18nWeb(c, "pages.inbounds.toasts.update"), err)
+		return
+	}
+
+	total, days := group.PlanTotal, group.PlanDays
+	if body.Total != nil {
+		total = *body.Total
+	}
+	if body.Days != nil {
+		days = *body.Days
+	}
+	if days <= 0 && total <= 0 {
+		jsonMsg(c, I18nWeb(c, "pages.inbounds.toasts.update"),
+			common.NewError("this customer has no recorded plan to renew — set the terms once and it will be remembered"))
+		return
+	}
+
+	group.Total = total
+	group.Enable = true
+	if days > 0 {
+		group.ExpiryTime = time.Now().Add(time.Duration(days) * 24 * time.Hour).UnixMilli()
+	} else {
+		group.ExpiryTime = 0
+	}
+	if err := a.clientGroupService.UpdateGroup(group); err != nil {
+		jsonMsg(c, I18nWeb(c, "pages.inbounds.toasts.update"), err)
+		return
+	}
+	// Remember the terms actually used, so the next renewal repeats THIS sale.
+	if err := a.clientGroupService.SetPlan(id, total, days); err != nil {
+		logger.Warning("renewed group ", id, " but could not record its plan: ", err)
+	}
+
+	// The members' rows still carry the spent quota and the past expiry; enforceGroups
+	// rewrites them on its next tick, but a customer watching their subscription page
+	// should not have to wait for it to see that they paid.
+	if err := a.clientGroupService.MirrorToMembers(id); err != nil {
+		logger.Warning("renewed group ", id, " but could not refresh its members: ", err)
+	}
+
+	jsonMsg(c, I18nWeb(c, "pages.inbounds.toasts.update"), nil)
 }
 
 // addCombinedAccount creates one customer's accounts across several protocols at once —

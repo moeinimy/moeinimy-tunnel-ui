@@ -337,6 +337,13 @@
                           <a-menu-item v-if="groupsUsable && !row.isGroup" @click="openAssignGroup(row)">
                             <a-icon type="usergroup-add"></a-icon> {{ i18n "pages.clients.assignGroup" }}
                           </a-menu-item>
+                          <!-- The terms the customer bought, again, from today.
+                               Only offered where there is a recorded plan to repeat:
+                               guessing one would be inventing what they are owed. -->
+                          <a-menu-item v-if="canRenew(row)" @click="renewCustomer(row)">
+                            <a-icon type="reload"></a-icon> {{ i18n "pages.clients.renew" }}
+                            <span class="bo-muted">[[ renewLabel(row) ]]</span>
+                          </a-menu-item>
                           <a-menu-item @click="resetClientTraffic(row)">
                             <a-icon type="retweet"></a-icon> {{ i18n "pages.inbounds.resetTraffic" }}
                           </a-menu-item>
@@ -850,6 +857,11 @@
               key: dbInbound.id + ':' + c.email,
               email: c.email,
               comment: c.comment || '',
+              // The credential, kept on the row SOLELY so it can be searched: the one
+              // thing an operator holding a config file has is the UUID in it, and it
+              // was the one thing this page could not turn back into a customer.
+              // Never rendered -- the connection sheet is where credentials are shown.
+              credential: [c.id, c.password, c.subId].filter(Boolean).join(' '),
               subId: c.subId || '',
               protocol: dbInbound.protocol,
               inboundId: dbInbound.id,
@@ -977,7 +989,7 @@
         // .protocol.toLowerCase() off a customer row is a TypeError that took the whole
         // computed with it. That is why searching appeared to do nothing at all.
         const fields = (r) => [
-          r.email, r.comment, r.protocol, r.inboundRemark,
+          r.email, r.comment, r.protocol, r.inboundRemark, r.credential,
           r.group && r.group.name, r.group && r.group.comment,
         ];
         const matches = (r) => this.accountsOf(r).concat([r])
@@ -1616,6 +1628,37 @@
             + missing.slice(0, 5).join(', ') + (missing.length > 5 ? '…' : ''));
         }
         if (added) this.$message.success(added + ' / ' + accounts.length);
+      },
+
+      // A customer can be renewed once the panel knows what they bought. Groups made
+      // before the plan was recorded, and those sold as unlimited-everything, have
+      // nothing to repeat -- the menu entry is absent rather than guessing.
+      canRenew(row) {
+        const g = row && row.group;
+        return !!(g && (g.planDays > 0 || g.planTotal > 0));
+      },
+      renewLabel(row) {
+        const g = row.group;
+        const parts = [];
+        if (g.planTotal > 0) {
+          parts.push(NumberFormatter.toFixed(g.planTotal / SizeFormatter.ONE_GB, 0) + 'GB');
+        }
+        if (g.planDays > 0) parts.push(g.planDays + 'd');
+        return parts.length ? '(' + parts.join(' / ') + ')' : '';
+      },
+      renewCustomer(row) {
+        const g = row.group;
+        this.$confirm({
+          title: '{{ i18n "pages.clients.renew" }} — ' + g.name,
+          content: this.renewLabel(row),
+          class: themeSwitcher.currentTheme,
+          okText: '{{ i18n "sure" }}',
+          cancelText: '{{ i18n "cancel" }}',
+          // One request, not "read the plan then update": the quota, the new date and
+          // the re-enable are one decision, and a renewal that set the date but not the
+          // quota would leave a paying customer live with nothing to spend.
+          onOk: () => this.submit('/panel/api/inbounds/clientGroups/renew/' + g.id),
+        });
       },
 
       // The customer's own editor: their allowance on one side, each of their accounts

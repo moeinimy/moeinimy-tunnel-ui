@@ -435,6 +435,7 @@
 "needEmail" = "هر اکانت باید ایمیل داشته باشد"
 
 [pages.clients]
+"renew" = "تمدید (مثل دفعهٔ قبل)"
 "data" = "داده"
 "exportJson" = "خروجی اکانت‌ها (JSON)"
 "importJson" = "ورودی اکانت‌ها (JSON)"

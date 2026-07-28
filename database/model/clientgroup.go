@@ -35,4 +35,19 @@ type ClientGroup struct {
 	Enable bool `json:"enable" form:"enable" gorm:"default:true"`
 
 	Comment string `json:"comment" form:"comment"`
+
+	// PlanTotal and PlanDays are what the customer was SOLD, recorded once when the
+	// group is created and never rewritten by ordinary edits.
+	//
+	// They exist so renewing is a single click that reinstates the original terms. The
+	// live Total and ExpiryTime cannot answer that: by renewal time Total is whatever is
+	// left after a top-up or a trim, and ExpiryTime is a date in the past. An operator
+	// asked to "give them the same again" would otherwise have to remember what the same
+	// was.
+	//
+	// Zero means unknown -- groups created before this existed, and any group whose plan
+	// was genuinely unlimited -- and the UI offers no one-click renewal for those rather
+	// than guessing a number.
+	PlanTotal int64 `json:"planTotal" form:"planTotal" gorm:"default:0"`
+	PlanDays  int   `json:"planDays" form:"planDays" gorm:"default:0"`
 }

@@ -2652,10 +2652,9 @@ func (t *Tgbot) SendReport() {
 	t.sendExhaustedToAdmins()
 	t.notifyExhausted()
 
-	backupEnable, err := t.settingService.GetTgBotBackup()
-	if err == nil && backupEnable {
-		t.SendBackupToAdmins()
-	}
+	// The backup is NOT sent from here any more. It runs on its own schedule
+	// (job.BackupJob), so that turning stats notifications off, or moving them, cannot
+	// quietly take the backups with it.
 }
 
 // SendBackupToAdmins sends a database backup to admin chats.

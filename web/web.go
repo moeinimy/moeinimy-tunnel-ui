@@ -466,6 +466,18 @@ func (s *Server) startTask() {
 			return
 		}
 
+		// The nightly database backup, on a schedule of its own rather than riding
+		// along with the notification above. Its own job also verifies the file before
+		// sending it, which the notification path never did.
+		if backupCron, cerr := s.settingService.GetTgBotBackupCron(); cerr == nil &&
+			strings.TrimSpace(backupCron) != "" {
+			if _, berr := s.cron.AddJob(backupCron, job.NewBackupJob()); berr != nil {
+				logger.Warningf("Add BackupJob: bad schedule %q: %v", backupCron, berr)
+			} else {
+				logger.Infof("Telegram backup scheduled at %s", backupCron)
+			}
+		}
+
 		// check for Telegram bot callback query hash storage reset
 		s.cron.AddJob("@every 2m", job.NewCheckHashStorageJob())
 

@@ -76,6 +76,69 @@ func (s *ClientGroupService) UpdateGroup(g *model.ClientGroup) error {
 		}).Error
 }
 
+// GetGroup loads one group.
+func (s *ClientGroupService) GetGroup(id int) (*model.ClientGroup, error) {
+	g := &model.ClientGroup{}
+	if err := database.GetDB().Model(model.ClientGroup{}).Where("id = ?", id).
+		First(g).Error; err != nil {
+		return nil, err
+	}
+	return g, nil
+}
+
+// MirrorToMembers pushes a group's entitlement onto its accounts immediately.
+//
+// enforceGroups does this on every traffic tick anyway, so this is not what makes a
+// change take effect — it is what makes it VISIBLE now. A customer who has just paid
+// opens their subscription page within seconds, and being told they are still out of
+// traffic until the next tick is the renewal appearing not to have worked.
+//
+// It writes only what the group owns, and re-enables accounts the system disabled while
+// leaving alone any the operator switched off by hand — the same distinction
+// enforceGroups draws, for the same reason.
+func (s *ClientGroupService) MirrorToMembers(id int) error {
+	g, err := s.GetGroup(id)
+	if err != nil {
+		return err
+	}
+	db := database.GetDB()
+	return db.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Model(xray.ClientTraffic{}).Where("group_id = ?", id).
+			Updates(map[string]any{
+				"total":       g.Total,
+				"expiry_time": g.ExpiryTime,
+				// Members never carry the renewal period: the GROUP renews itself, and a
+				// member that renewed on its own would wipe the counters the shared usage
+				// is summed from.
+				"reset": 0,
+			}).Error; err != nil {
+			return err
+		}
+		if !g.Enable {
+			return nil
+		}
+		revivable, rerr := operatorEnabledMembers(tx, id)
+		if rerr != nil || len(revivable) == 0 {
+			return rerr
+		}
+		return tx.Model(xray.ClientTraffic{}).
+			Where("group_id = ? AND enable = 0 AND email IN (?)", id, revivable).
+			Update("enable", true).Error
+	})
+}
+
+// SetPlan records new sale terms for a group, which is what renewing at different terms
+// is. Kept apart from UpdateGroup because an ordinary edit — trimming a quota, nudging a
+// date — is not a new sale, and must not quietly redefine what "the same again" means
+// the next time the customer renews.
+func (s *ClientGroupService) SetPlan(id int, planTotal int64, planDays int) error {
+	if id == 0 {
+		return common.NewError("group id is required")
+	}
+	return database.GetDB().Model(model.ClientGroup{}).Where("id = ?", id).
+		Updates(map[string]any{"plan_total": planTotal, "plan_days": planDays}).Error
+}
+
 // DelGroup removes a group and releases its members, who go back to being billed on
 // their own totals. Membership is cleared explicitly rather than left to a foreign
 // key: a stale group_id would leave those accounts pointing at nothing, and the
@@ -472,6 +535,20 @@ func (s *ClientGroupService) CreateCombined(group *model.ClientGroup, members []
 	group.Name = strings.TrimSpace(group.Name)
 	if len(members) == 0 {
 		return nil, common.NewError("a combined account needs at least one protocol")
+	}
+
+	// Record what is being sold, once, so renewing later can reinstate these terms
+	// rather than whatever the allowance has been edited to by then. A delayed start is
+	// stored as a negative duration, which is already a number of days.
+	group.PlanTotal = group.Total
+	switch {
+	case group.ExpiryTime < 0:
+		group.PlanDays = int(-group.ExpiryTime / 86400000)
+	case group.ExpiryTime > 0:
+		days := (group.ExpiryTime - time.Now().UnixMilli()) / 86400000
+		if days > 0 {
+			group.PlanDays = int(days)
+		}
 	}
 
 	var inboundService InboundService

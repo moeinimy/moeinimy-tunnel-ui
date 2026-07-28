@@ -15,7 +15,9 @@
                 <a-col :xs="12" :sm="12" :md="6">
                   <a-card hoverable :body-style="{ padding: '14px 18px' }">
                     <div class="bo-muted">{{ i18n "pages.clients.statAccounts" }}</div>
-                    <div :style="{ fontSize: '22px', fontWeight: 600 }">[[ rows.length ]]</div>
+                    <!-- Accounts, not rows: the table folds a customer's accounts into
+                         one line, and this card is the count the label promises. -->
+                    <div :style="{ fontSize: '22px', fontWeight: 600 }">[[ accountRows.length ]]</div>
                   </a-card>
                 </a-col>
                 <a-col :xs="12" :sm="12" :md="6">
@@ -84,6 +86,37 @@
                       </a-menu-item>
                     </a-menu>
                   </a-dropdown>
+                  <!-- Many accounts on ONE inbound, which is the other half of what the
+                       combined form does for one customer across several. -->
+                  <a-dropdown :trigger="['click']" v-if="addableInbounds.length">
+                    <a-button icon="usergroup-add">
+                      {{ i18n "pages.client.bulk" }} <a-icon type="down"></a-icon>
+                    </a-button>
+                    <a-menu slot="overlay" :class="themeSwitcher.currentTheme">
+                      <a-menu-item v-for="db in addableInbounds" :key="db.id"
+                        @click="openAddBulkClient(db)">
+                        <a-tag>[[ db.protocol ]]</a-tag>[[ db.remark || ('#' + db.id) ]]
+                      </a-menu-item>
+                    </a-menu>
+                  </a-dropdown>
+                  <!-- Accounts out and back in as JSON. Moving a customer to another
+                       server, or keeping a copy before a risky bulk edit, otherwise
+                       meant a full panel backup and a full restore. -->
+                  <a-dropdown :trigger="['click']">
+                    <a-button icon="database">
+                      {{ i18n "pages.clients.data" }} <a-icon type="down"></a-icon>
+                    </a-button>
+                    <a-menu slot="overlay" :class="themeSwitcher.currentTheme">
+                      <a-menu-item @click="exportClientsJson()">
+                        <a-icon type="download"></a-icon> {{ i18n "pages.clients.exportJson" }}
+                      </a-menu-item>
+                      <a-menu-item @click="$refs.importFile.click()">
+                        <a-icon type="upload"></a-icon> {{ i18n "pages.clients.importJson" }}
+                      </a-menu-item>
+                    </a-menu>
+                  </a-dropdown>
+                  <input ref="importFile" type="file" accept="application/json,.json"
+                    :style="{ display: 'none' }" @change="importClientsJson($event)">
                   <a-button v-if="groupsUsable" icon="usergroup-add" @click="openCombinedAccount()">
                     {{ i18n "pages.combined.open" }}
                   </a-button>
@@ -620,6 +653,7 @@
 {{template "modals/qrcodeModal"}}
 {{template "modals/textModal"}}
 {{template "modals/clientsModal"}}
+{{template "modals/clientsBulkModal"}}
 {{template "modals/combinedClientModal"}}
 {{template "modals/combinedEditModal"}}
 {{template "modals/clientCredentialsModal"}}
@@ -935,8 +969,24 @@
       },
       filtered() {
         const q = this.search.toLowerCase();
+        // Search and the protocol filter run over a row AND every account it folds.
+        //
+        // A customer row has no protocol and no inbound of its own -- those belong to
+        // the accounts underneath -- so matching only the row's own fields both missed
+        // (typing an account's name found nothing) and threw, because reading
+        // .protocol.toLowerCase() off a customer row is a TypeError that took the whole
+        // computed with it. That is why searching appeared to do nothing at all.
+        const fields = (r) => [
+          r.email, r.comment, r.protocol, r.inboundRemark,
+          r.group && r.group.name, r.group && r.group.comment,
+        ];
+        const matches = (r) => this.accountsOf(r).concat([r])
+          .some(x => fields(x).some(v => v && String(v).toLowerCase().includes(q)));
+        const hasProtocol = (r, p) => this.accountsOf(r).concat([r])
+          .some(x => x.protocol === p);
+
         const rows = this.rows.filter(r => {
-          if (this.protocolFilter && r.protocol !== this.protocolFilter) return false;
+          if (this.protocolFilter && !hasProtocol(r, this.protocolFilter)) return false;
           if (this.groupFilter && String(r.group ? r.group.id : 0) !== this.groupFilter) return false;
           switch (this.stateFilter) {
             case 'grouped': if (!r.group) return false; break;
@@ -945,13 +995,7 @@
             case 'disabled': if (r.enable) return false; break;
           }
           if (!q) return true;
-          // The customer's name is searchable too, which is the whole point: typing
-          // it brings up every protocol they hold in one list.
-          return r.email.toLowerCase().includes(q)
-            || (r.group && r.group.name.toLowerCase().includes(q))
-            || (r.inboundRemark || '').toLowerCase().includes(q)
-            || (r.comment || '').toLowerCase().includes(q)
-            || r.protocol.toLowerCase().includes(q);
+          return matches(r);
         });
         // Where each row sits in its customer's block, so the accent bar can be drawn
         // as one continuous run rather than a mark per row. Computed AFTER filtering:
@@ -967,20 +1011,13 @@
         return rows;
       },
       protocols() {
-        return [...new Set(this.rows.map(r => r.protocol))].sort();
+        return [...new Set(this.accountRows.map(r => r.protocol))].filter(Boolean).sort();
       },
       // Customers, not accounts: every group counts once, and each ungrouped
       // account is its own customer.
-      customerCount() {
-        const groups = new Set();
-        let solo = 0;
-        for (const r of this.rows) {
-          if (r.group) groups.add(r.group.id); else solo++;
-        }
-        return groups.size + solo;
-      },
-      onlineCount() { return this.rows.filter(r => r.online).length; },
-      depletedCount() { return this.rows.filter(r => r.depleted).length; },
+      customerCount() { return this.rows.length; },
+      onlineCount() { return this.accountRows.filter(r => r.online).length; },
+      depletedCount() { return this.accountRows.filter(r => r.depleted).length; },
       selectedCount() { return Object.keys(this.selected).length; },
       // Select-all covers what is ON SCREEN, not the whole table: a filter is the
       // operator saying which accounts they mean, and a checkbox that silently
@@ -1454,6 +1491,133 @@
           comment: g.comment || '',
         };
       },
+      // Many accounts on one inbound, using the same modal and the same endpoint the
+      // inbounds tab does, so accounts made here are indistinguishable from those.
+      openAddBulkClient(dbInbound) {
+        clientsBulkModal.show({
+          title: '{{ i18n "pages.client.bulk"}} ' + (dbInbound.remark || ('#' + dbInbound.id)),
+          okText: '{{ i18n "pages.client.bulk"}}',
+          dbInbound: dbInbound,
+          confirm: async (clients, dbInboundId) => {
+            await this.addClient(clients, dbInboundId, clientsBulkModal);
+          },
+        });
+      },
+
+      // Accounts as JSON: the selection if there is one, everything on screen otherwise.
+      //
+      // Deliberately the CLIENT objects as the inbound stores them, plus enough context
+      // to place them again (the inbound's remark and protocol, and the customer's name
+      // where there is one). A dump of rendered table rows would look friendlier and
+      // could not be imported, which is the only reason to export accounts at all.
+      exportClientsJson() {
+        const chosen = this.selectedCount > 0
+          ? this.selectedRows().flatMap(r => this.accountsOf(r))
+          : this.filtered.flatMap(r => this.accountsOf(r));
+        const accounts = [];
+        for (const a of chosen) {
+          const r = this.resolveRow(a);
+          if (!r) continue;
+          accounts.push({
+            inboundId: a.inboundId,
+            inboundRemark: r.dbInbound.remark,
+            protocol: r.dbInbound.protocol,
+            customer: a.group ? a.group.name : '',
+            client: JSON.parse(r.client.toString()),
+          });
+        }
+        if (!accounts.length) {
+          this.$message.warning('{{ i18n "pages.inbounds.exportNoneSelected" }}');
+          return;
+        }
+        const doc = {
+          version: 1,
+          exportedAt: new Date().toISOString(),
+          accounts,
+        };
+        const blob = new Blob([JSON.stringify(doc, null, 2)],
+          { type: 'application/json;charset=utf-8' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = 'clients-' + new Date().toISOString().slice(0, 10) + '.json';
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        setTimeout(() => URL.revokeObjectURL(url), 0);
+      },
+
+      // Reads a file this page wrote and re-creates the accounts.
+      //
+      // Placement is by inbound REMARK first and id second: an export is usually being
+      // imported into a different panel, where the ids mean nothing but the operator's
+      // own names for their inbounds usually survive. An account whose inbound is not
+      // here is reported rather than silently dropped -- a partial import that says so
+      // is recoverable, one that does not is a mystery a week later.
+      //
+      // Customers are NOT recreated: a group is an entitlement with money attached, and
+      // inventing one on the strength of a name in a file would be the import deciding
+      // what a customer is owed. The name rides along so an operator can group them.
+      async importClientsJson(event) {
+        const input = event.target;
+        const file = input.files && input.files[0];
+        input.value = '';
+        if (!file) return;
+
+        let doc;
+        try {
+          doc = JSON.parse(await file.text());
+        } catch (e) {
+          this.$message.error('{{ i18n "pages.clients.importBadFile" }}');
+          return;
+        }
+        const accounts = doc && Array.isArray(doc.accounts) ? doc.accounts : null;
+        if (!accounts || !accounts.length) {
+          this.$message.error('{{ i18n "pages.clients.importBadFile" }}');
+          return;
+        }
+
+        // Group by destination inbound so each one is written once.
+        const byInbound = new Map();
+        const missing = [];
+        for (const entry of accounts) {
+          if (!entry || !entry.client || !entry.client.email) continue;
+          const db = this.dbInbounds.find(d =>
+            (entry.inboundRemark && d.remark === entry.inboundRemark &&
+             d.protocol === entry.protocol) || d.id === entry.inboundId);
+          if (!db || db.protocol !== entry.protocol) {
+            missing.push(entry.client.email);
+            continue;
+          }
+          if (!byInbound.has(db.id)) byInbound.set(db.id, []);
+          byInbound.get(db.id).push(entry.client);
+        }
+
+        if (!byInbound.size) {
+          this.$message.error('{{ i18n "pages.clients.importNoTarget" }}');
+          return;
+        }
+
+        this.spinning = true;
+        let added = 0;
+        try {
+          for (const [inboundId, clients] of byInbound) {
+            const ok = await this.submit('/panel/api/inbounds/addClient', {
+              id: inboundId,
+              settings: JSON.stringify({ clients }),
+            });
+            if (ok) added += clients.length;
+          }
+        } finally {
+          this.spinning = false;
+        }
+        if (missing.length) {
+          this.$message.warning('{{ i18n "pages.clients.importSkipped" }}: '
+            + missing.slice(0, 5).join(', ') + (missing.length > 5 ? '…' : ''));
+        }
+        if (added) this.$message.success(added + ' / ' + accounts.length);
+      },
+
       // The customer's own editor: their allowance on one side, each of their accounts
       // on the other. Everything about them is reachable from the row they are on.
       openEditCustomer(row) {

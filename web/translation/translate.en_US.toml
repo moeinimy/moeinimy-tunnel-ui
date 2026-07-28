@@ -557,6 +557,12 @@
 "needEmail" = "An account needs an email"
 
 [pages.clients]
+"data" = "Data"
+"exportJson" = "Export accounts (JSON)"
+"importJson" = "Import accounts (JSON)"
+"importBadFile" = "That file is not an account export"
+"importNoTarget" = "None of those accounts have a matching inbound here"
+"importSkipped" = "Skipped, no matching inbound"
 "title" = "Clients"
 "searchPlaceholder" = "Search account, customer, inbound, comment"
 "allProtocols" = "All protocols"

@@ -446,14 +446,18 @@ func IsSQLiteDB(file io.ReaderAt) (bool, error) {
 	return bytes.Equal(buf, signature), nil
 }
 
-// Checkpoint performs a WAL checkpoint on the SQLite database to ensure data consistency.
+// Checkpoint folds the write-ahead log back into the database file, so a copy of that
+// file on its own is a complete database.
+//
+// TRUNCATE, not the bare PRAGMA. `wal_checkpoint` defaults to PASSIVE, which copies what
+// it can and gives up the moment a reader is mid-transaction -- on a busy panel that
+// leaves the newest writes in the -wal file. The backup download sends only the .db, so
+// those writes are simply absent from the backup: accounts created minutes before it was
+// taken would not come back on restore, and nothing would report a problem.
+//
+// TRUNCATE blocks until every frame is in the main file and then empties the log.
 func Checkpoint() error {
-	// Update WAL
-	err := db.Exec("PRAGMA wal_checkpoint;").Error
-	if err != nil {
-		return err
-	}
-	return nil
+	return db.Exec("PRAGMA wal_checkpoint(TRUNCATE);").Error
 }
 
 // ValidateSQLiteDB opens the provided sqlite DB path with a throw-away connection

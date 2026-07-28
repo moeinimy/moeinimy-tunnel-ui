@@ -167,10 +167,20 @@ type Release struct {
 // ServerService provides business logic for server monitoring and management.
 // It handles system status collection, IP detection, and application statistics.
 type ServerService struct {
-	xrayService        XrayService
-	inboundService     InboundService
+	xrayService    XrayService
+	inboundService InboundService
+	// Every protocol backend this panel serves. They are held here, and not created
+	// per call, because a restore has to put ALL of their on-disk state back in step
+	// with the imported database -- see ImportDB.
 	l2tpService        L2tpService
 	pptpService        PptpService
+	openvpnService     OpenVpnService
+	ocservService      OcservService
+	sstpService        SstpService
+	wgcService         WgcService
+	awgService         AwgService
+	mtprotoService     MtprotoService
+	sshService         SshService
 	cachedIPv4         string
 	cachedIPv6         string
 	noIPv6             bool
@@ -1267,9 +1277,24 @@ func (s *ServerService) ImportDB(file multipart.File) error {
 
 	s.inboundService.MigrateDB()
 
-	// Regenerate L2TP/PPTP on-disk configs from the imported DB and restart services
+	// Re-initialise EVERY protocol backend from the imported database, not just two.
+	//
+	// These services keep their real state on disk -- daemon configs, secrets, address
+	// pools, tproxy rules -- generated from the inbounds. A restore replaces the DB and
+	// leaves that on-disk state describing the OLD install, so the panel would show the
+	// restored accounts while the daemons served the ones they were last configured for,
+	// and the customer would be told their credentials are wrong. This is the same list
+	// web.Server runs at startup, for the same reason: after an import the process is in
+	// exactly the position it is in after a boot.
 	s.l2tpService.InitL2tp()
 	s.pptpService.InitPptp()
+	s.openvpnService.InitOpenVpn()
+	s.ocservService.InitOcserv()
+	s.sstpService.InitSstp()
+	s.wgcService.InitWgc()
+	s.awgService.InitAwg()
+	s.mtprotoService.InitMtproto()
+	s.sshService.InitSsh()
 
 	// The imported routing rules may name geo files this host has never had. Fetch
 	// them BEFORE starting xray: a rule pointing at a missing ext: file is a fatal

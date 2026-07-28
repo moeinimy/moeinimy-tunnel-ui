@@ -435,6 +435,12 @@
 "needEmail" = "هر اکانت باید ایمیل داشته باشد"
 
 [pages.clients]
+"data" = "داده"
+"exportJson" = "خروجی اکانت‌ها (JSON)"
+"importJson" = "ورودی اکانت‌ها (JSON)"
+"importBadFile" = "این فایل خروجیِ اکانت نیست"
+"importNoTarget" = "هیچ‌کدام از این اکانت‌ها اینباند متناظری اینجا ندارند"
+"importSkipped" = "رد شد، اینباند متناظر پیدا نشد"
 "title" = "کلاینت‌ها"
 "searchPlaceholder" = "جست‌وجوی اکانت، مشتری، اینباند، توضیح"
 "allProtocols" = "همهٔ پروتکل‌ها"

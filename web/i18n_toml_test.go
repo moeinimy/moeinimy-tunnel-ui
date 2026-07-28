@@ -182,6 +182,22 @@ var knownMissing = keySet(
 	"pages.clients.statCustomers", "pages.clients.colClient",
 	"pages.clients.colCustomer", "pages.clients.colProtocol",
 	"pages.clients.colInbound", "pages.clients.empty",
+	"pages.clients.colActions", "pages.clients.allGroups", "pages.clients.groups",
+	"pages.clients.noGroups", "pages.clients.editGroup", "pages.clients.groupMembers",
+	"pages.clients.groupDaysDesc", "pages.clients.deleteGroupConfirm",
+	"pages.clients.selected", "pages.clients.clearSelection",
+	"pages.clients.assignGroup", "pages.clients.assignGroupDesc",
+	"pages.clients.noGroup", "pages.clients.newGroup",
+
+	// The post-create connection-details sheet.
+	"pages.credentials.title", "pages.credentials.headline",
+	"pages.credentials.copyAll", "pages.credentials.server",
+	"pages.credentials.port", "pages.credentials.alsoL2tp",
+	"pages.credentials.alsoL2tpValue", "pages.credentials.ipsecPsk",
+	"pages.credentials.config", "pages.credentials.subscription",
+	"pages.credentials.subscriptionJson", "pages.credentials.show",
+	"pages.credentials.headlineMany", "pages.credentials.headlineExisting",
+	"pages.credentials.configFile", "pages.credentials.configFileHint",
 )
 
 // flattenKeys collapses nested TOML tables into dotted keys (e.g. "pages.core.title").

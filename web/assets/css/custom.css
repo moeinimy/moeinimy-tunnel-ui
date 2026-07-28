@@ -2194,6 +2194,29 @@ li.ant-calendar-time-picker-select-option-selected {
 .clients-page .bo-cg-3 { --cg-accent:#3f8ae0; --cg-tint:rgba(63,138,224,.07);  --cg-tint-hover:rgba(63,138,224,.13); }
 .clients-page .bo-cg-4 { --cg-accent:#c2478f; --cg-tint:rgba(194,71,143,.07);  --cg-tint-hover:rgba(194,71,143,.13); }
 
+/* The bar that appears under the filters once rows are checked. Separated by a rule
+   rather than a gap, so it reads as a mode the toolbar is in and not as a second,
+   unrelated toolbar that happened to appear. */
+.clients-page .bo-selbar {
+  display:flex;
+  flex-wrap:wrap;
+  align-items:center;
+  gap:8px;
+  margin-top:12px;
+  padding-top:12px;
+  border-top:1px solid var(--line-1,rgba(128,128,128,.25));
+}
+
+/* The customer cell is a control: an unassigned row offers the slot to fill. */
+.clients-page .bo-cg-add {
+  cursor:pointer;
+  border-style:dashed;
+  background:transparent;
+  color:var(--text-3);
+}
+
+.clients-page .bo-cg-add:hover { border-color:var(--accent); color:var(--accent); }
+
 .inbounds-page .ant-table-expanded-row .ant-table .ant-table-body {
   overflow-x:hidden;
 }

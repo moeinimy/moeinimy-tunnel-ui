@@ -1,6 +1,7 @@
 package service
 
 import (
+	"encoding/json"
 	"strings"
 	"time"
 
@@ -80,28 +81,47 @@ func (s *ClientGroupService) UpdateGroup(g *model.ClientGroup) error {
 // key: a stale group_id would leave those accounts pointing at nothing, and the
 // enforcement below would stop mirroring an entitlement onto them while their own
 // expiry still read whatever the group last wrote.
+// It is deliberately TWO transactions, not one.
+//
+// The obvious single transaction bundles the delete with restoring each member's own
+// quota — and then any failure in the restore rolls the delete back too. The operator
+// pressed Delete, the group is still there, and the only sign anything happened is a
+// toast. That is precisely how deleting a customer came to appear to do nothing after
+// the restore step was added: the delete itself was never the part that failed.
+//
+// So the deletion the operator asked for commits on its own, and the restore follows as
+// a separate, best-effort step. Its failure mode is a member left carrying the departed
+// group's quota, which an operator can fix by editing the account; the alternative
+// failure mode is a customer that cannot be deleted at all, which they cannot.
 func (s *ClientGroupService) DelGroup(id int) error {
 	db := database.GetDB()
-	return db.Transaction(func(tx *gorm.DB) error {
-		// Collected before the membership is cleared: afterwards there is no way left
-		// to tell which accounts used to belong to this group.
-		var emails []string
-		if err := tx.Model(xray.ClientTraffic{}).Where("group_id = ?", id).
-			Pluck("email", &emails).Error; err != nil {
-			return err
-		}
+
+	// Collected before the membership is cleared: afterwards there is no way left to
+	// tell which accounts used to belong to this group.
+	var emails []string
+	if err := db.Model(xray.ClientTraffic{}).Where("group_id = ?", id).
+		Pluck("email", &emails).Error; err != nil {
+		return err
+	}
+
+	if err := db.Transaction(func(tx *gorm.DB) error {
 		if err := tx.Model(xray.ClientTraffic{}).Where("group_id = ?", id).
 			Update("group_id", 0).Error; err != nil {
 			return err
 		}
-		// Same reason as leaving a group one account at a time: the members' rows still
-		// carry the deleted group's quota and expiry, and without this a customer whose
-		// group was removed would keep whatever the group last wrote onto them.
-		if err := restoreOwnEntitlement(tx, emails); err != nil {
-			return err
-		}
 		return tx.Delete(model.ClientGroup{}, id).Error
-	})
+	}); err != nil {
+		return err
+	}
+
+	// The members' rows still carry the deleted group's quota and expiry; without this
+	// a customer whose group was removed keeps whatever that group last wrote onto them,
+	// including a spent quota nothing would ever lift.
+	if err := restoreOwnEntitlement(db, emails); err != nil {
+		logger.Warning("client group ", id, " was deleted but its members kept its "+
+			"entitlement; edit those accounts to reset their own quota: ", err)
+	}
+	return nil
 }
 
 // SetMembership puts the named accounts in a group (id 0 removes them from any).
@@ -133,28 +153,110 @@ func (s *ClientGroupService) SetMembership(groupId int, emails []string) error {
 // for good, and one released from a live group would go on spending an allowance it no
 // longer belongs to. The settings JSON is the only place its own figures survived.
 //
-// COALESCE keeps the current value when the JSON has nothing to say — an account whose
-// client row has since been removed keeps what it had rather than silently becoming
-// unlimited.
+// An account whose client entry has since been removed keeps what it had, rather than
+// silently becoming unlimited.
+//
+// Done in Go rather than SQL, and that is the whole point of this shape. The obvious
+// version is one UPDATE with correlated JSON_EACH subqueries — and it is a trap:
+// json_each() raises "malformed JSON" on anything that is not a JSON array, so a single
+// inbound whose settings carry no clients key (a dokodemo tunnel endpoint, say) makes the
+// statement fail for EVERY account. Inside a transaction that means the whole operation
+// rolls back, which is exactly how deleting a customer came to do nothing at all.
+//
+// Reading the inbounds and walking them here cannot fail that way: an inbound that does
+// not parse is skipped, and every other account is still restored.
 func restoreOwnEntitlement(tx *gorm.DB, emails []string) error {
 	if len(emails) == 0 {
 		return nil
 	}
-	return tx.Exec(`
-		UPDATE client_traffics SET
-			total = COALESCE((SELECT JSON_EXTRACT(c.value,'$.totalGB') FROM inbounds,
-				JSON_EACH(JSON_EXTRACT(inbounds.settings,'$.clients')) AS c
-				WHERE inbounds.id = client_traffics.inbound_id
-				  AND JSON_EXTRACT(c.value,'$.email') = client_traffics.email), total),
-			expiry_time = COALESCE((SELECT JSON_EXTRACT(c.value,'$.expiryTime') FROM inbounds,
-				JSON_EACH(JSON_EXTRACT(inbounds.settings,'$.clients')) AS c
-				WHERE inbounds.id = client_traffics.inbound_id
-				  AND JSON_EXTRACT(c.value,'$.email') = client_traffics.email), expiry_time),
-			reset = COALESCE((SELECT JSON_EXTRACT(c.value,'$.reset') FROM inbounds,
-				JSON_EACH(JSON_EXTRACT(inbounds.settings,'$.clients')) AS c
-				WHERE inbounds.id = client_traffics.inbound_id
-				  AND JSON_EXTRACT(c.value,'$.email') = client_traffics.email), reset)
-		WHERE email IN (?)`, emails).Error
+	wanted := make(map[string]bool, len(emails))
+	for _, e := range emails {
+		wanted[e] = true
+	}
+
+	var inbounds []*model.Inbound
+	if err := tx.Model(model.Inbound{}).Find(&inbounds).Error; err != nil {
+		return err
+	}
+
+	for _, inbound := range inbounds {
+		var settings struct {
+			Clients []struct {
+				Email      string `json:"email"`
+				TotalGB    int64  `json:"totalGB"`
+				ExpiryTime int64  `json:"expiryTime"`
+				Reset      int    `json:"reset"`
+			} `json:"clients"`
+		}
+		// Not an error worth failing on: plenty of inbounds legitimately have no
+		// clients array, and one that is genuinely corrupt should not stop the rest.
+		if err := json.Unmarshal([]byte(inbound.Settings), &settings); err != nil {
+			continue
+		}
+		for _, c := range settings.Clients {
+			if c.Email == "" || !wanted[c.Email] {
+				continue
+			}
+			if err := tx.Model(xray.ClientTraffic{}).
+				Where("email = ? AND inbound_id = ?", c.Email, inbound.Id).
+				Updates(map[string]any{
+					"total":       c.TotalGB,
+					"expiry_time": c.ExpiryTime,
+					"reset":       c.Reset,
+				}).Error; err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// operatorEnabledMembers lists the group's accounts whose own settings say enabled.
+//
+// It answers the one question that separates "the system disabled this" from "the
+// operator did": the manual switch writes both the settings JSON and the traffic row,
+// while disableInvalidClients only ever writes the row. So a member whose settings say
+// enabled but whose row says disabled was switched off by enforcement and may come back,
+// and one whose settings say disabled stays off however healthy the group becomes.
+func operatorEnabledMembers(tx *gorm.DB, groupId int) ([]string, error) {
+	var members []string
+	if err := tx.Model(xray.ClientTraffic{}).
+		Where("group_id = ? AND enable = 0", groupId).
+		Pluck("email", &members).Error; err != nil {
+		return nil, err
+	}
+	if len(members) == 0 {
+		return nil, nil
+	}
+	wanted := make(map[string]bool, len(members))
+	for _, e := range members {
+		wanted[e] = true
+	}
+
+	var inbounds []*model.Inbound
+	if err := tx.Model(model.Inbound{}).Find(&inbounds).Error; err != nil {
+		return nil, err
+	}
+	var out []string
+	for _, inbound := range inbounds {
+		var settings struct {
+			Clients []struct {
+				Email  string `json:"email"`
+				Enable *bool  `json:"enable"`
+			} `json:"clients"`
+		}
+		if err := json.Unmarshal([]byte(inbound.Settings), &settings); err != nil {
+			continue
+		}
+		for _, c := range settings.Clients {
+			// A missing enable key means enabled, which is what every client model
+			// defaults to; a pointer is what tells the two apart from false.
+			if c.Email != "" && wanted[c.Email] && (c.Enable == nil || *c.Enable) {
+				out = append(out, c.Email)
+			}
+		}
+	}
+	return out, nil
 }
 
 // enforceGroups mirrors each group's entitlement onto its members and expires them
@@ -257,16 +359,25 @@ func (s *ClientGroupService) enforceGroups(tx *gorm.DB) (bool, error) {
 		// disableInvalidClients only ever writes the row. So an account an operator
 		// turned off by hand stays off, and RADIUS already draws the same distinction
 		// on every login.
+		//
+		// Resolved in Go for the same reason restoreOwnEntitlement is: json_each()
+		// raises on anything that is not a JSON array, so one inbound with no clients
+		// key would make this fail — and this runs on EVERY traffic tick, inside the
+		// transaction that enforces every group. The blast radius of that SQL was the
+		// whole feature.
 		if !spent && g.Enable {
-			res := tx.Exec(`
-				UPDATE client_traffics SET enable = 1
-				WHERE group_id = ? AND enable = 0 AND EXISTS (
-					SELECT 1 FROM inbounds,
-						JSON_EACH(JSON_EXTRACT(inbounds.settings, '$.clients')) AS c
-					WHERE inbounds.id = client_traffics.inbound_id
-					  AND JSON_EXTRACT(c.value, '$.email') = client_traffics.email
-					  AND JSON_EXTRACT(c.value, '$.enable') = 1
-				)`, g.Id)
+			revivable, rerr := operatorEnabledMembers(tx, g.Id)
+			if rerr != nil {
+				return needRestart, rerr
+			}
+			var res *gorm.DB
+			if len(revivable) > 0 {
+				res = tx.Model(xray.ClientTraffic{}).
+					Where("group_id = ? AND enable = 0 AND email IN (?)", g.Id, revivable).
+					Update("enable", true)
+			} else {
+				res = &gorm.DB{RowsAffected: 0}
+			}
 			if res.Error != nil {
 				return needRestart, res.Error
 			}

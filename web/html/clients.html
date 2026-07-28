@@ -153,6 +153,12 @@
                       </a-tooltip>
                       <a-space direction="vertical" :size="2">
                         <span class="client-email">[[ row.email ]]</span>
+                        <!-- The accounts behind a customer, on the same line rather than
+                             on rows of their own: they are how the customer connects,
+                             not separate things to manage. -->
+                        <span class="client-comment" v-if="row.isGroup">
+                          [[ row.members.map(m => m.email).join(' · ') ]]
+                        </span>
                         <span class="client-comment" v-if="row.comment">[[ row.comment ]]</span>
                       </a-space>
                     </a-space>
@@ -163,10 +169,12 @@
                        unrelated names in different inbounds. Clicking the cell is how
                        an account is moved between customers. -->
                   <template slot="group" slot-scope="text, row">
+                    <!-- On a folded customer row the tag opens their editor; on a single
+                         account it moves that account between customers. -->
                     <a-tooltip v-if="row.group" :overlay-class-name="themeSwitcher.currentTheme">
                       <template slot="title">{{ i18n "pages.combined.groupTagDesc" }}</template>
                       <a-tag color="purple" :style="{ cursor: groupsUsable ? 'pointer' : 'default' }"
-                        @click="groupsUsable && openAssignGroup(row)">
+                        @click="groupsUsable && (row.isGroup ? openEditClient(row) : openAssignGroup(row))">
                         <a-icon type="usergroup-add" :style="{ marginRight: '3px' }"></a-icon>[[ row.group.name ]]
                       </a-tag>
                     </a-tooltip>
@@ -182,11 +190,17 @@
                   </template>
 
                   <template slot="protocol" slot-scope="text, row">
-                    <a-tag>[[ row.protocol ]]</a-tag>
+                    <template v-if="row.isGroup">
+                      <a-tag v-for="p in row.protocols" :key="p">[[ p ]]</a-tag>
+                    </template>
+                    <a-tag v-else>[[ row.protocol ]]</a-tag>
                   </template>
 
                   <template slot="inbound" slot-scope="text, row">
-                    <a :href="basePath + 'panel/inbounds'">[[ row.inboundRemark || ('#' + row.inboundId) ]]</a>
+                    <a :href="basePath + 'panel/inbounds'">
+                      <template v-if="row.isGroup">[[ row.inbounds.join(', ') ]]</template>
+                      <template v-else>[[ row.inboundRemark || ('#' + row.inboundId) ]]</template>
+                    </a>
                   </template>
 
                   <template slot="traffic" slot-scope="text, row">
@@ -272,35 +286,35 @@
                         <a-icon type="ellipsis" :style="{ fontSize: '20px', cursor: 'pointer' }"
                           @click="e => e.preventDefault()"></a-icon>
                         <a-menu slot="overlay" :class="themeSwitcher.currentTheme">
-                          <a-menu-item v-if="rowHasLink(row)" @click="showQrcode(row)">
+                          <a-menu-item v-if="!row.isGroup && rowHasLink(row)" @click="showQrcode(row)">
                             <a-icon type="qrcode"></a-icon> {{ i18n "qrCode" }}
                           </a-menu-item>
-                          <a-menu-item v-if="row.protocol === Protocols.WGC" @click="showWgcConfig(row)">
+                          <a-menu-item v-if="!row.isGroup && row.protocol === Protocols.WGC" @click="showWgcConfig(row)">
                             <a-icon type="qrcode"></a-icon> WireGuard Config
                           </a-menu-item>
-                          <a-menu-item v-if="row.protocol === Protocols.AWG" @click="showAwgConfig(row)">
+                          <a-menu-item v-if="!row.isGroup && row.protocol === Protocols.AWG" @click="showAwgConfig(row)">
                             <a-icon type="qrcode"></a-icon> AmneziaWG Config
                           </a-menu-item>
-                          <a-menu-item v-if="row.protocol === Protocols.SSH" @click="showSshConfig(row)">
+                          <a-menu-item v-if="!row.isGroup && row.protocol === Protocols.SSH" @click="showSshConfig(row)">
                             <a-icon type="qrcode"></a-icon> SSH Config
                           </a-menu-item>
-                          <a-menu-item v-if="subEnabled && row.subId" @click="showQrcode(row)">
+                          <a-menu-item v-if="!row.isGroup && subEnabled && row.subId" @click="showQrcode(row)">
                             <a-icon type="link"></a-icon> {{ i18n "pages.settings.subSettings" }}
                           </a-menu-item>
-                          <a-menu-item v-if="groupsUsable" @click="openAssignGroup(row)">
+                          <a-menu-item v-if="groupsUsable && !row.isGroup" @click="openAssignGroup(row)">
                             <a-icon type="usergroup-add"></a-icon> {{ i18n "pages.clients.assignGroup" }}
                           </a-menu-item>
                           <a-menu-item @click="resetClientTraffic(row)">
                             <a-icon type="retweet"></a-icon> {{ i18n "pages.inbounds.resetTraffic" }}
                           </a-menu-item>
-                          <a-menu-item @click="toggleFreeze(row)">
+                          <a-menu-item v-if="!row.isGroup" @click="toggleFreeze(row)">
                             <a-icon type="pause-circle"></a-icon>
                             [[ row.frozen ? '{{ i18n "pages.client.unfreeze" }}' : '{{ i18n "pages.client.freeze" }}' ]]
                           </a-menu-item>
-                          <a-menu-item @click="exportTxt([{ inboundId: row.inboundId, email: row.email }], row.email)">
+                          <a-menu-item @click="exportTxt(accountsOf(row).map(a => ({ inboundId: a.inboundId, email: a.email })), row.email)">
                             <a-icon type="file-text"></a-icon> {{ i18n "pages.inbounds.exportTxt" }}
                           </a-menu-item>
-                          <a-menu-item @click="exportPdf([{ inboundId: row.inboundId, email: row.email }], row.email)">
+                          <a-menu-item @click="exportPdf(accountsOf(row).map(a => ({ inboundId: a.inboundId, email: a.email })), row.email)">
                             <a-icon type="file-pdf"></a-icon> {{ i18n "pages.inbounds.exportPdf" }}
                           </a-menu-item>
                           <a-menu-item @click="delClient(row)">
@@ -443,11 +457,23 @@
                         [[ SizeFormatter.sizeFormat(m.ownUsed) ]]
                       </div>
                     </div>
-                    <a-tooltip>
-                      <template slot="title">{{ i18n "pages.clients.removeFromGroup" }}</template>
-                      <a-icon type="disconnect" class="delete-icon"
-                        @click="setMembership(0, [m.email])"></a-icon>
-                    </a-tooltip>
+                    <a-space :size="8">
+                      <!-- One switch per account, which for a combined customer means
+                           one per protocol: turn their OpenVPN off for a week without
+                           touching the VLESS they are actually using. Separate from the
+                           customer's own switch above, which turns the WHOLE allowance
+                           off — these decide which protocols that allowance reaches. -->
+                      <a-tooltip>
+                        <template slot="title">[[ m.protocol ]]</template>
+                        <a-switch size="small" :checked="m.clientEnable"
+                          @change="state => switchEnableClient(m, state)"></a-switch>
+                      </a-tooltip>
+                      <a-tooltip>
+                        <template slot="title">{{ i18n "pages.clients.removeFromGroup" }}</template>
+                        <a-icon type="disconnect" class="delete-icon"
+                          @click="setMembership(0, [m.email])"></a-icon>
+                      </a-tooltip>
+                    </a-space>
                   </div>
                   <div v-if="!groupMembers.length" class="bo-muted"
                     :style="{ textAlign: 'center', padding: '18px' }">
@@ -705,7 +731,7 @@
       groupMembers() {
         const id = this.groupEdit.id;
         if (!id || id < 0) return [];
-        return this.rows.filter(r => r.group && r.group.id === id);
+        return this.accountRows.filter(r => r.group && r.group.id === id);
       },
       // Everything not already in THIS customer, narrowed by what was typed. Accounts
       // belonging to another customer are offered too — moving one is a legitimate
@@ -713,7 +739,7 @@
       addableRows() {
         const id = this.groupEdit.id;
         const q = (this.groupsManager.memberSearch || '').toLowerCase();
-        return this.rows
+        return this.accountRows
           .filter(r => !(r.group && r.group.id === id))
           .filter(r => !q || r.email.toLowerCase().includes(q)
             || r.protocol.toLowerCase().includes(q))
@@ -753,8 +779,10 @@
       // One flat row per account, across every inbound. Built once per load rather
       // than resolved per cell: the table sorts and filters over these, and a cell
       // that recomputed a group lookup would do it on every keystroke of the search.
-      rows() {
-        const out = [];
+      // Every ACCOUNT on the server, flat. The customer editor works in these:
+      // its member list and its add-account picker are about logins, not customers.
+      accountRows() {
+        let out = [];
         for (const dbInbound of this.dbInbounds) {
           let clients = [];
           try {
@@ -821,12 +849,69 @@
         // accounts must stay adjacent, so the whole block sorts by the newest account in
         // it. Otherwise a customer's OpenVPN and VLESS rows, created a second apart,
         // could be split by another customer created between them.
+        return out;
+      },
+      // The table's rows: the same accounts, with each customer folded to one line.
+      rows() {
+        let out = this.accountRows.slice();
+        // ONE LINE PER CUSTOMER.
+        //
+        // A combined customer used to occupy a row per protocol, which is the table
+        // saying "here are three accounts" when the operator is looking for one person.
+        // Their accounts share a quota, an expiry and a switch, so all the columns that
+        // matter hold the same value three times over; only the protocol and the inbound
+        // differ, and those fit in a row as tags.
+        //
+        // The member rows are kept on the folded row rather than thrown away: every
+        // action a row offers — credentials, delete, reset, select — needs them, and
+        // acting on a customer means acting on all of them.
+        const folded = [];
+        const byGroup = new Map();
+        for (const r of out) {
+          if (!r.group) { folded.push(r); continue; }
+          let g = byGroup.get(r.group.id);
+          if (!g) {
+            g = {
+              key: 'g' + r.group.id,
+              isGroup: true,
+              group: r.group,
+              email: r.group.name,
+              comment: r.group.comment || '',
+              members: [],
+              // The group's own figures, which every member row already mirrors.
+              up: r.up, down: r.down, total: r.total, used: r.used,
+              percent: r.percent, expiryTime: r.expiryTime,
+              // enable is the GROUP's switch, not any member's: it is what the
+              // customers dialog edits and what enforceGroups acts on.
+              enable: r.group.enable !== false,
+              clientEnable: r.group.enable !== false,
+              depleted: r.depleted,
+              online: false, frozen: false, ownUsed: 0, createdAt: 0,
+            };
+            byGroup.set(r.group.id, g);
+            folded.push(g);
+          }
+          g.members.push(r);
+          g.ownUsed += r.ownUsed;
+          // A customer is online if any of their devices is, and as new as their
+          // newest account — which is what puts a just-created customer at the top.
+          g.online = g.online || r.online;
+          g.createdAt = Math.max(g.createdAt, r.createdAt);
+        }
+        for (const g of folded) {
+          if (!g.isGroup) continue;
+          g.protocols = [...new Set(g.members.map(m => m.protocol))];
+          g.inbounds = [...new Set(g.members.map(m => m.inboundRemark || ('#' + m.inboundId)))];
+        }
+        out = folded;
+
         const blockKey = (r) => (r.group ? 'g' + r.group.id : 'e' + r.email);
         const newestOf = new Map();
         for (const r of out) {
           const k = blockKey(r);
           newestOf.set(k, Math.max(newestOf.get(k) || 0, r.createdAt));
         }
+
         out.sort((a, b) => {
           const ka = blockKey(a), kb = blockKey(b);
           if (ka !== kb) {
@@ -1074,9 +1159,16 @@
       showAwgConfig(row) { awgConfigModal.show(row.inboundId, this.clientOf(row)); },
       showSshConfig(row) { sshConfigModal.show(row.inboundId, this.clientOf(row)); },
       rowCredentials(row) {
-        const r = this.resolveRow(row);
-        if (!r) return;
-        this.showClientCredentials(r.dbInbound, r.client);
+        const pairs = [];
+        for (const a of this.accountsOf(row)) {
+          const r = this.resolveRow(a);
+          if (r) pairs.push({ dbInbound: r.dbInbound, client: r.client });
+        }
+        if (!pairs.length) return;
+        credentialsModal.show({
+          headline: '{{ i18n "pages.credentials.headlineExisting" }}',
+          pairs,
+        });
       },
       showClientCredentials(dbInbound, client) {
         credentialsModal.show({
@@ -1137,6 +1229,13 @@
         if (ok) this.showNewCredentials(created);
       },
       openEditClient(row) {
+        // A customer's row has no single account to edit: what an operator means by
+        // editing one is the allowance and who is on it, which is the customers dialog.
+        if (row.isGroup) {
+          this.groupsManager.visible = true;
+          this.openEditGroup(row.group);
+          return;
+        }
         const r = this.resolveRow(row);
         if (!r) return;
         clientModal.show({
@@ -1160,6 +1259,18 @@
         await this.submit(`/panel/api/inbounds/updateClient/${clientId}`, data, clientModal);
       },
       async switchEnableClient(row, state) {
+        // A customer's switch is the GROUP's, not a member's. Flipping the members
+        // instead would be undone on the next traffic tick, when enforceGroups mirrors
+        // the group's enable back over them — the switch would appear to work and
+        // silently revert, which is what it did for bulk operations before 2.17.0.
+        if (row.isGroup) {
+          const g = row.group;
+          await this.submit('/panel/api/inbounds/clientGroups/update/' + g.id, {
+            name: g.name, total: g.total, expiryTime: g.expiryTime,
+            reset: g.reset || 0, enable: !!state, comment: g.comment || '',
+          });
+          return;
+        }
         const r = this.resolveRow(row);
         if (!r) return;
         this.spinning = true;
@@ -1172,28 +1283,43 @@
         }
       },
       resetClientTraffic(row) {
+        const accounts = this.accountsOf(row);
         this.$confirm({
           title: '{{ i18n "pages.inbounds.resetTraffic"}}' + ' ' + row.email,
           content: '{{ i18n "pages.inbounds.resetTrafficContent"}}',
           class: themeSwitcher.currentTheme,
           okText: '{{ i18n "reset"}}',
           cancelText: '{{ i18n "cancel"}}',
-          onOk: () => this.submit('/panel/api/inbounds/' + row.inboundId +
-            '/resetClientTraffic/' + row.email),
+          // Every account, because a customer's usage is the SUM of their rows: zeroing
+          // one of three would leave the shared figure reading two thirds of what it did.
+          onOk: async () => {
+            for (const a of accounts) {
+              await this.submit('/panel/api/inbounds/' + a.inboundId +
+                '/resetClientTraffic/' + a.email);
+            }
+          },
         });
       },
       delClient(row) {
-        const r = this.resolveRow(row);
-        if (!r) return;
+        const accounts = this.accountsOf(row)
+          .map(a => ({ row: a, r: this.resolveRow(a) }))
+          .filter(x => x.r);
+        if (!accounts.length) return;
         this.$confirm({
           title: '{{ i18n "pages.inbounds.deleteClient"}}' + ' ' + row.email,
-          content: '{{ i18n "pages.inbounds.deleteClientContent"}}',
+          // A customer's row deletes every account behind it, so the confirmation
+          // names them: "delete ali" removing three logins should not be a surprise.
+          content: row.isGroup
+            ? accounts.map(x => x.row.email).join(', ')
+            : '{{ i18n "pages.inbounds.deleteClientContent"}}',
           class: themeSwitcher.currentTheme,
           okText: '{{ i18n "delete"}}',
           cancelText: '{{ i18n "cancel"}}',
           onOk: async () => {
-            const clientId = this.getClientId(r.dbInbound.protocol, r.client);
-            await this.submit(`/panel/api/inbounds/${row.inboundId}/delClient/${clientId}`);
+            for (const x of accounts) {
+              const clientId = this.getClientId(x.r.dbInbound.protocol, x.r.client);
+              await this.submit(`/panel/api/inbounds/${x.row.inboundId}/delClient/${clientId}`);
+            }
           },
         });
       },
@@ -1222,11 +1348,21 @@
       },
 
       // --- selection ----------------------------------------------------
+      // The accounts a row stands for: itself, or every account of the customer it
+      // folds. Every action below goes through this, which is what makes "delete this
+      // customer" mean their accounts and not some notional group object.
+      accountsOf(row) {
+        return row && row.isGroup ? (row.members || []) : [row];
+      },
       isSelected(row) { return !!this.selected[row.key]; },
       toggleSelect(row, on) {
         // Vue 2 cannot see a plain property added to an object, hence $set/$delete.
-        if (on) this.$set(this.selected, row.key, { inboundId: row.inboundId, email: row.email });
-        else this.$delete(this.selected, row.key);
+        if (on) {
+          this.$set(this.selected, row.key, this.accountsOf(row)
+            .map(a => ({ inboundId: a.inboundId, email: a.email })));
+        } else {
+          this.$delete(this.selected, row.key);
+        }
       },
       toggleSelectAll(on) {
         for (const row of this.filtered) this.toggleSelect(row, on);
@@ -1242,7 +1378,10 @@
         return this.rows.filter(r => this.selected[r.key]);
       },
       selectedTargets() {
-        return Object.values(this.selected).map(t => ({ inboundId: t.inboundId, email: t.email }));
+        // Each checked row contributes every account it stands for: a customer is one
+        // checkbox and several accounts, and a bulk operation acts on the accounts.
+        return Object.values(this.selected).flat()
+          .map(t => ({ inboundId: t.inboundId, email: t.email }));
       },
 
       // --- groups -------------------------------------------------------

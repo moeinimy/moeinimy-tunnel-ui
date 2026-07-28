@@ -97,6 +97,57 @@
       </div>
     </section>
 
+    <!-- The username/password VPNs, spelled out. Rendered server-side because the page
+         has no API to ask: the subId is the only credential, and everything behind it is
+         resolved once, on the request that drew the page.
+
+         Values carry v-pre so Vue leaves them alone — a password containing the page's
+         own [[ ]] delimiters would otherwise be compiled as an expression. The row is
+         the copy target, and it reads the text back out of the DOM, which is why no
+         credential is ever interpolated into a JS string. -->
+    {{ if .accounts }}
+    <section class="sub-card">
+      <h2 class="sub-h">{{ i18n "subscription.accounts" }}</h2>
+      <!-- The whole account as one message. Values come out as `backticked`
+           monospace, which Telegram renders as a TAP-TO-COPY span: the customer
+           taps their password instead of drag-selecting it on a phone. Built from
+           the rendered DOM for the same reason the per-row copy is -- no credential
+           is ever interpolated into a script. -->
+      <button class="sub-ghost" type="button" @click="copyAccounts($event)">
+        <a-icon type="copy"></a-icon>
+        <span>{{ i18n "subscription.copyAccounts" }}</span>
+      </button>
+      <div class="sub-accts">
+        {{ range .accounts }}
+        <div class="sub-acct">
+          <div class="sub-acct-head" v-pre>{{ .Label }}</div>
+          {{ range .Fields }}
+          <div class="sub-acct-row" @click="copyRow($event)">
+            <div class="sub-acct-k">
+              {{ if eq .Label "server" }}{{ i18n "pages.credentials.server" }}
+              {{ else if eq .Label "username" }}{{ i18n "username" }}
+              {{ else if eq .Label "password" }}{{ i18n "password" }}
+              {{ else if eq .Label "port" }}{{ i18n "pages.credentials.port" }}
+              {{ else if eq .Label "psk" }}{{ i18n "pages.credentials.ipsecPsk" }}
+              {{ else if eq .Label "alsoL2tp" }}{{ i18n "pages.credentials.alsoL2tp" }}
+              {{ else }}{{ .Label }}{{ end }}
+              {{ if .Note }}<span class="sub-acct-note" v-pre>{{ .Note }}</span>{{ end }}
+            </div>
+            {{ if eq .Label "alsoL2tp" }}
+            <div class="sub-acct-v is-note">{{ i18n "pages.credentials.alsoL2tpValue" }}</div>
+            {{ else }}
+            <div class="sub-acct-v{{ if .Mono }} is-mono{{ end }}" v-pre>{{ .Value }}</div>
+            <a-icon type="copy" class="sub-acct-copy"></a-icon>
+            {{ end }}
+          </div>
+          {{ end }}
+        </div>
+        {{ end }}
+      </div>
+      <p class="sub-note">{{ i18n "subscription.accountsDesc" }}</p>
+    </section>
+    {{ end }}
+
     <!-- The link itself. One primary action, because for most customers copying it
          and pasting it into their app is the whole job. -->
     <section class="sub-card">
@@ -144,48 +195,6 @@
       </div>
       <p class="sub-note">{{ i18n "subscription.addToAppDesc" }}</p>
     </section>
-
-    <!-- The username/password VPNs, spelled out. Rendered server-side because the page
-         has no API to ask: the subId is the only credential, and everything behind it is
-         resolved once, on the request that drew the page.
-
-         Values carry v-pre so Vue leaves them alone — a password containing the page's
-         own [[ ]] delimiters would otherwise be compiled as an expression. The row is
-         the copy target, and it reads the text back out of the DOM, which is why no
-         credential is ever interpolated into a JS string. -->
-    {{ if .accounts }}
-    <section class="sub-card">
-      <h2 class="sub-h">{{ i18n "subscription.accounts" }}</h2>
-      <div class="sub-accts">
-        {{ range .accounts }}
-        <div class="sub-acct">
-          <div class="sub-acct-head" v-pre>{{ .Label }}</div>
-          {{ range .Fields }}
-          <div class="sub-acct-row" @click="copyRow($event)">
-            <div class="sub-acct-k">
-              {{ if eq .Label "server" }}{{ i18n "pages.credentials.server" }}
-              {{ else if eq .Label "username" }}{{ i18n "username" }}
-              {{ else if eq .Label "password" }}{{ i18n "password" }}
-              {{ else if eq .Label "port" }}{{ i18n "pages.credentials.port" }}
-              {{ else if eq .Label "psk" }}{{ i18n "pages.credentials.ipsecPsk" }}
-              {{ else if eq .Label "alsoL2tp" }}{{ i18n "pages.credentials.alsoL2tp" }}
-              {{ else }}{{ .Label }}{{ end }}
-              {{ if .Note }}<span class="sub-acct-note" v-pre>{{ .Note }}</span>{{ end }}
-            </div>
-            {{ if eq .Label "alsoL2tp" }}
-            <div class="sub-acct-v is-note">{{ i18n "pages.credentials.alsoL2tpValue" }}</div>
-            {{ else }}
-            <div class="sub-acct-v{{ if .Mono }} is-mono{{ end }}" v-pre>{{ .Value }}</div>
-            <a-icon type="copy" class="sub-acct-copy"></a-icon>
-            {{ end }}
-          </div>
-          {{ end }}
-        </div>
-        {{ end }}
-      </div>
-      <p class="sub-note">{{ i18n "subscription.accountsDesc" }}</p>
-    </section>
-    {{ end }}
 
     <!-- Folded away by default: a customer following the buttons above never needs a
          raw link, and a wall of them is what made the old page hard to read. -->

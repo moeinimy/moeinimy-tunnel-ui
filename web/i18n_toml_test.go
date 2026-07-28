@@ -201,6 +201,7 @@ var knownMissing = keySet(
 	"pages.credentials.subscriptionJson", "pages.credentials.show",
 	"pages.credentials.headlineMany", "pages.credentials.headlineExisting",
 	"pages.credentials.configFile", "pages.credentials.configFileHint",
+	"pages.credentials.copyTelegram",
 
 	// The rebuilt subscriber-facing page.
 	"subscription.expired", "subscription.depleted", "subscription.daysLeft",
@@ -208,6 +209,7 @@ var knownMissing = keySet(
 	"subscription.showQr", "subscription.hideQr", "subscription.scanQr",
 	"subscription.addToApp", "subscription.addToAppDesc",
 	"subscription.accounts", "subscription.accountsDesc",
+	"subscription.copyAccounts",
 )
 
 // flattenKeys collapses nested TOML tables into dotted keys (e.g. "pages.core.title").

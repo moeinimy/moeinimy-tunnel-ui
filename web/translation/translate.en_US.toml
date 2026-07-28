@@ -101,6 +101,7 @@
 "scanQr" = "Scan this with your app"
 "accounts" = "Your accounts"
 "accountsDesc" = "Type these into the app's server settings. Tap any line to copy it."
+"copyAccounts" = "Copy all account details"
 "addToApp" = "Add to your app"
 "addToAppDesc" = "Pick your app and it opens with the subscription already filled in. Apps without a shortcut copy the link instead — paste it into the app's \"add subscription\" box."
 
@@ -532,6 +533,7 @@
 "title" = "Connection Details"
 "headline" = "Everything the customer needs. Send it as one message with Copy All."
 "copyAll" = "Copy All"
+"copyTelegram" = "Copy for Telegram"
 "server" = "Server"
 "port" = "Port"
 "alsoL2tp" = "Also works over"

@@ -281,6 +281,50 @@
         const v = e.currentTarget.querySelector('.sub-acct-v:not(.is-note)');
         if (v) copy(v.textContent.trim());
       },
+      // Every account on the page as one pasteable message.
+      //
+      // Values are wrapped in backticks because Telegram renders a backticked span as
+      // monospace, and a monospace span there is TAP-TO-COPY — which is the difference
+      // between a customer tapping their password and drag-selecting it on a phone.
+      // Labels stay plain: tapping one should not copy the word "Password".
+      //
+      // Read out of the rendered DOM, like copyRow, so no credential is ever
+      // interpolated into a script.
+      copyAccounts(e) {
+        const card = e.currentTarget.closest('.sub-card');
+        if (!card) return;
+        const out = [];
+        card.querySelectorAll('.sub-acct').forEach((acct) => {
+          const head = acct.querySelector('.sub-acct-head');
+          out.push('== ' + (head ? head.textContent.trim() : '') + ' ==');
+          acct.querySelectorAll('.sub-acct-row').forEach((row) => {
+            const k = row.querySelector('.sub-acct-k');
+            const v = row.querySelector('.sub-acct-v');
+            if (!k || !v) return;
+            // The endpoint note lives INSIDE the label cell, so reading the cell whole
+            // runs the two together as "Servergermany". Split on a CLONE rather than
+            // by editing the live node: this runs inside a Vue-rendered tree, and a
+            // copy button has no business mutating what it is copying.
+            const k2 = k.cloneNode(true);
+            const noteEl = k2.querySelector('.sub-acct-note');
+            const note = noteEl ? noteEl.textContent.trim() : '';
+            if (noteEl) noteEl.remove();
+            const label = k2.textContent.replace(/\s+/g, ' ').trim()
+              + (note ? ' (' + note + ')' : '');
+            const value = v.textContent.trim();
+            // Not everything here is a thing to copy. The "also works over L2TP" line
+            // is a sentence, and "1194/UDP · 1195/TCP" is two ports and a bit of prose;
+            // making either tap-to-copy hands the customer a string to edit.
+            const plain = v.classList.contains('is-note') || value.includes('·');
+            // A backtick inside a value would close the span early and leak the rest
+            // as plain text; generated credentials cannot contain one, an operator-set
+            // password can.
+            out.push(label + ': ' + (plain ? value : '`' + value.replace(/`/g, "'") + '`'));
+          });
+          out.push('');
+        });
+        copy(out.join('\n').trim());
+      },
       selectFeed(key) {
         this.feed = key;
         if (this.qrOpen) this.$nextTick(() => drawQR('sub-qr-canvas', this.currentUrl));

@@ -81,10 +81,9 @@
 
         <a-divider>{{ i18n "pages.combined.credentials" }}</a-divider>
 
-        <!-- Username and password serve OpenVPN and L2TP together: username
-             uniqueness is per protocol, so one pair works for both and the
-             customer has one thing to remember. VLESS is not offered them
-             because it authenticates by UUID. -->
+        <!-- The username-and-password half of the account. VLESS is not offered
+             these because it authenticates by UUID, which is exactly why the
+             protocols cannot share one account and share an entitlement instead. -->
         <template v-if="combinedModal.needsUserPass">
             <a-form-item>
                 <template slot="label">
@@ -346,16 +345,22 @@
     // cannot all be called "ali". The suffix is what keeps them one readable family
     // in the client list rather than three unrelated random names, and the form
     // shows each derived email before anything is created.
+    // L2TP is deliberately NOT here. The group service itself is protocol-agnostic —
+    // it takes inbound ids and knows nothing about which — so this list is the only
+    // thing that decides what the form offers, and an operator who wants an L2TP
+    // account on a customer can still add it and put it in the group through the
+    // /clientGroups API. Removing it here does not touch any account that already
+    // exists.
     const COMBINED_PROTOCOLS = [
         { protocol: Protocols.OPENVPN, label: "OpenVPN", suffix: "ovpn" },
-        { protocol: Protocols.L2TP, label: "L2TP", suffix: "l2tp" },
         { protocol: Protocols.VLESS, label: "VLESS", suffix: "vless" },
     ];
 
-    // Protocols whose accounts log in with a username and a password. Username
-    // uniqueness is checked PER PROTOCOL by the backend, so OpenVPN and L2TP can
-    // share one pair — which is the whole point: the customer remembers one login.
-    const COMBINED_USERPASS = [Protocols.OPENVPN, Protocols.L2TP];
+    // Protocols whose accounts log in with a username and a password, as opposed to
+    // VLESS's UUID. A list rather than a bare comparison because username uniqueness
+    // is checked PER PROTOCOL by the backend, so several of these could share one
+    // pair if the form ever offers more than one again.
+    const COMBINED_USERPASS = [Protocols.OPENVPN];
 
     const combinedModal = {
         visible: false,
@@ -380,8 +385,7 @@
         // Device limits are per protocol: they count different things (OpenVPN's
         // User Limit counts sessions, an IP Limit counts addresses) and are enforced
         // by different machinery, so one figure for the customer would mean something
-        // different on every row. L2TP gets none — there is no field for it, so its
-        // account is created unlimited.
+        // different on every row.
         userLimit: 0,
         limitIpVless: 0,
         reset: 0,
@@ -477,22 +481,17 @@
         // what keeps there being one definition of each of them.
         buildClient(slot) {
             let client;
-            // limitIp is set inside each case, not shared below, because it is a
-            // per-protocol figure here — and left at the model's own 0 (unlimited)
-            // for L2TP, which the form offers no field for.
+            // limitIp is set inside each case rather than shared below: it is a
+            // per-protocol figure, and a protocol whose case does not set it keeps
+            // the model's own 0, which means unlimited.
             switch (slot.protocol) {
                 case Protocols.OPENVPN:
                     client = new Inbound.OpenvpnSettings.OpenvpnUser();
                     client.id = this.username;
                     client.password = this.password;
-                    // OpenVPN only: the other two have no notion of it, and a stray
-                    // userLimit key on their client JSON would just be dead weight.
+                    // OpenVPN only: VLESS has no notion of it, and a stray userLimit
+                    // key on its client JSON would just be dead weight.
                     client.userLimit = this.userLimit;
-                    break;
-                case Protocols.L2TP:
-                    client = new Inbound.L2tpSettings.L2tpUser();
-                    client.id = this.username;
-                    client.password = this.password;
                     break;
                 case Protocols.VLESS:
                     client = new Inbound.VLESSSettings.VLESS();

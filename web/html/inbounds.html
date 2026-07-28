@@ -2198,8 +2198,10 @@
       // per protocol with the ordinary per-protocol constructors; this only posts
       // them, so the accounts are byte-identical to hand-made ones.
       openCombinedAccount() {
+        // Mirrors COMBINED_PROTOCOLS in the modal: this only decides whether opening
+        // the form is worth it at all, so the two lists must name the same protocols.
         const usable = this.dbInbounds.filter(row =>
-          [Protocols.OPENVPN, Protocols.L2TP, Protocols.VLESS].includes(row.protocol));
+          [Protocols.OPENVPN, Protocols.VLESS].includes(row.protocol));
         if (usable.length === 0) {
           this.$message.warning('{{ i18n "pages.combined.noInbounds" }}');
           return;

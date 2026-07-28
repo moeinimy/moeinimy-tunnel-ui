@@ -2132,6 +2132,68 @@ li.ant-calendar-time-picker-select-option-selected {
   align-items:center;
 }
 
+/* Customer blocks on the Clients page.
+   One combined account is several rows, and rows are the unit a table draws borders
+   between — so left alone, one person reads as three strangers who happen to be
+   adjacent. A tinted band with a single unbroken accent bar down its side joins them
+   back into one object, and the internal row borders are dropped so the block has no
+   seams. The colour only has to separate NEIGHBOURING blocks, so it is the group id
+   modulo a five-hue palette rather than a hue per group, which a class can carry. */
+.clients-page .ant-table-tbody > tr.bo-cg > td {
+  background:var(--cg-tint);
+  transition:background .2s;
+}
+
+.clients-page .ant-table-tbody > tr.bo-cg:hover > td {
+  background:var(--cg-tint-hover);
+}
+
+.clients-page .ant-table-tbody > tr.bo-cg > td:first-child {
+  position:relative;
+}
+
+.clients-page .ant-table-tbody > tr.bo-cg > td:first-child::before {
+  content:'';
+  position:absolute;
+  inset-inline-start:0;
+  top:0;
+  bottom:0;
+  width:3px;
+  background:var(--cg-accent);
+}
+
+/* The bar is inset at the ends of a block and runs edge to edge through the middle,
+   which is what makes a run of rows read as one bar rather than three. */
+.clients-page .ant-table-tbody > tr.bo-cg-first > td:first-child::before {
+  top:6px;
+  border-start-start-radius:3px;
+  border-start-end-radius:3px;
+}
+
+.clients-page .ant-table-tbody > tr.bo-cg-last > td:first-child::before {
+  bottom:6px;
+  border-end-start-radius:3px;
+  border-end-end-radius:3px;
+}
+
+.clients-page .ant-table-tbody > tr.bo-cg-only > td:first-child::before {
+  top:6px;
+  bottom:6px;
+  border-radius:3px;
+}
+
+/* No seam between rows of the same block. */
+.clients-page .ant-table-tbody > tr.bo-cg-first > td,
+.clients-page .ant-table-tbody > tr.bo-cg-mid > td {
+  border-bottom-color:transparent;
+}
+
+.clients-page .bo-cg-0 { --cg-accent:#7c5cff; --cg-tint:rgba(124,92,255,.07); --cg-tint-hover:rgba(124,92,255,.13); }
+.clients-page .bo-cg-1 { --cg-accent:#00a3a3; --cg-tint:rgba(0,163,163,.07);  --cg-tint-hover:rgba(0,163,163,.13); }
+.clients-page .bo-cg-2 { --cg-accent:#e07b39; --cg-tint:rgba(224,123,57,.07); --cg-tint-hover:rgba(224,123,57,.13); }
+.clients-page .bo-cg-3 { --cg-accent:#3f8ae0; --cg-tint:rgba(63,138,224,.07);  --cg-tint-hover:rgba(63,138,224,.13); }
+.clients-page .bo-cg-4 { --cg-accent:#c2478f; --cg-tint:rgba(194,71,143,.07);  --cg-tint-hover:rgba(194,71,143,.13); }
+
 .inbounds-page .ant-table-expanded-row .ant-table .ant-table-body {
   overflow-x:hidden;
 }

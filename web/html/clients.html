@@ -68,7 +68,8 @@
               <a-card hoverable :body-style="{ padding: isMobile ? '8px' : '16px' }">
                 <a-table :columns="columns" :data-source="filtered" :row-key="r => r.key"
                   :pagination="{ pageSize: 25, showSizeChanger: true, pageSizeOptions: ['25','50','100','200'] }"
-                  :scroll="{ x: true }" size="middle">
+                  :scroll="{ x: true }" size="middle"
+                  :row-class-name="rowClass" @change="onTableChange">
 
                   <template slot="client" slot-scope="text, row">
                     <a-space direction="horizontal" :size="2">
@@ -204,6 +205,9 @@
       search: '',
       protocolFilter: '',
       stateFilter: '',
+      // True once a column sorter is active, i.e. the rows are no longer in customer
+      // order and a customer's accounts may not be adjacent any more.
+      sorterActive: false,
       now: Date.now(),
       columns: [
         { title: '{{ i18n "pages.clients.colClient" }}', scopedSlots: { customRender: 'client' },
@@ -267,11 +271,25 @@
             });
           }
         }
+        // Ordered by CUSTOMER, so a combined account's protocols land next to each
+        // other instead of wherever their inbounds happen to fall. An ungrouped
+        // account is its own customer and sorts by its own name, so the two kinds
+        // interleave alphabetically rather than the groups being exiled to one end.
+        out.sort((a, b) => {
+          const ka = a.group ? a.group.name : a.email;
+          const kb = b.group ? b.group.name : b.email;
+          const byCustomer = ka.toLowerCase().localeCompare(kb.toLowerCase());
+          if (byCustomer !== 0) return byCustomer;
+          // Same name from two different customers must not interleave.
+          const ga = a.group ? a.group.id : 0, gb = b.group ? b.group.id : 0;
+          if (ga !== gb) return ga - gb;
+          return a.protocol.localeCompare(b.protocol) || a.email.localeCompare(b.email);
+        });
         return out;
       },
       filtered() {
         const q = this.search.toLowerCase();
-        return this.rows.filter(r => {
+        const rows = this.rows.filter(r => {
           if (this.protocolFilter && r.protocol !== this.protocolFilter) return false;
           switch (this.stateFilter) {
             case 'grouped': if (!r.group) return false; break;
@@ -288,6 +306,18 @@
             || (r.comment || '').toLowerCase().includes(q)
             || r.protocol.toLowerCase().includes(q);
         });
+        // Where each row sits in its customer's block, so the accent bar can be drawn
+        // as one continuous run rather than a mark per row. Computed AFTER filtering:
+        // hiding the middle of a block makes what is left the whole of it, and a bar
+        // that still opened on a row that is no longer first would float.
+        for (let i = 0; i < rows.length; i++) {
+          if (!rows[i].group) { rows[i].blockPos = ''; continue; }
+          const sameAs = (j) => j >= 0 && j < rows.length && rows[j].group
+            && rows[j].group.id === rows[i].group.id;
+          const first = !sameAs(i - 1), last = !sameAs(i + 1);
+          rows[i].blockPos = first && last ? 'only' : first ? 'first' : last ? 'last' : 'mid';
+        }
+        return rows;
       },
       protocols() {
         return [...new Set(this.rows.map(r => r.protocol))].sort();
@@ -306,6 +336,25 @@
       depletedCount() { return this.rows.filter(r => r.depleted).length; },
     },
     methods: {
+      // Ties a customer's accounts together visually: a tinted band with one
+      // continuous accent bar down its side, so three rows read as one person
+      // rather than three strangers who happen to be adjacent.
+      //
+      // The colour is the group id modulo a small palette, not a per-group hue,
+      // because it only has to separate NEIGHBOURING blocks — and a class can carry
+      // it, where an arbitrary hue would need an inline style per row.
+      rowClass(row) {
+        if (!row || !row.group) return '';
+        const parts = ['bo-cg', 'bo-cg-' + (row.group.id % 5)];
+        // The block shape is only drawn while the rows really are adjacent. A column
+        // sorter reorders them, and corners left rounded in the wrong places read as
+        // a rendering fault; the band and bar stay, so the customer is still legible.
+        if (!this.sorterActive && row.blockPos) parts.push('bo-cg-' + row.blockPos);
+        return parts.join(' ');
+      },
+      onTableChange(pagination, filters, sorter) {
+        this.sorterActive = !!(sorter && sorter.order);
+      },
       async load(showSpinner = false) {
         if (showSpinner) this.spinning = true;
         const msg = await HttpUtil.get('/panel/api/inbounds/list');

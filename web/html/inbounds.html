@@ -2211,22 +2211,54 @@
           title: '{{ i18n "pages.combined.title"}}',
           okText: '{{ i18n "pages.combined.submit"}}',
           dbInbounds: this.dbInbounds,
-          confirm: async (payload) => {
-            await this.addCombinedAccount(payload, combinedModal);
+          confirm: async (payloads) => {
+            await this.addCombinedAccount(payloads, combinedModal);
           },
         });
       },
-      async addCombinedAccount(payload, modal) {
-        // A JSON string in a "data" field, not a JSON body: the panel's axios
-        // form-urlencodes every request (assets/js/axios-init.js), so a nested
-        // payload has no other way through. Same convention as the tunnel page.
-        const created = (payload.members || []).map(m => ({
-          inboundId: m.inboundId,
-          email: this.emailFromSettings(m.settings),
-        }));
-        const ok = await this.submit('/panel/api/inbounds/combinedAccount/add',
-          { data: JSON.stringify(payload) }, modal);
-        if (ok) this.showNewCredentials(created);
+      // Creates one customer, or two hundred. The modal always hands over a list, so
+      // there is a single path here rather than one that works and one that is only
+      // exercised when someone types a number into a field.
+      //
+      // Posted one at a time on purpose: /combinedAccount/add is transactional per
+      // customer, so a name that collides with an existing account fails that customer
+      // alone and the rest still land. The list is re-read ONCE at the end instead of
+      // after each, which is what keeps a run of fifty from being fifty full reloads.
+      async addCombinedAccount(payloads, modal) {
+        const list = Array.isArray(payloads) ? payloads : [payloads];
+        const created = [];
+        let failed = 0;
+        if (modal && typeof modal.loading === 'function') modal.loading(true);
+        try {
+          for (const payload of list) {
+            // A JSON string in a "data" field, not a JSON body: the panel's axios
+            // form-urlencodes every request (assets/js/axios-init.js), so a nested
+            // payload has no other way through.
+            const msg = await HttpUtil.post('/panel/api/inbounds/combinedAccount/add',
+              { data: JSON.stringify(payload) });
+            if (!msg.success) { failed++; continue; }
+            for (const m of (payload.members || [])) {
+              created.push({ inboundId: m.inboundId, email: this.emailFromSettings(m.settings) });
+            }
+          }
+        } finally {
+          if (modal && typeof modal.loading === 'function') modal.loading(false);
+        }
+        if (created.length) {
+          if (modal && typeof modal.close === 'function') modal.close();
+          await this.__combinedReload();
+          this.showNewCredentials(created);
+        }
+        // Reported rather than swallowed: a partial run is the case where the operator
+        // most needs to know which half of what they asked for actually exists.
+        if (failed) {
+          this.$message.error(failed + ' / ' + list.length + ' ' +
+            '{{ i18n "pages.inbounds.toasts.create" }}');
+        }
+      },
+      async __combinedReload() {
+        await this.getDBInbounds();
+        await this.refreshResellerBalance();
       },
       async addClient(clients, dbInboundId, modal) {
         const data = {

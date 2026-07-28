@@ -37,6 +37,33 @@
             <a-input v-model.trim="combinedModal.name"></a-input>
         </a-form-item>
 
+        <!-- Selling the same package to several customers at once. Only the identity
+             is repeated per customer (name, credentials, subscription id); the
+             allowance below is the offer, and it is the same offer N times, which is
+             the only reason to do this in one pass. -->
+        <a-form-item>
+            <template slot="label">
+                <a-tooltip>
+                    <template slot="title">
+                        <span>{{ i18n "pages.combined.countDesc" }}</span>
+                    </template>
+                    {{ i18n "pages.combined.count" }}
+                    <a-icon type="question-circle"></a-icon>
+                </a-tooltip>
+            </template>
+            <a-input-number
+                v-model.number="combinedModal.count"
+                :min="1"
+                :max="200"
+            ></a-input-number>
+            <span
+                v-if="combinedModal.count > 1"
+                :style="{ marginInlineStart: '10px', opacity: 0.65 }"
+                >[[ combinedModal.name ]]-1 … [[ combinedModal.name ]]-[[
+                combinedModal.count ]]</span
+            >
+        </a-form-item>
+
         <a-divider>{{ i18n "pages.combined.accounts" }}</a-divider>
 
         <!-- One row per protocol. Each is independent: a customer who only wants
@@ -93,7 +120,7 @@
                         </template>
                         {{ i18n "username" }}
                         <a-icon
-                            @click="combinedModal.username = RandomUtil.randomLowerAndNum(8)"
+                            @click="combinedModal.username = RandomUtil.randomVpnUser()"
                             type="sync"
                         ></a-icon>
                     </a-tooltip>
@@ -108,7 +135,7 @@
                         </template>
                         {{ i18n "password" }}
                         <a-icon
-                            @click="combinedModal.password = RandomUtil.randomSeq(10)"
+                            @click="combinedModal.password = RandomUtil.randomVpnPassword()"
                             type="sync"
                         ></a-icon>
                     </a-tooltip>
@@ -371,6 +398,9 @@
         dbInbounds: [],
         slots: [],
         name: "",
+        // How many customers to create from this one form. 1 is the ordinary case and
+        // behaves exactly as before, down to the name not being numbered.
+        count: 1,
         username: "",
         password: "",
         uuid: "",
@@ -409,6 +439,7 @@
             // benefit and most of them never get a considered one, so the form opens
             // submittable and the name is there to be overwritten when it matters.
             this.name = RandomUtil.randomCustomerName();
+            this.count = 1;
             this.username = RandomUtil.randomVpnUser();
             this.password = RandomUtil.randomVpnPassword();
             this.uuid = RandomUtil.randomUUID();
@@ -444,9 +475,30 @@
             return this.dbInbounds.filter((row) => row.protocol === protocol);
         },
 
-        emailFor(slot) {
-            const name = (this.name || "").trim();
-            return name ? name + "-" + slot.suffix : "";
+        emailFor(slot, name) {
+            const base = ((name === undefined ? this.name : name) || "").trim();
+            return base ? base + "-" + slot.suffix : "";
+        },
+
+        // The per-customer half of the form: everything that must be DIFFERENT for each
+        // customer when several are created at once. The allowance, the limits and the
+        // comment are deliberately not here — those are the same offer being sold N
+        // times, which is the only reason to create N of them in one go.
+        //
+        // Numbering starts at 1 and is only applied when there is more than one, so a
+        // single customer keeps exactly the name that was typed.
+        identityFor(index, count) {
+            const base = (this.name || "").trim();
+            return {
+                name: count > 1 ? base + "-" + (index + 1) : base,
+                // Regenerated per customer rather than reused: these are credentials,
+                // and N customers sharing one password is not a bulk create, it is one
+                // account handed out N times.
+                username: index === 0 ? this.username : RandomUtil.randomVpnUser(),
+                password: index === 0 ? this.password : RandomUtil.randomVpnPassword(),
+                uuid: index === 0 ? this.uuid : RandomUtil.randomUUID(),
+                subId: index === 0 ? this.subId : RandomUtil.randomLowerAndNum(16),
+            };
         },
 
         activeSlots() {
@@ -482,7 +534,8 @@
         // One account, built by the SAME constructor the ordinary Add Client form
         // uses. Building the per-protocol shapes here rather than server-side is
         // what keeps there being one definition of each of them.
-        buildClient(slot) {
+        buildClient(slot, ident) {
+            const id = ident || this.identityFor(0, 1);
             let client;
             // limitIp is set inside each case rather than shared below: it is a
             // per-protocol figure, and a protocol whose case does not set it keeps
@@ -490,22 +543,22 @@
             switch (slot.protocol) {
                 case Protocols.OPENVPN:
                     client = new Inbound.OpenvpnSettings.OpenvpnUser();
-                    client.id = this.username;
-                    client.password = this.password;
+                    client.id = id.username;
+                    client.password = id.password;
                     // OpenVPN only: VLESS has no notion of it, and a stray userLimit
                     // key on its client JSON would just be dead weight.
                     client.userLimit = this.userLimit;
                     break;
                 case Protocols.VLESS:
                     client = new Inbound.VLESSSettings.VLESS();
-                    client.id = this.uuid;
+                    client.id = id.uuid;
                     client.flow = this.flow;
                     client.limitIp = this.limitIpVless;
                     break;
                 default:
                     return null;
             }
-            client.email = this.emailFor(slot);
+            client.email = this.emailFor(slot, id.name);
             // Seeded with the GROUP's figures rather than left at zero. The traffic
             // job mirrors the group onto its members every tick anyway, but not
             // before the first one: an account created at totalGB 0 would be
@@ -516,7 +569,7 @@
             );
             client.expiryTime = this.expiryMillis();
             client.reset = this.reset;
-            client.subId = this.subId;
+            client.subId = id.subId;
             client.tgId = this.tgId;
             client.comment = this.comment;
             client.enable = this.enable;
@@ -539,33 +592,45 @@
                 return;
             }
 
-            const members = [];
-            for (const slot of active) {
-                const client = combinedModal.buildClient(slot);
-                if (!client) continue;
-                members.push({
-                    inboundId: slot.inboundId,
-                    // The exact shape /addClient takes, so the server runs the same
-                    // validation on these accounts as on a hand-made one.
-                    settings:
-                        '{"clients": [' + client.toString() + "]}",
+            // One payload per customer. The allowance is built once and shared by
+            // value across them: they are being sold the same package, and a figure
+            // recomputed per customer is a figure that can drift between them.
+            const count = Math.max(1, Math.min(200, Number(combinedModal.count) || 1));
+            const allowance = {
+                total: NumberFormatter.toFixed(
+                    combinedModal.totalGB * SizeFormatter.ONE_GB,
+                    0,
+                ),
+                expiryTime: combinedModal.expiryMillis(),
+                reset: combinedModal.reset,
+                enable: combinedModal.enable,
+                comment: combinedModal.comment,
+            };
+
+            const payloads = [];
+            for (let i = 0; i < count; i++) {
+                const ident = combinedModal.identityFor(i, count);
+                const members = [];
+                for (const slot of active) {
+                    const client = combinedModal.buildClient(slot, ident);
+                    if (!client) continue;
+                    members.push({
+                        inboundId: slot.inboundId,
+                        // The exact shape /addClient takes, so the server runs the same
+                        // validation on these accounts as on a hand-made one.
+                        settings:
+                            '{"clients": [' + client.toString() + "]}",
+                    });
+                }
+                payloads.push({
+                    group: Object.assign({ name: ident.name }, allowance),
+                    members: members,
                 });
             }
 
-            ObjectUtil.execute(combinedModal.confirm, {
-                group: {
-                    name: name,
-                    total: NumberFormatter.toFixed(
-                        combinedModal.totalGB * SizeFormatter.ONE_GB,
-                        0,
-                    ),
-                    expiryTime: combinedModal.expiryMillis(),
-                    reset: combinedModal.reset,
-                    enable: combinedModal.enable,
-                    comment: combinedModal.comment,
-                },
-                members: members,
-            });
+            // Always an array, even for one: a caller that had to handle both shapes
+            // is exactly how the single-client Add button broke.
+            ObjectUtil.execute(combinedModal.confirm, payloads);
         },
 
         close() {

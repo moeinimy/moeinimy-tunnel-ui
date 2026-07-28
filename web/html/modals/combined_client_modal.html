@@ -405,9 +405,12 @@
             this.okText = okText;
             this.confirm = confirm;
             this.dbInbounds = dbInbounds || [];
-            this.name = "";
-            this.username = RandomUtil.randomLowerAndNum(8);
-            this.password = RandomUtil.randomSeq(10);
+            // Seeded, not blank: a customer name is a label for the operator's own
+            // benefit and most of them never get a considered one, so the form opens
+            // submittable and the name is there to be overwritten when it matters.
+            this.name = RandomUtil.randomCustomerName();
+            this.username = RandomUtil.randomVpnUser();
+            this.password = RandomUtil.randomVpnPassword();
             this.uuid = RandomUtil.randomUUID();
             this.flow = "";
             this.totalGB = 0;

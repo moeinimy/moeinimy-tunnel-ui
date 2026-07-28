@@ -99,6 +99,8 @@
 "showQr" = "Show QR code"
 "hideQr" = "Hide QR code"
 "scanQr" = "Scan this with your app"
+"accounts" = "Your accounts"
+"accountsDesc" = "Type these into the app's server settings. Tap any line to copy it."
 "addToApp" = "Add to your app"
 "addToAppDesc" = "Pick your app and it opens with the subscription already filled in. Apps without a shortcut copy the link instead — paste it into the app's \"add subscription\" box."
 

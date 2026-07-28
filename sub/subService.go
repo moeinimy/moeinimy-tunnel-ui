@@ -49,19 +49,25 @@ func NewSubService(showInfo bool, remarkModel string) *SubService {
 }
 
 // GetSubs retrieves subscription links for a given subscription ID and host.
-func (s *SubService) GetSubs(subId string, host string) ([]string, int64, xray.ClientTraffic, error) {
+//
+// It returns two lists. The first is the subscription proper, handed to a client that
+// imports it. The second is what the browser view shows a person, which omits the
+// synthetic connection cards (see getLink) — those exist so an importer has an entry per
+// account, and shown to a customer they read as a broken config.
+func (s *SubService) GetSubs(subId string, host string) ([]string, []string, int64, xray.ClientTraffic, error) {
 	s.address = host
 	var result []string
+	var pageResult []string
 	var traffic xray.ClientTraffic
 	var lastOnline int64
 	var clientTraffics []xray.ClientTraffic
 	inbounds, err := s.getInboundsBySubId(subId)
 	if err != nil {
-		return nil, 0, traffic, err
+		return nil, nil, 0, traffic, err
 	}
 
 	if len(inbounds) == 0 {
-		return nil, 0, traffic, common.NewError("No inbounds found with ", subId)
+		return nil, nil, 0, traffic, common.NewError("No inbounds found with ", subId)
 	}
 
 	s.datepicker, err = s.settingService.GetDatepicker()
@@ -95,36 +101,74 @@ func (s *SubService) GetSubs(subId string, host string) ([]string, int64, xray.C
 				if ct.LastOnline > lastOnline {
 					lastOnline = ct.LastOnline
 				}
-				if link := s.getLink(inbound, client.Email); link != "" {
-					result = append(result, link)
+				raw, page := s.getLink(inbound, client.Email)
+				if raw != "" {
+					result = append(result, raw)
+				}
+				if page != "" {
+					pageResult = append(pageResult, page)
 				}
 			}
 		}
 	}
 
-	// Prepare statistics
-	for index, clientTraffic := range clientTraffics {
-		if index == 0 {
-			traffic.Up = clientTraffic.Up
-			traffic.Down = clientTraffic.Down
-			traffic.Total = clientTraffic.Total
-			if clientTraffic.ExpiryTime > 0 {
-				traffic.ExpiryTime = clientTraffic.ExpiryTime
+	return result, pageResult, lastOnline, aggregateTraffic(clientTraffics), nil
+}
+
+// aggregateTraffic rolls a subscription's accounts into the one set of figures its page
+// and its Subscription-Userinfo header report.
+//
+// USAGE is always summed: every row accumulates only its own bytes, whether or not it
+// belongs to a group, so the sum is the customer's real consumption.
+//
+// The QUOTA is not summed the same way. A ClientGroup mirrors ONE shared allowance onto
+// every member row (ClientGroupService.enforceGroups), so a combined customer whose VLESS
+// and OpenVPN accounts share a 50 GB group would be told they hold 100 GB — and their
+// client would think them half-spent when they were out. Each group therefore contributes
+// its allowance once; ungrouped accounts contribute their own, as they always did.
+func aggregateTraffic(clientTraffics []xray.ClientTraffic) xray.ClientTraffic {
+	var traffic xray.ClientTraffic
+	counted := map[int]bool{}
+	var quotas, expiries []int64
+	for _, ct := range clientTraffics {
+		traffic.Up += ct.Up
+		traffic.Down += ct.Down
+		if ct.GroupId != 0 {
+			if counted[ct.GroupId] {
+				continue
 			}
+			counted[ct.GroupId] = true
+		}
+		quotas = append(quotas, ct.Total)
+		expiries = append(expiries, ct.ExpiryTime)
+	}
+	// One unlimited account makes the whole subscription unlimited: there is no
+	// meaningful ceiling left to report once any part of it has none.
+	for i, q := range quotas {
+		if q == 0 {
+			traffic.Total = 0
+			break
+		}
+		if i == 0 {
+			traffic.Total = q
 		} else {
-			traffic.Up += clientTraffic.Up
-			traffic.Down += clientTraffic.Down
-			if traffic.Total == 0 || clientTraffic.Total == 0 {
-				traffic.Total = 0
-			} else {
-				traffic.Total += clientTraffic.Total
-			}
-			if clientTraffic.ExpiryTime != traffic.ExpiryTime {
-				traffic.ExpiryTime = 0
-			}
+			traffic.Total += q
 		}
 	}
-	return result, lastOnline, traffic, nil
+	// A date only when the accounts agree on one; otherwise none, rather than picking
+	// an arbitrary account's and calling it the subscription's.
+	for i, e := range expiries {
+		if i == 0 {
+			if e > 0 {
+				traffic.ExpiryTime = e
+			}
+			continue
+		}
+		if e != traffic.ExpiryTime {
+			traffic.ExpiryTime = 0
+		}
+	}
+	return traffic
 }
 
 func (s *SubService) getInboundsBySubId(subId string) ([]*model.Inbound, error) {
@@ -178,7 +222,44 @@ func (s *SubService) getFallbackMaster(dest string, streamSettings string) (stri
 	return inbound.Listen, inbound.Port, string(modifiedStream), nil
 }
 
-func (s *SubService) getLink(inbound *model.Inbound, email string) string {
+// getLink builds an account's subscription entry, in the two forms it is needed in.
+//
+// raw is what a subscription CLIENT receives. For the protocols Xray-core has no
+// outbound for it includes a synthetic trojan:// connection card, so the importer has an
+// entry to hang the account's quota and expiry on; the card is not, and never was, an
+// endpoint anything can dial.
+//
+// page is what a PERSON receives in the browser view, and leaves the card out. A customer
+// shown `trojan://<their own password>@host:1195` reasonably concludes the panel handed
+// them a broken config — the whole point of that string is invisible to them. What they
+// need instead is on the same page as plain fields (SubService.Accounts): server,
+// username, password, port, PSK.
+func (s *SubService) getLink(inbound *model.Inbound, email string) (raw, page string) {
+	switch inbound.Protocol {
+	case "mtproto":
+		// tg:// is the link Telegram itself imports, but no proxy client can parse it,
+		// so the account would contribute nothing a subscription importer recognises.
+		// The card is what makes the account appear (with its usage) in those clients.
+		real := s.genMtprotoLink(inbound, email)
+		return joinLinks(real, s.genConnectionCard(inbound, email)), real
+	case "ssh":
+		// Same split: ssh:// here is the Shadowrocket/base64 form (service.sshShareLink),
+		// which subscription importers do not read either.
+		real := s.genSshLink(inbound, email)
+		return joinLinks(real, s.genConnectionCard(inbound, email)), real
+	case "openvpn", "l2tp", "pptp", "openconnect", "sstp", "ikev2":
+		// Username/password VPNs have no importable proxy URI at all, so the client's
+		// only entry is the card. The page shows nothing here and the accounts card
+		// carries the credentials.
+		return s.genConnectionCard(inbound, email), ""
+	}
+	link := s.genProxyLink(inbound, email)
+	return link, link
+}
+
+// genProxyLink covers the protocols whose link is a real, dialable endpoint, so the raw
+// subscription and the browser page can show the same string.
+func (s *SubService) genProxyLink(inbound *model.Inbound, email string) string {
 	switch inbound.Protocol {
 	case "vmess":
 		return s.genVmessLink(inbound, email)
@@ -190,25 +271,11 @@ func (s *SubService) getLink(inbound *model.Inbound, email string) string {
 		return s.genShadowsocksLink(inbound, email)
 	case "hysteria", "hysteria2":
 		return s.genHysteriaLink(inbound, email)
-	case "mtproto":
-		// tg:// is the link Telegram itself imports, but no proxy client can parse it,
-		// so the account would contribute nothing a subscription importer recognises.
-		// The card is what makes the account appear (with its usage) in those clients.
-		return joinLinks(s.genMtprotoLink(inbound, email), s.genConnectionCard(inbound, email))
-	case "ssh":
-		// Same split: ssh:// here is the Shadowrocket/base64 form (service.sshShareLink),
-		// which subscription importers do not read either.
-		return joinLinks(s.genSshLink(inbound, email), s.genConnectionCard(inbound, email))
 	case "wg-c", "awg":
 		// A real, importable link rather than a card: Xray/sing-box clients speak
 		// WireGuard, so these accounts get a working entry. The full-fidelity .conf
 		// still comes from the Clash sub and the per-client modal.
 		return s.genWireguardLink(inbound, email)
-	case "openvpn", "l2tp", "pptp", "openconnect", "sstp", "ikev2":
-		// Username/password VPNs have no importable proxy URI at all, so the entry is
-		// a connection card: parseable enough for a client to accept the account and
-		// show its quota, with the credentials in the name.
-		return s.genConnectionCard(inbound, email)
 	}
 	return ""
 }
@@ -1899,6 +1966,7 @@ type PageData struct {
 	SubClashUrl  string
 	Result       []string
 	Configs      []SubConfigLink
+	Accounts     []SubAccount
 }
 
 // ResolveRequest extracts scheme and host info from request/headers consistently.

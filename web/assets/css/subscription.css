@@ -380,6 +380,78 @@
   flex: 0 0 auto;
 }
 
+/* --- credential accounts ------------------------------------------------ */
+
+.subpage .sub-accts {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+}
+
+.subpage .sub-acct {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+}
+
+.subpage .sub-acct-head {
+  padding: var(--sp-2) var(--sp-3);
+  background: var(--surface-2);
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-semibold);
+}
+
+/* The whole row copies, so the icon is an affordance rather than the target — on a
+   phone the value itself is the easiest thing to hit. */
+.subpage .sub-acct-row {
+  display: grid;
+  grid-template-columns: minmax(74px, 32%) 1fr auto;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: var(--sp-2) var(--sp-3);
+  border-top: 1px solid var(--border);
+  cursor: pointer;
+  transition: background var(--dur-fast) var(--ease);
+}
+
+.subpage .sub-acct-row:hover { background: var(--surface-2); }
+
+.subpage .sub-acct-k {
+  font-size: var(--fs-sm);
+  color: var(--text-3);
+}
+
+.subpage .sub-acct-v {
+  word-break: break-all;
+  font-size: var(--fs-base);
+}
+
+.subpage .sub-acct-v.is-mono {
+  direction: ltr;
+  text-align: left;
+  font-family: var(--font-mono);
+  font-size: var(--fs-sm);
+}
+
+/* Not a value: a sentence saying the credentials above work somewhere else too. */
+.subpage .sub-acct-v.is-note {
+  grid-column: 2 / -1;
+  font-size: var(--fs-sm);
+  color: var(--text-2);
+}
+
+/* The operator's own name for an endpoint, beside the label rather than inside the
+   value: it is a qualifier, and copying the row must never pick it up. */
+.subpage .sub-acct-note {
+  display: block;
+  font-size: var(--fs-xs);
+  color: var(--text-3);
+  opacity: .75;
+}
+
+.subpage .sub-acct-copy { color: var(--text-3); font-size: 13px; }
+.subpage .sub-acct-row:hover .sub-acct-copy { color: var(--accent); }
+
 /* --- folds -------------------------------------------------------------- */
 
 .subpage .sub-fold {

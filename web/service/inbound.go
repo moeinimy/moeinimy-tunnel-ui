@@ -2024,7 +2024,29 @@ func (s *InboundService) BulkUpdateClients(req BulkClientUpdateRequest) (BulkCli
 		}
 	}()
 
+	// Accounts that belong to a ClientGroup are settled on the GROUP first, and the
+	// per-account pass below then leaves them alone. Without this, a bulk top-up or
+	// expiry change on a combined customer was written to the member rows and undone
+	// by enforceGroups on the very next traffic tick, which mirrors the group's figures
+	// back over them — the operation appeared to succeed and silently did nothing.
+	var groupHandled map[string]bool
+	var groupApplied, groupSkipped int
+	groupHandled, groupApplied, groupSkipped, err = s.applyBulkToGroups(tx, req, now)
+	if err != nil {
+		return result, touched, err
+	}
+	result.Applied += groupApplied
+	result.Skipped += groupSkipped
+
 	for inboundId, emails := range byInbound {
+		for email := range emails {
+			if groupHandled[email] {
+				delete(emails, email)
+			}
+		}
+		if len(emails) == 0 {
+			continue
+		}
 		var inbound *model.Inbound
 		inbound, err = s.GetInbound(inboundId)
 		if err != nil {
@@ -2138,6 +2160,97 @@ func (s *InboundService) BulkUpdateClients(req BulkClientUpdateRequest) (BulkCli
 		touched[string(inbound.Protocol)] = true
 	}
 	return result, touched, nil
+}
+
+// applyBulkToGroups settles a bulk operation on the ClientGroups behind the targeted
+// accounts, and reports which emails it took care of so the per-account pass can skip
+// them.
+//
+// A grouped account does not own its quota, its expiry or its enable flag — the group
+// does, and ClientGroupService.enforceGroups rewrites all three onto every member on each
+// traffic tick. So there are only two possible behaviours for a bulk op on such an
+// account: change the group, or be reverted seconds later. This is the first.
+//
+// A group is settled ONCE however many of its members were selected, which is what an
+// operator means by "give this customer 10 more days": the customer has one allowance,
+// not one per protocol they hold. It is also why the counts come from here rather than
+// from the account loop — three selected rows of one customer are one applied change.
+//
+// delete/freeze/unfreeze are deliberately absent. Those act on an account (its
+// credentials, its presence in the inbound), not on the entitlement, and a group whose
+// members are deleted is simply a group with fewer members.
+func (s *InboundService) applyBulkToGroups(tx *gorm.DB, req BulkClientUpdateRequest, now int64) (map[string]bool, int, int, error) {
+	handled := map[string]bool{}
+	switch req.Op {
+	case "addDays", "subDays", "addTraffic", "subTraffic", "enable", "disable":
+	default:
+		return handled, 0, 0, nil
+	}
+
+	emails := make([]string, 0, len(req.Targets))
+	for _, t := range req.Targets {
+		if t.Email != "" {
+			emails = append(emails, t.Email)
+		}
+	}
+	if len(emails) == 0 {
+		return handled, 0, 0, nil
+	}
+
+	var rows []xray.ClientTraffic
+	if err := tx.Model(xray.ClientTraffic{}).
+		Where("email IN (?) AND group_id != 0", emails).Find(&rows).Error; err != nil {
+		return handled, 0, 0, err
+	}
+	if len(rows) == 0 {
+		return handled, 0, 0, nil
+	}
+
+	groupIds := map[int]bool{}
+	for _, r := range rows {
+		handled[r.Email] = true
+		groupIds[r.GroupId] = true
+	}
+	ids := make([]int, 0, len(groupIds))
+	for id := range groupIds {
+		ids = append(ids, id)
+	}
+
+	var groups []*model.ClientGroup
+	if err := tx.Model(model.ClientGroup{}).Where("id IN (?)", ids).Find(&groups).Error; err != nil {
+		return handled, 0, 0, err
+	}
+
+	applied, skipped := 0, 0
+	for _, g := range groups {
+		// The group presented in the exact shape an account has, so the skip toggles and
+		// the arithmetic are the SAME code that runs for an ungrouped account. A second
+		// implementation of "add 10 days" is a second implementation to keep in step.
+		cm := map[string]any{
+			"totalGB":    float64(g.Total),
+			"expiryTime": float64(g.ExpiryTime),
+			"enable":     g.Enable,
+		}
+		if bulkClientSkipped(cm, req) {
+			skipped++
+			continue
+		}
+		if !applyBulkClientOp(cm, req, now) {
+			skipped++
+			continue
+		}
+		enable, _ := cm["enable"].(bool)
+		if err := tx.Model(model.ClientGroup{}).Where("id = ?", g.Id).
+			Updates(map[string]any{
+				"total":       bulkNumToInt64(cm["totalGB"]),
+				"expiry_time": bulkNumToInt64(cm["expiryTime"]),
+				"enable":      enable,
+			}).Error; err != nil {
+			return handled, applied, skipped, err
+		}
+		applied++
+	}
+	return handled, applied, skipped, nil
 }
 
 // bulkClientSkipped reports whether a client is excluded by the request's skip

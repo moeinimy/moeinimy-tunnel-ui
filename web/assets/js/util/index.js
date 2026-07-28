@@ -123,6 +123,39 @@ class RandomUtil {
         return this.randomSeq(len, { hasUppercase: false });
     }
 
+    // Credentials for the username/password VPNs. Unlike a UUID or a share link, these
+    // are read by a person: copied out of a chat message on a phone, sometimes typed
+    // into a TV or a router, sometimes dictated. "qL4vZMozHT" is where a support call
+    // starts, so the alphabet drops mixed case and the pairs that look alike in most
+    // fonts (0/o, 1/l/i), and the length goes back up to pay for it.
+    //
+    // 32^10 for the password is ~1.1e15: these accounts sit behind pppd/RADIUS and
+    // OpenVPN, none of which will entertain anything close to that many attempts.
+    static get VPN_ALPHABET() { return "23456789abcdefghjkmnpqrstuvwxyz"; }
+
+    static randomVpnSeq(len) {
+        const seq = RandomUtil.VPN_ALPHABET;
+        const values = new Uint32Array(len);
+        window.crypto.getRandomValues(values);
+        return Array.from(values, v => seq[v % seq.length]).join('');
+    }
+
+    static randomVpnUser() {
+        return this.randomVpnSeq(7);
+    }
+
+    static randomVpnPassword() {
+        return this.randomVpnSeq(10);
+    }
+
+    // A placeholder name for a customer group, so the combined form opens ready to
+    // submit. Deliberately obviously-generated: an operator who cares what the
+    // customer is called will replace it, and one who does not is better served by
+    // "customer-4f2a" than by a blank field that blocks the save.
+    static randomCustomerName() {
+        return "customer-" + this.randomSeq(4, { type: "hex" });
+    }
+
     static randomUUID() {
         if (window.location.protocol === "https:") {
             return window.crypto.randomUUID();

@@ -191,6 +191,7 @@ var knownMissing = keySet(
 	"pages.clients.data", "pages.clients.exportJson", "pages.clients.importJson",
 	"pages.clients.importBadFile", "pages.clients.importNoTarget",
 	"pages.clients.importSkipped", "pages.clients.renew", "pages.clients.ended",
+	"pages.inbounds.realityScan", "pages.inbounds.realityScanDesc", "pages.inbounds.realityScanCheck", "pages.inbounds.realityScanFind", "pages.inbounds.realityScanUse", "pages.inbounds.realityScanOk", "pages.inbounds.realityScanBad", "pages.inbounds.realityScanNoTarget", "pages.inbounds.realityScanNone", "pages.inbounds.toasts.scanRealityTargetError", "pages.inbounds.toasts.create",
 	"pages.clients.pickGroup", "pages.clients.saveGroupFirst",
 	"pages.clients.addAccount", "pages.clients.removeFromGroup",
 	"pages.clients.colActions", "pages.clients.allGroups", "pages.clients.groups",

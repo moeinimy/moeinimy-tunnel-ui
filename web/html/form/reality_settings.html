@@ -32,6 +32,80 @@
         </template>
         <a-input v-model.trim="inbound.stream.reality.serverNames"></a-input>
     </a-form-item>
+
+    <!-- Whether the chosen target actually works as one. Sits directly under the Target
+         and SNI fields because that is what it is about, and because the verdict is only
+         useful while there is still a chance to change them. -->
+    <a-form-item>
+        <template slot="label">
+            <a-tooltip>
+                <template slot="title">
+                    <span>{{ i18n "pages.inbounds.realityScanDesc" }}</span>
+                </template>
+                {{ i18n "pages.inbounds.realityScan" }} <a-icon type="question-circle"></a-icon>
+            </a-tooltip>
+        </template>
+        <a-space :size="8" style="flex-wrap: wrap;">
+            <a-button size="small" :loading="realityScan.busy" @click="scanRealityTarget()">
+                <a-icon type="safety-certificate"></a-icon> {{ i18n "pages.inbounds.realityScanCheck" }}
+            </a-button>
+            <a-button size="small" :loading="realityScan.busy" @click="scanRealityCandidates()">
+                <a-icon type="search"></a-icon> {{ i18n "pages.inbounds.realityScanFind" }}
+            </a-button>
+        </a-space>
+
+        <a-alert v-if="realityScan.error" type="error" :message="realityScan.error" show-icon
+            style="margin-top: 8px;"></a-alert>
+
+        <!-- One verdict, then the evidence for it. The four checks are what REALITY
+             actually needs, so showing which one failed is the difference between "this
+             does not work" and knowing what to try instead. -->
+        <div v-if="realityScan.result" style="margin-top: 8px;">
+            <!-- The verdict goes in a slot rather than a :message expression on purpose.
+                 Inside an attribute, html/template escapes for HTML, so the first
+                 translation containing an apostrophe would decode back into the Vue
+                 expression and break the string it sits in. A slot is just text. -->
+            <a-alert v-if="realityScan.result.feasible" type="success" show-icon>
+                <template slot="message">{{ i18n "pages.inbounds.realityScanOk" }}</template>
+            </a-alert>
+            <a-alert v-else type="warning" show-icon>
+                <template slot="message">{{ i18n "pages.inbounds.realityScanBad" }}<span
+                        v-if="realityScan.result.reason"> — [[ realityScan.result.reason ]]</span></template>
+            </a-alert>
+            <a-space :size="4" style="margin-top: 6px; flex-wrap: wrap;">
+                <a-tag :color="realityScan.result.tls13 ? 'green' : 'red'">
+                    TLS [[ realityScan.result.tlsVersion || '?' ]]
+                </a-tag>
+                <a-tag :color="realityScan.result.h2 ? 'green' : 'red'">
+                    ALPN [[ realityScan.result.alpn || '—' ]]
+                </a-tag>
+                <a-tag :color="realityScan.result.x25519 ? 'green' : 'red'">
+                    [[ realityScan.result.curveID || '—' ]]
+                </a-tag>
+                <a-tag :color="realityScan.result.certValid ? 'green' : 'red'">
+                    [[ realityScan.result.certIssuer || '—' ]]
+                </a-tag>
+                <a-tag v-if="realityScan.result.latencyMs > 0">[[ realityScan.result.latencyMs ]] ms</a-tag>
+            </a-space>
+        </div>
+
+        <!-- Batch results. Feasible and fastest first, so the top row is the answer. -->
+        <div v-if="realityScan.candidates.length" style="margin-top: 8px; max-height: 220px; overflow-y: auto;">
+            <div v-for="r in realityScan.candidates" :key="r.target"
+                style="display: flex; align-items: center; gap: 8px; padding: 4px 0;">
+                <a-tag :color="r.feasible ? 'green' : ''" :style="{ border: 'none' }">
+                    [[ r.feasible ? '✓' : '✕' ]]
+                </a-tag>
+                <span style="flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis;">
+                    [[ r.target ]]
+                </span>
+                <span v-if="r.latencyMs > 0" class="bo-muted">[[ r.latencyMs ]] ms</span>
+                <a-button v-if="r.feasible" size="small" type="primary" @click="useRealityCandidate(r)">
+                    {{ i18n "pages.inbounds.realityScanUse" }}
+                </a-button>
+            </div>
+        </div>
+    </a-form-item>
     <a-form-item label='Max Time Diff (ms)'>
         <a-input-number v-model.number="inbound.stream.reality.maxTimediff" :min="0"></a-input-number>
     </a-form-item>

@@ -374,6 +374,15 @@
 "speedLimitApplyAfter" = "اعمال پس از"
 "speedLimitFromStart" = "= محدودسازی از ابتدا. (واحد: GB)"
 "lastReset" = "آخرین بازنشانی"
+"realityScan" = "بررسی مقصد"
+"realityScanDesc" = "به مقصد وصل می‌شود و می‌گوید واقعاً چه چیزی مذاکره می‌کند. REALITY به TLS 1.3، h2، X25519 و زنجیرهٔ گواهی معتبر نیاز دارد؛ مقصدی که هرکدام را نداشته باشد اینباندی می‌سازد که یا قابل شناسایی است یا اصلاً وصل نمی‌شود."
+"realityScanCheck" = "بررسی همین مقصد"
+"realityScanFind" = "پیدا کردن مقصد"
+"realityScanUse" = "استفاده"
+"realityScanOk" = "به‌عنوان مقصد REALITY قابل استفاده است."
+"realityScanBad" = "به‌عنوان مقصد REALITY قابل استفاده نیست"
+"realityScanNoTarget" = "اول یک مقصد وارد کنید، یا از «پیدا کردن مقصد» استفاده کنید."
+"realityScanNone" = "هیچ مقصد قابل استفاده‌ای پیدا نشد."
 
 [pages.client]
 "add" = "کاربر جدید"
@@ -533,6 +542,8 @@
 "getNewX25519CertError" = "خطا در دریافت گواهی X25519."
 "getNewmldsa65Error" = "خطا در دریافت گواهی mldsa65."
 "getNewVlessEncError" = "خطا در دریافت گواهی VlessEnc."
+"scanRealityTargetError" = "اسکن مقصد REALITY انجام نشد."
+"create" = "ساخته نشد."
 
 [pages.inbounds.stream.general]
 "request" = "درخواست"

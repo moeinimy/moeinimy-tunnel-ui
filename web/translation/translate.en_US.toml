@@ -493,6 +493,15 @@
 "speedLimitApplyAfter" = "Apply After"
 "speedLimitFromStart" = "= Limit from the start. (unit: GB)"
 "lastReset" = "Last Reset"
+"realityScan" = "Target check"
+"realityScanDesc" = "Dials the target and reports what it really negotiates. REALITY needs TLS 1.3, h2, X25519 and a chain that verifies; a target failing any of these produces an inbound that is fingerprintable or simply does not connect."
+"realityScanCheck" = "Check this target"
+"realityScanFind" = "Find targets"
+"realityScanUse" = "Use"
+"realityScanOk" = "Usable as a REALITY target."
+"realityScanBad" = "Not usable as a REALITY target"
+"realityScanNoTarget" = "Enter a target first, or use Find targets."
+"realityScanNone" = "No usable target was found."
 
 [pages.client]
 "add" = "Add Client"
@@ -659,6 +668,8 @@
 "getNewX25519CertError" = "Error while obtaining the X25519 certificate."
 "getNewmldsa65Error" = "Error while obtaining mldsa65."
 "getNewVlessEncError" = "Error while obtaining VlessEnc."
+"scanRealityTargetError" = "Could not scan the REALITY target."
+"create" = "could not be created."
 
 [pages.inbounds.stream.general]
 "request" = "Request"

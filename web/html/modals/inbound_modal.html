@@ -157,6 +157,10 @@
             inModal: inModal,
             delayedStart: false,
             ikev2CertWarning: "",
+            // What the REALITY target probe last found. Kept on the modal rather than in
+            // a dialog of its own so the verdict stays on screen beside the field it is
+            // about, and picking a suggestion is one click away from the form it fills.
+            realityScan: { busy: false, result: null, candidates: [], error: "" },
             get inbound() {
                 return inModal.inbound;
             },
@@ -578,6 +582,70 @@
                     this.inbound.stream.reality.target = randomTarget.target;
                     this.inbound.stream.reality.serverNames = randomTarget.sni;
                 }
+            },
+            // Probe the target that is actually in the field.
+            //
+            // A REALITY target has to negotiate TLS 1.3, speak h2, agree on X25519 and
+            // present a chain that verifies. A domain that fails any of those does not
+            // say so -- it produces an inbound that is either fingerprintable or simply
+            // does not connect, found out days later by whoever is holding the config.
+            // The only way to know is to dial it, which is what this does.
+            async scanRealityTarget() {
+                const target = (this.inbound.stream.reality.target || "").trim();
+                if (!target) {
+                    this.realityScan.error = '{{ i18n "pages.inbounds.realityScanNoTarget" }}';
+                    this.realityScan.result = null;
+                    return;
+                }
+                this.realityScan.busy = true;
+                this.realityScan.error = "";
+                this.realityScan.candidates = [];
+                // xver goes with it: a target behind an Nginx proxy_protocol listener
+                // resets a probe that does not lead with a PROXY header, and reporting
+                // that as a broken target would be a lie about a perfectly good one.
+                const msg = await HttpUtil.post("/panel/api/server/scanRealityTarget", {
+                    target: target,
+                    xver: this.inbound.stream.reality.xver || 0,
+                });
+                this.realityScan.busy = false;
+                if (!msg.success) {
+                    this.realityScan.error = msg.msg || "scan failed";
+                    this.realityScan.result = null;
+                    return;
+                }
+                this.realityScan.result = msg.obj;
+            },
+            // Find targets instead of guessing at one. Empty means "try the known-good
+            // public candidates"; a comma-separated list or a CIDR narrows it. Results
+            // come back best-first, so what is at the top is what to use.
+            async scanRealityCandidates() {
+                this.realityScan.busy = true;
+                this.realityScan.error = "";
+                this.realityScan.result = null;
+                const msg = await HttpUtil.post("/panel/api/server/scanRealityTargets", {
+                    targets: (this.inbound.stream.reality.target || "").trim(),
+                });
+                this.realityScan.busy = false;
+                if (!msg.success) {
+                    this.realityScan.error = msg.msg || "scan failed";
+                    return;
+                }
+                this.realityScan.candidates = msg.obj || [];
+                if (!this.realityScan.candidates.length) {
+                    this.realityScan.error = '{{ i18n "pages.inbounds.realityScanNone" }}';
+                }
+            },
+            // Take a result. The probe already knows the names the certificate actually
+            // covers, so the SNI is filled from those rather than left for the operator
+            // to copy across and mistype.
+            useRealityCandidate(r) {
+                this.inbound.stream.reality.target = r.target;
+                const names = (r.serverNames && r.serverNames.length)
+                    ? r.serverNames.join(",")
+                    : r.host;
+                this.inbound.stream.reality.serverNames = names;
+                this.realityScan.candidates = [];
+                this.realityScan.result = r;
             },
             async getNewEchCert() {
                 inModal.loading(true);

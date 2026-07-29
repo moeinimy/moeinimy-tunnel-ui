@@ -13,6 +13,7 @@ import (
 	"github.com/mhsanaei/3x-ui/v2/database/model"
 	"github.com/mhsanaei/3x-ui/v2/web/global"
 	"github.com/mhsanaei/3x-ui/v2/web/service"
+	"github.com/mhsanaei/3x-ui/v2/web/service/realityscan"
 	"github.com/mhsanaei/3x-ui/v2/web/session"
 	"github.com/mhsanaei/3x-ui/v2/web/websocket"
 
@@ -94,6 +95,11 @@ func (a *ServerController) initRouter(g *gin.RouterGroup) {
 	g.POST("/importDB", requireSuperAdmin(), a.importDB)
 	g.POST("/importForeignDB", requireSuperAdmin(), a.importForeignDB)
 	g.POST("/getNewEchCert", a.getNewEchCert)
+
+	// Probing a REALITY target makes the panel open connections to a host the caller
+	// names, so it follows the Xray permission rather than being open to any admin.
+	g.POST("/scanRealityTarget", requirePerm(model.PermXraySettings), a.scanRealityTarget)
+	g.POST("/scanRealityTargets", requirePerm(model.PermXraySettings), a.scanRealityTargets)
 }
 
 // refreshStatus updates the cached server status and collects CPU history.
@@ -581,6 +587,38 @@ func (a *ServerController) getNewEchCert(c *gin.Context) {
 		return
 	}
 	jsonObj(c, cert, nil)
+}
+
+// scanRealityTarget runs a live TLS probe against one candidate REALITY target and
+// reports what it actually negotiates, so an operator finds out before the inbound is
+// saved rather than from clients that cannot connect.
+//
+// xver matters: a target fronted by an Nginx `proxy_protocol` listener resets any
+// connection that does not lead with a PROXY header, and without it the probe would
+// report a handshake failure for a target that is in fact fine.
+func (a *ServerController) scanRealityTarget(c *gin.Context) {
+	target := c.PostForm("target")
+	xver, _ := strconv.Atoi(c.PostForm("xver"))
+	// The request's context, so closing the page drops the probe rather than leaving
+	// it to hold a socket for its full ten seconds.
+	res, err := realityscan.Target(c.Request.Context(), target, xver)
+	if err != nil {
+		jsonMsg(c, I18nWeb(c, "pages.inbounds.toasts.scanRealityTargetError"), err)
+		return
+	}
+	jsonObj(c, res, nil)
+}
+
+// scanRealityTargets probes a batch: the comma-separated list supplied, or a set of
+// known-good public candidates when the field is left empty. CIDRs are expanded, and the
+// results come back best-first so the usable targets are at the top.
+func (a *ServerController) scanRealityTargets(c *gin.Context) {
+	res, err := realityscan.Targets(c.Request.Context(), c.PostForm("targets"))
+	if err != nil {
+		jsonMsg(c, I18nWeb(c, "pages.inbounds.toasts.scanRealityTargetError"), err)
+		return
+	}
+	jsonObj(c, res, nil)
 }
 
 // getNewVlessEnc generates a new VLESS encryption key.

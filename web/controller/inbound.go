@@ -2061,6 +2061,16 @@ func (a *InboundController) callerOwnsInbounds(c *gin.Context, inboundIds []int)
 // applied by the traffic job (ClientGroupService.enforceGroups).
 
 func (a *InboundController) getClientGroups(c *gin.Context) {
+	// A reseller owns no groups -- there is no owner column to own one by -- so the
+	// honest answer is an empty list, and it is the ONLY safe one: GetGroups returns
+	// every group in the panel, which is every combined customer's name, allowance and
+	// expiry, including other resellers' and the house's. An error would be wrong here
+	// as well as leaky: the clients page fetches this on load, so refusing would toast
+	// on every visit for a condition that is not a failure.
+	if user := session.GetLoginUser(c); user != nil && user.IsReseller {
+		jsonObj(c, []*model.ClientGroup{}, nil)
+		return
+	}
 	groups, err := a.clientGroupService.GetGroups()
 	if err != nil {
 		jsonMsg(c, I18nWeb(c, "pages.inbounds.toasts.obtain"), err)
@@ -2070,6 +2080,9 @@ func (a *InboundController) getClientGroups(c *gin.Context) {
 }
 
 func (a *InboundController) addClientGroup(c *gin.Context) {
+	if denyForReseller(c, msgResellerNoGroups) {
+		return
+	}
 	group := &model.ClientGroup{}
 	if err := c.ShouldBind(group); err != nil {
 		jsonMsg(c, I18nWeb(c, "pages.inbounds.toasts.create"), err)
@@ -2083,6 +2096,9 @@ func (a *InboundController) addClientGroup(c *gin.Context) {
 }
 
 func (a *InboundController) updateClientGroup(c *gin.Context) {
+	if denyForReseller(c, msgResellerNoGroups) {
+		return
+	}
 	group := &model.ClientGroup{}
 	if err := c.ShouldBind(group); err != nil {
 		jsonMsg(c, I18nWeb(c, "pages.inbounds.toasts.update"), err)
@@ -2098,6 +2114,9 @@ func (a *InboundController) updateClientGroup(c *gin.Context) {
 }
 
 func (a *InboundController) delClientGroup(c *gin.Context) {
+	if denyForReseller(c, msgResellerNoGroups) {
+		return
+	}
 	id, err := strconv.Atoi(c.Param("id"))
 	if err != nil {
 		jsonMsg(c, I18nWeb(c, "pages.inbounds.toasts.delete"), err)
@@ -2110,6 +2129,9 @@ func (a *InboundController) delClientGroup(c *gin.Context) {
 // id is 0. Emails are the account identity everywhere else in the panel, so they are
 // what the UI sends here too.
 func (a *InboundController) setClientGroupMembership(c *gin.Context) {
+	if denyForReseller(c, msgResellerNoGroups) {
+		return
+	}
 	var body struct {
 		GroupId int      `json:"groupId"`
 		Emails  []string `json:"emails"`
@@ -2136,6 +2158,9 @@ func (a *InboundController) setClientGroupMembership(c *gin.Context) {
 // back is buying thirty days from today; adding to a date in the past would silently sell
 // them three weeks.
 func (a *InboundController) renewClientGroup(c *gin.Context) {
+	if denyForReseller(c, msgResellerNoGroups) {
+		return
+	}
 	id, err := strconv.Atoi(c.Param("id"))
 	if err != nil {
 		jsonMsg(c, I18nWeb(c, "pages.inbounds.toasts.update"), err)

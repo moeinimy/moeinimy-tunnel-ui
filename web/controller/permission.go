@@ -236,6 +236,15 @@ const (
 	// reservation that spans a group exists. Selling the protocols one at a time
 	// still works and is priced correctly.
 	msgResellerNoCombined = "Resellers cannot create a combined account yet: a shared allowance cannot be priced against your balance. Create the accounts one protocol at a time."
+
+	// Customer groups are the same unpriced shared allowance as a combined account,
+	// reached from the other side. A group's Total is the entitlement every member
+	// account mirrors, and nothing on the group is charged to anyone: it carries no
+	// owner column, and the reseller ledger reserves per client email, which a group
+	// does not have. Left open, editing or renewing one is free traffic, and because
+	// there is no owner it is free traffic on ANY customer in the panel, including
+	// another reseller's and the house's.
+	msgResellerNoGroups = "Resellers cannot manage customer groups: a shared allowance cannot be priced against your balance."
 )
 
 // denyForReseller refuses an operation outright when the caller is a reseller, and

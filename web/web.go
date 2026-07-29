@@ -575,6 +575,10 @@ func (s *Server) Start() (err error) {
 
 	s.startTask()
 
+	// Customers created before the panel recorded what was sold have no terms to
+	// reinstate, which silently hides the renew action on every one of them.
+	(&service.ClientGroupService{}).BackfillPlans()
+
 	isTgbotenabled, err := s.settingService.GetTgbotEnabled()
 	if (err == nil) && (isTgbotenabled) {
 		tgBot := s.tgbotService.NewTgbot()

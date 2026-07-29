@@ -282,6 +282,13 @@
 
                   <template slot="expiry" slot-scope="text, row">
                     <a-tag v-if="row.expiryTime === 0" :style="{ border: 'none' }">∞</a-tag>
+                    <!-- Enforcement writes a moment just past the epoch to mean "cut
+                         off", and no customer's plan ends in January 1970. Whatever
+                         wrote it, say what it means rather than formatting it as a
+                         date: a wrong date is read as a fact about the sale. -->
+                    <a-tag v-else-if="row.expiryTime > 0 && row.expiryTime < 86400000" color="red">
+                      {{ i18n "pages.clients.ended" }}
+                    </a-tag>
                     <a-tooltip v-else :overlay-class-name="themeSwitcher.currentTheme">
                       <template slot="title">
                         <span v-if="row.expiryTime < 0">{{ i18n "pages.client.delayedStart" }}</span>
@@ -847,7 +854,16 @@
             const down = group ? (group.down || 0) : ownDown;
             const total = group ? (group.total || 0) : (st ? (st.total || 0) : (c.totalGB || 0));
             const used = up + down;
-            const expiryTime = st ? (st.expiryTime || 0) : (c.expiryTime || 0);
+            // The expiry a grouped account SHOWS is its GROUP's, not its traffic row's.
+            // The traffic row does not hold a date for these — it holds whatever
+            // enforcement last wrote, and when a customer runs out of quota that is 1:
+            // one millisecond past the epoch, picked because it is unambiguously in the
+            // past and distinct from 0, which means "never expires". Read as a date it
+            // renders as January 1970, so the row for a customer whose traffic finished
+            // an hour ago reported their plan as having ended twenty thousand days ago.
+            const expiryTime = group
+              ? (group.expiryTime || 0)
+              : (st ? (st.expiryTime || 0) : (c.expiryTime || 0));
             // clientEnable is the switch in the account's own settings — what the
             // operator set. `enable` on the traffic row is what the system currently
             // enforces, and the two differ exactly while a group is spent. The switch

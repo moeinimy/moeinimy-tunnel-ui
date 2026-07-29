@@ -558,6 +558,7 @@
 
 [pages.clients]
 "renew" = "Renew (same as before)"
+"ended" = "Ended"
 "data" = "Data"
 "exportJson" = "Export accounts (JSON)"
 "importJson" = "Import accounts (JSON)"

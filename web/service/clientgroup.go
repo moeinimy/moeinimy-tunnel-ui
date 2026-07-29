@@ -61,19 +61,92 @@ func (s *ClientGroupService) AddGroup(g *model.ClientGroup) error {
 	return database.GetDB().Save(g).Error
 }
 
+// planFrom derives the terms of a sale from the allowance being granted.
+//
+// A delayed start is stored as a negative duration, which is already a number of days.
+// An ordinary expiry is a date, so the period is what is left of it — read at the moment
+// of the sale, when "what is left" and "what was bought" are the same thing. Failing
+// both, the auto-renew cycle is the period by definition.
+func planFrom(total, expiryTime int64, reset int) (int64, int) {
+	switch {
+	case expiryTime < 0:
+		return total, int(-expiryTime / 86400000)
+	case expiryTime > 0:
+		if days := (expiryTime - time.Now().UnixMilli()) / 86400000; days > 0 {
+			return total, int(days)
+		}
+	}
+	if reset > 0 {
+		return total, reset
+	}
+	return total, 0
+}
+
 func (s *ClientGroupService) UpdateGroup(g *model.ClientGroup) error {
 	if g.Id == 0 {
 		return common.NewError("group id is required")
 	}
+	fields := map[string]any{
+		"name":        g.Name,
+		"total":       g.Total,
+		"expiry_time": g.ExpiryTime,
+		"reset":       g.Reset,
+		"enable":      g.Enable,
+		"comment":     g.Comment,
+	}
+	// An ordinary edit must NOT rewrite the plan: topping a customer up mid-period, or
+	// trimming them, is not a change to what they bought, and letting it through would
+	// make the next renewal reinstate the adjustment instead of the sale.
+	//
+	// A customer with no plan at all is the exception — every group created before the
+	// panel recorded one. There is nothing to protect there, and without this they stay
+	// permanently unrenewable, so the first edit teaches it.
+	if cur, err := s.GetGroup(g.Id); err == nil && cur.PlanTotal == 0 && cur.PlanDays == 0 {
+		// Same reservation as the backfill: a quota recorded with no period, for someone
+		// who plainly has one, renews into a customer who never expires.
+		if total, days := planFrom(g.Total, g.ExpiryTime, g.Reset); days > 0 || g.ExpiryTime == 0 {
+			fields["plan_total"], fields["plan_days"] = total, days
+		}
+	}
 	return database.GetDB().Model(model.ClientGroup{}).Where("id = ?", g.Id).
-		Updates(map[string]any{
-			"name":        g.Name,
-			"total":       g.Total,
-			"expiry_time": g.ExpiryTime,
-			"reset":       g.Reset,
-			"enable":      g.Enable,
-			"comment":     g.Comment,
-		}).Error
+		Updates(fields).Error
+}
+
+// BackfillPlans records a plan for groups that predate the panel keeping one.
+//
+// Runs once at startup and is idempotent: it only ever writes rows where both plan
+// columns are still zero, so a customer whose terms have since been recorded properly is
+// never overwritten by a guess made from their current, possibly adjusted, allowance.
+//
+// Best-effort — a failure here costs the renew menu entry on old customers, which is
+// where they already were, and must not stop the panel from starting.
+func (s *ClientGroupService) BackfillPlans() {
+	var groups []*model.ClientGroup
+	db := database.GetDB()
+	if err := db.Model(model.ClientGroup{}).
+		Where("plan_total = 0 AND plan_days = 0").Find(&groups).Error; err != nil {
+		logger.Warning("client group plan backfill skipped:", err)
+		return
+	}
+	for _, g := range groups {
+		total, days := planFrom(g.Total, g.ExpiryTime, g.Reset)
+		// An unlimited, never-expiring customer has no terms to reinstate. Leaving them
+		// alone keeps the menu entry hidden rather than offering a renewal to nothing.
+		if total == 0 && days == 0 {
+			continue
+		}
+		// A customer who HAD a date, already spent it, and has no renew cycle to read it
+		// back from: their period is genuinely unrecoverable. Recording a quota with no
+		// period would make one click turn a monthly customer into a permanent one, so
+		// they stay unrenewable until an operator states the terms once.
+		if days == 0 && g.ExpiryTime != 0 {
+			continue
+		}
+		if err := db.Model(model.ClientGroup{}).Where("id = ?", g.Id).
+			Updates(map[string]any{"plan_total": total, "plan_days": days}).Error; err != nil {
+			logger.Warning("client group plan backfill failed for", g.Id, err)
+		}
+	}
 }
 
 // GetGroup loads one group.
@@ -538,18 +611,8 @@ func (s *ClientGroupService) CreateCombined(group *model.ClientGroup, members []
 	}
 
 	// Record what is being sold, once, so renewing later can reinstate these terms
-	// rather than whatever the allowance has been edited to by then. A delayed start is
-	// stored as a negative duration, which is already a number of days.
-	group.PlanTotal = group.Total
-	switch {
-	case group.ExpiryTime < 0:
-		group.PlanDays = int(-group.ExpiryTime / 86400000)
-	case group.ExpiryTime > 0:
-		days := (group.ExpiryTime - time.Now().UnixMilli()) / 86400000
-		if days > 0 {
-			group.PlanDays = int(days)
-		}
-	}
+	// rather than whatever the allowance has been edited to by then.
+	group.PlanTotal, group.PlanDays = planFrom(group.Total, group.ExpiryTime, group.Reset)
 
 	var inboundService InboundService
 

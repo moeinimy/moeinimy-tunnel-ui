@@ -436,6 +436,7 @@
 
 [pages.clients]
 "renew" = "تمدید (مثل دفعهٔ قبل)"
+"ended" = "پایان‌یافته"
 "data" = "داده"
 "exportJson" = "خروجی اکانت‌ها (JSON)"
 "importJson" = "ورودی اکانت‌ها (JSON)"

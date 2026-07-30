@@ -68,16 +68,7 @@ func (s *TunnelService) CheckPorts(name string) ([]PortCheck, error) {
 		return nil, nil
 	}
 
-	list := str(spec.field)
-	if strings.TrimSpace(list) == "" {
-		// The port map belongs to whichever half ACCEPTS client connections — the
-		// Iran side. This panel runs the other half, whose config carries no list
-		// at all, so reading only the local tunnel showed "nothing to check" for a
-		// pair that was forwarding perfectly well. Ask the node for its half.
-		if remote, err := (&NodeService{}).remotePortList(name, spec.field); err == nil {
-			list = remote
-		}
-	}
+	list := authoritativePortList(name, spec.field, str(spec.field))
 	entries := parsePortEntries(list, spec.protoForm)
 	if len(entries) == 0 {
 		return nil, nil
@@ -205,12 +196,8 @@ func scanProcNet(path, proto string, port int) bool {
 	return false
 }
 
-// FieldsMerged is Fields with the port list filled in from the node's half when
-// this side has none.
-//
-// Only the client-accepting half (Iran) stores the port map, so the edit dialog
-// opened on an empty field: existing ports were invisible and adding one wrote a
-// list containing just the new port, silently dropping the rest.
+// FieldsMerged is Fields with every port list taken from the half that owns it —
+// the node's. See authoritativePortList.
 func (s *TunnelService) FieldsMerged(name string) (json.RawMessage, error) {
 	raw, err := s.Fields(name)
 	if err != nil {
@@ -227,25 +214,7 @@ func (s *TunnelService) FieldsMerged(name string) (json.RawMessage, error) {
 		if !strings.HasSuffix(f.Key, "_PORTS") && f.Key != "FORWARDS" {
 			continue
 		}
-		// The NODE's answer wins, and it is not merely a fallback for a blank local
-		// value. The port map belongs to the half that accepts client connections;
-		// the half this panel runs on does not use it, and any value sitting there
-		// is a leftover from when edits were written locally and went nowhere.
-		//
-		// Preferring the local value "when it is not empty" therefore showed the
-		// leftover — one stale row where the node had the real list — and that was
-		// merely confusing until edits started reaching the node. Then saving the
-		// dialog wrote what the dialog was SHOWING, and the leftover overwrote the
-		// customer's actual forwards. A display bug became data loss because the
-		// write path was fixed and the read path was not.
-		//
-		// An unreachable node leaves the local value in place so the dialog is not
-		// blank; it cannot cause the same loss, because SetFieldEverywhere refuses
-		// to save a far-side field that reached no node.
-		if remote, rerr := (&NodeService{}).remotePortList(name, f.Key); rerr == nil &&
-			strings.TrimSpace(remote) != "" {
-			fields[i].Value = remote
-		}
+		fields[i].Value = authoritativePortList(name, f.Key, f.Value)
 	}
 	merged, merr := json.Marshal(fields)
 	if merr != nil {
@@ -267,4 +236,33 @@ func tunnelConfigOf(d map[string]any) map[string]any {
 		return cfg
 	}
 	return d
+}
+
+// authoritativePortList returns the forward list that actually governs a tunnel:
+// the NODE's, whenever a node can be reached for it.
+//
+// The port map belongs to the half that ACCEPTS client connections. The half this
+// panel runs on does not use it — backhaul writes its `ports` array only in the
+// [server] block, and its siblings do the same — so any value sitting locally is a
+// leftover from when edits were written here and went nowhere.
+//
+// Both readers used to prefer that leftover whenever it was non-empty, asking the
+// node only to fill a blank. So a stale single row hid the customer's real list in
+// the edit dialog AND in Check ports. That was merely confusing until edits started
+// reaching the node, at which point saving the dialog wrote what the dialog was
+// SHOWING and the leftover overwrote the real forwards.
+//
+// It lives in one function because it was written twice, ten lines apart, and only
+// one of the two got fixed — so the dialog told the truth while Check ports still
+// reported a single port. A third copy would drift the same way.
+//
+// `local` is returned when no node can answer, so nothing renders empty; that
+// cannot repeat the data loss, because SetFieldEverywhere refuses to save a
+// far-side field that reached no node.
+func authoritativePortList(tunnelName, field, local string) string {
+	if remote, err := (&NodeService{}).remotePortList(tunnelName, field); err == nil &&
+		strings.TrimSpace(remote) != "" {
+		return remote
+	}
+	return local
 }

@@ -149,6 +149,29 @@ func openvpnServesSstp(inbound *model.Inbound) bool {
 	return o.sstpServingSettings()
 }
 
+// SharedStackInvolved reports whether an SSTP rebuild driven by an OPENVPN change
+// would be about a shared inbound at all.
+//
+// It exists because the hook used to run unconditionally: on a panel holding real
+// sstp inbounds, editing an unrelated OpenVPN inbound restarted every accel-pppd
+// and dropped all their live sessions. accel-pppd is one daemon PER INBOUND, which
+// is what makes this precise in both directions — a daemon running under an
+// OpenVPN inbound's name is exactly "this inbound used to serve SSTP", so turning
+// the switch off still gets the rebuild that stops it.
+func (s *SstpService) SharedStackInvolved() bool {
+	var ovpn OpenVpnService
+	inbounds, err := ovpn.GetOpenVpnInbounds()
+	if err != nil {
+		return true // cannot tell: do the work rather than silently skip it
+	}
+	for _, in := range inbounds {
+		if openvpnServesSstp(in) || procMgr.IsRunning(sstpProcName(in.Id)) {
+			return true
+		}
+	}
+	return false
+}
+
 // sstpSharedPort is the LOOPBACK port accel-pppd's SSTP listener binds when it is
 // served from an OpenVPN inbound. Nothing reaches it from the network: OpenVPN owns
 // the public TCP port and port-shares the non-OpenVPN connections here.

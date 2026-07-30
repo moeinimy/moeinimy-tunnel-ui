@@ -109,6 +109,35 @@ func (s *L2tpService) StackInvolved() bool {
 	return procMgr.IsRunning("xl2tpd")
 }
 
+// SharedStackInvolved is the narrower question the OPENVPN change hook asks:
+// would this rebuild be about a shared inbound at all?
+//
+// StackInvolved answers "does the L2TP stack have work", which is true on any panel
+// holding an ordinary l2tp inbound — so using it there meant editing an unrelated
+// OpenVPN inbound restarted xl2tpd and dropped every live L2TP tunnel on the box.
+// The regeneration is only ever needed for an OpenVPN inbound that serves L2TP.
+//
+// The second clause is the teardown: xl2tpd still up while nothing of its own
+// protocol is enabled can only be a shared inbound that has just stopped serving,
+// and that config has to be rewritten or it goes on accepting those accounts.
+func (s *L2tpService) SharedStackInvolved() bool {
+	var ovpn OpenVpnService
+	inbounds, err := ovpn.GetOpenVpnInbounds()
+	if err != nil {
+		return true // cannot tell: do the work rather than silently skip it
+	}
+	for _, in := range inbounds {
+		if openvpnServesL2tp(in) {
+			return true
+		}
+	}
+	if !procMgr.IsRunning("xl2tpd") {
+		return false
+	}
+	own, err := enabledInboundsOfProtocol(model.L2TP, 0)
+	return err == nil && len(own) == 0
+}
+
 // openvpnServesL2tp reports whether an OpenVPN inbound also answers L2TP.
 func openvpnServesL2tp(inbound *model.Inbound) bool {
 	if inbound == nil || inbound.Protocol != model.OPENVPN {

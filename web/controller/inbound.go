@@ -216,7 +216,7 @@ func (a *InboundController) openVpnChanged(clientOnly bool) {
 	// per-client data lives in the xl2tpd config), and running it there would
 	// restart xl2tpd and drop every connected tunnel each time an account was
 	// touched.
-	if !clientOnly && a.l2tpService.StackInvolved() {
+	if !clientOnly && a.l2tpService.SharedStackInvolved() {
 		a.l2tpChanged(false)
 	}
 	// The same for the SSTP half (openvpnSettings.sstpEnable), which is built by the
@@ -225,11 +225,10 @@ func (a *InboundController) openVpnChanged(clientOnly bool) {
 	// half would refuse every connection while OpenVPN kept working — the exact shape
 	// of the L2TP bug above.
 	//
-	// Unconditional rather than gated: GenerateAllConfigs and RestartServices are
-	// per-inbound for SSTP (one accel-pppd each, unlike xl2tpd's single shared LNS),
-	// so a panel with no SSTP anywhere does no work here, and one whose last shared
-	// inbound just turned the switch off gets that daemon stopped.
-	if !clientOnly {
+	// Gated for the same reason as the L2TP line above: run unconditionally, this
+	// restarted every accel-pppd on a panel holding ordinary sstp inbounds and
+	// dropped their live sessions whenever any OpenVPN inbound was saved.
+	if !clientOnly && a.sstpService.SharedStackInvolved() {
 		a.sstpChanged(false)
 	}
 	// OpenVPN routes through Xray via dokodemo-door, so Xray routing must refresh.

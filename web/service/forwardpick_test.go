@@ -29,9 +29,10 @@ func TestPickForwardingTunnel(t *testing.T) {
 	cases := []struct {
 		name  string
 		all   []nodeTunnel
-		proto string
-		port  int
-		want  string
+		proto    string
+		port     int
+		siblings []relayForward
+		want     string
 	}{
 		{
 			name:  "udp goes to the rathole, not the tcpmux backhaul listed first",
@@ -80,7 +81,7 @@ func TestPickForwardingTunnel(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := pickForwardingTunnel(tc.all, tc.proto, tc.port).name; got != tc.want {
+			if got := pickForwardingTunnel(tc.all, tc.proto, tc.port, tc.siblings).name; got != tc.want {
 				t.Errorf("picked %q, want %q", got, tc.want)
 			}
 		})

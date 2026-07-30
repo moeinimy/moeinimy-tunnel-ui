@@ -449,7 +449,9 @@ func (s *NodeService) RemoveTunnelEverywhere(name string) []string {
 // Best effort by design: it needs the node online, and an inbound must still
 // save when the relay is unreachable. The returned string says what happened so
 // the caller can surface it; err is only for a genuine failure to apply.
-func (s *NodeService) EnsureForward(dest, proto string, port int) (string, error) {
+// siblings are the OTHER forwards the same inbound needs. They decide nothing on
+// their own; they let the tunnel choice keep one service's ports together.
+func (s *NodeService) EnsureForward(dest, proto string, port int, siblings []relayForward) (string, error) {
 	if port <= 0 || dest == "" {
 		return "", nil
 	}
@@ -469,7 +471,7 @@ func (s *NodeService) EnsureForward(dest, proto string, port int) (string, error
 	// The forward being asked for decides WHICH tunnel gets it: a node running one
 	// relay for xray and another for the VPN ports has to send each port to the one
 	// that can actually carry it.
-	t, err := s.forwardingTunnel(id, proto, port)
+	t, err := s.forwardingTunnel(id, proto, port, siblings)
 	if err != nil {
 		return "", err
 	}
@@ -630,7 +632,7 @@ func (t nodeTunnel) hasForward(entry string) bool {
 // the tunnel that already carries it, then one that CAN carry it and is the one
 // relaying client ports, then any that can carry it, and only then whatever exists
 // so the error names something real.
-func (s *NodeService) forwardingTunnel(id, proto string, port int) (nodeTunnel, error) {
+func (s *NodeService) forwardingTunnel(id, proto string, port int, siblings []relayForward) (nodeTunnel, error) {
 	var found nodeTunnel
 	raw, err := s.Exec(id, []string{"json", "list"})
 	if err != nil {
@@ -677,12 +679,12 @@ func (s *NodeService) forwardingTunnel(id, proto string, port int) (nodeTunnel, 
 		all = append(all, nodeTunnel{item.Name, protocol, mode, forwards, transport})
 	}
 
-	return pickForwardingTunnel(all, proto, port), nil
+	return pickForwardingTunnel(all, proto, port, siblings), nil
 }
 
 // pickForwardingTunnel chooses which tunnel carries one forward, most specific
 // first. Split out from the node round-trip so the choice itself is testable.
-func pickForwardingTunnel(all []nodeTunnel, proto string, port int) nodeTunnel {
+func pickForwardingTunnel(all []nodeTunnel, proto string, port int, siblings []relayForward) nodeTunnel {
 	// 1. Already carries this exact forward — definitively the right tunnel, and
 	//    EnsureForward will then find nothing to add.
 	for _, t := range all {
@@ -690,19 +692,39 @@ func pickForwardingTunnel(all []nodeTunnel, proto string, port int) nodeTunnel {
 			return t
 		}
 	}
-	// 2. Can carry it AND is the one relaying client ports.
+	// 2. Already carries ANOTHER port of the same inbound, and can carry this one.
+	//    A node often runs several tunnels that could all take a UDP forward, and
+	//    picking whichever came first split one service across two of them: the
+	//    OpenVPN TCP port rode the rathole while its own IKE ports were handed to a
+	//    backpack beside it, so the service was configured, reported applied, and
+	//    reachable on neither.
+	for _, t := range all {
+		if !t.canCarry(proto) {
+			continue
+		}
+		sp, ok := tunnelPortSpecFor(t.protocol)
+		if !ok {
+			continue
+		}
+		for _, sib := range siblings {
+			if t.hasForward(sp.entry(sib.proto, sib.port)) {
+				return t
+			}
+		}
+	}
+	// 3. Can carry it AND is the one relaying client ports.
 	for _, t := range all {
 		if t.canCarry(proto) && t.relaysPorts() {
 			return t
 		}
 	}
-	// 3. Can carry it.
+	// 4. Can carry it.
 	for _, t := range all {
 		if t.canCarry(proto) {
 			return t
 		}
 	}
-	// 4. Nothing can: return one anyway so the refusal names a real tunnel and its
+	// 5. Nothing can: return one anyway so the refusal names a real tunnel and its
 	//    real limit rather than "this node has no tunnel yet".
 	if len(all) > 0 {
 		return all[0]

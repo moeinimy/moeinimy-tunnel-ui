@@ -166,7 +166,10 @@ func (s *InboundService) SyncRelayForwards(inbound *model.Inbound) {
 	var nodeService NodeService
 	for _, dest := range dests {
 		for _, f := range forwards {
-			applied, err := nodeService.EnsureForward(dest, f.proto, f.port)
+			// `forwards` is passed whole so the node can keep ONE inbound's ports
+			// together: a node with several tunnels must not scatter a service's
+			// TCP port across one and its UDP ports across another.
+			applied, err := nodeService.EnsureForward(dest, f.proto, f.port, forwards)
 			switch {
 			case err != nil:
 				logger.Warningf("relay forward %s:%d for inbound %d (%s) not applied on %s: %v",

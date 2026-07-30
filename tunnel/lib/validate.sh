@@ -52,3 +52,18 @@ is_uint() { [[ "$1" =~ ^[0-9]+$ ]]; }
 
 # is_iface NAME — interface exists on this host.
 is_iface() { [[ -d "/sys/class/net/$1" ]]; }
+
+# ports_want_udp LIST — true when any entry of a ';'-separated forward list asks
+# for UDP, i.e. carries the "udp:" marker ("udp:500=500").
+#
+# The marker is the PANEL's spelling, not any relay's. The userspace relays express
+# a forward as "local=dest" with nowhere to put a protocol, so the list carries it
+# and each driver renders it the way its own config wants: rathole as a per-service
+# type, backhaul and backpack as the single accept_udp switch. An entry with no
+# marker is TCP, which is every entry written before this existed.
+ports_want_udp() {
+    case ";$1;" in
+        *";udp:"*) return 0 ;;
+        *) return 1 ;;
+    esac
+}

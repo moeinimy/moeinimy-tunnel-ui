@@ -17,6 +17,30 @@
 : "${RATHOLE_DEFAULT_VERSION:=v0.5.0}"
 : "${TM_RATHOLE_DIR:=$TM_CONFIG_DIR/rathole}"
 
+# rathole_split ENTRY — parse one RH_PORTS entry into _RH_PROTO/_RH_PUB/_RH_LOC
+# and the service key _RH_KEY. Returns non-zero for an entry that is not a pair.
+#
+# The entry is "[udp:]pub=loc". rathole takes type = "tcp" | "udp" per SERVICE and
+# carries both kinds in one tunnel, which is the whole reason a customer's L2TP can
+# ride the same relay as their VLESS; this driver simply used to write "tcp" always.
+#
+# A bare entry stays TCP and keeps its historical "s<pub>" key, so every config
+# written before UDP existed regenerates byte-identical — which matters because the
+# two ends must agree on service names, and they are not upgraded at the same moment.
+# UDP services are keyed "u<pub>" so tcp/500 and udp/500 can both exist.
+rathole_split() {
+    local e="$1"
+    _RH_PROTO=tcp
+    case "$e" in
+        udp:*) _RH_PROTO=udp; e="${e#udp:}" ;;
+        tcp:*) e="${e#tcp:}" ;;
+    esac
+    IFS='=' read -r _RH_PUB _RH_LOC <<<"$e"
+    [[ -n "$_RH_PUB" && -n "$_RH_LOC" ]] || return 1
+    if [[ "$_RH_PROTO" == udp ]]; then _RH_KEY="u$_RH_PUB"; else _RH_KEY="s$_RH_PUB"; fi
+    return 0
+}
+
 rathole_bin() { printf '%s/rathole' "$TM_BIN_DIR"; }
 rathole_cfg() { printf '%s/%s.toml' "$TM_RATHOLE_DIR" "$1"; }
 
@@ -105,17 +129,17 @@ rathole_generate_config() {
     local file; file="$(rathole_cfg "${TUN[NAME]}")"
     mkdir -p "$TM_RATHOLE_DIR"
     local tmp; tmp="$(mktemp)"
-    local IFS=';' e pub loc
+    local IFS=';' e
     if [[ "${TUN[RH_ROLE]}" == server ]]; then
         {
             printf '[server]\n'
             printf 'bind_addr = "0.0.0.0:%s"\n' "${TUN[RH_PORT]}"
             printf 'default_token = "%s"\n\n' "${TUN[RH_TOKEN]}"
             for e in ${TUN[RH_PORTS]}; do
-                IFS='=' read -r pub loc <<<"$e"
-                printf '[server.services.s%s]\n' "$pub"
-                printf 'type = "tcp"\n'
-                printf 'bind_addr = "0.0.0.0:%s"\n\n' "$pub"
+                rathole_split "$e" || continue
+                printf '[server.services.%s]\n' "$_RH_KEY"
+                printf 'type = "%s"\n' "$_RH_PROTO"
+                printf 'bind_addr = "0.0.0.0:%s"\n\n' "$_RH_PUB"
             done
         } >"$tmp"
     else
@@ -124,10 +148,10 @@ rathole_generate_config() {
             printf 'remote_addr = "%s:%s"\n' "${TUN[REMOTE_IP]}" "${TUN[RH_PORT]}"
             printf 'default_token = "%s"\n\n' "${TUN[RH_TOKEN]}"
             for e in ${TUN[RH_PORTS]}; do
-                IFS='=' read -r pub loc <<<"$e"
-                printf '[client.services.s%s]\n' "$pub"
-                printf 'type = "tcp"\n'
-                printf 'local_addr = "127.0.0.1:%s"\n\n' "$loc"
+                rathole_split "$e" || continue
+                printf '[client.services.%s]\n' "$_RH_KEY"
+                printf 'type = "%s"\n' "$_RH_PROTO"
+                printf 'local_addr = "127.0.0.1:%s"\n\n' "$_RH_LOC"
             done
         } >"$tmp"
     fi

@@ -123,7 +123,15 @@ backhaul_generate_config() {
             printf '[server]\n'
             printf 'bind_addr = "0.0.0.0:%s"\n' "${TUN[BH_PORT]}"
             printf 'transport = "%s"\n' "${TUN[BH_TRANSPORT]}"
-            printf 'accept_udp = false\n'
+            # "Enable transferring UDP connections over TCP transport." Derived from
+            # the forward list rather than asked: a UDP entry is the operator saying
+            # they want UDP carried, and there is nothing else the answer could be.
+            #
+            # Upstream documents it for the plain `tcp` transport, so it is only
+            # claimed there — on tcpmux/ws/wsmux the entry is still listed (it is one
+            # ports array for both protocols) but the UDP half is not promised, and
+            # the panel says so rather than letting it fail silently.
+            printf 'accept_udp = %s\n' "$(ports_want_udp "${TUN[BH_PORTS]:-}" && [[ "${TUN[BH_TRANSPORT]}" == tcp ]] && echo true || echo false)"
             printf 'token = "%s"\n' "${TUN[BH_TOKEN]}"
             printf 'keepalive_period = 75\n'
             printf 'nodelay = true\n'
@@ -140,6 +148,10 @@ backhaul_generate_config() {
             printf 'ports = [\n'
             local IFS=';' e lp dp
             for e in ${TUN[BH_PORTS]}; do
+                # The "udp:" marker is the PANEL's, not backhaul's: backhaul has no
+                # per-port protocol, only the accept_udp switch written above, so the
+                # marker is stripped here and the port listed as usual.
+                e="${e#udp:}"; e="${e#tcp:}"
                 IFS='=' read -r lp dp <<<"$e"
                 printf '   "%s=%s",\n' "$lp" "$dp"
             done

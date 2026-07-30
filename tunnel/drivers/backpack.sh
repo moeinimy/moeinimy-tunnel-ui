@@ -177,7 +177,9 @@ backpack_generate_config() {
             printf 'bind_addr = "0.0.0.0:%s"\n' "${TUN[BP_PORT]}"
             printf 'transport = "%s"\n' "$transport"
             printf 'token = "%s"\n' "${TUN[BP_TOKEN]}"
-            printf 'accept_udp = false\n'
+            # See backhaul: derived from the forward list, and only claimed on the
+            # plain `tcp` transport where the option is documented.
+            printf 'accept_udp = %s\n' "$(ports_want_udp "${TUN[BP_PORTS]:-}" && [[ "$transport" == tcp ]] && echo true || echo false)"
             printf 'nodelay = true\n'
             printf 'keepalive_period = 75\n'
             printf 'heartbeat = 40\n'
@@ -202,6 +204,9 @@ backpack_generate_config() {
             printf 'ports = [\n'
             local IFS=';' e lp dp
             for e in ${TUN[BP_PORTS]}; do
+                # See backhaul: the "udp:" marker is the panel's, and accept_udp above
+                # is the only protocol switch this config shape has.
+                e="${e#udp:}"; e="${e#tcp:}"
                 IFS='=' read -r lp dp <<<"$e"
                 printf '   "%s=%s",\n' "$lp" "$dp"
             done

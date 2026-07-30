@@ -182,16 +182,29 @@ func (s *InboundService) SyncRelayForwards(inbound *model.Inbound) {
 // tunnelPortSpec describes how one tunnel protocol expresses its client
 // port-forwards, and whether it can carry UDP at all.
 //
-// The two shapes are not interchangeable. GRE and Paqet keep a FORWARDS list of
-// "proto:local:dest" and program iptables, so they relay either protocol. The
-// userspace relays keep a "<PREFIX>_PORTS" map of "local=dest" with no protocol
-// field, because they proxy TCP streams only — backhaul and backpack even write
-// accept_udp = false into their config.
+// GRE and Paqet keep a FORWARDS list of "proto:local:dest" and program iptables.
+// The userspace relays keep a "<PREFIX>_PORTS" map of "local=dest", to which a
+// "udp:" prefix may now be added ("udp:500=500"); an entry without one is TCP, so
+// every list written before this stays exactly what it was.
 //
-// That distinction is the difference between a forward that works and one that
-// is accepted and silently carries nothing, which is exactly how a UDP service
-// behind a TCP-only tunnel presents itself: the relay listens, the client
-// connects, and the far end logs "connection refused".
+// The udp flag is about the RELAY, not the syntax. It used to be false for all of
+// them on the grounds that they "proxy TCP streams only", which was true of the
+// configs this panel wrote and not of the programs:
+//
+//   - rathole takes type = "tcp" | "udp" PER SERVICE and carries both in one
+//     tunnel — the driver simply always wrote "tcp".
+//   - backhaul and backpack take accept_udp, "Enable transferring UDP connections
+//     over TCP transport", and the driver hard-wrote accept_udp = false.
+//
+// So a customer's L2TP could not follow their VLESS down the same relay for a
+// reason that was only ever a hardcoded literal. gost and frp are left false: gost
+// needs a udp:// listener the driver does not emit yet, and frp needs its own
+// per-proxy type — both are the same shape of change, neither is done here.
+//
+// Getting this flag wrong is silent, which is why it is conservative: a UDP service
+// behind a relay that drops it presents as the relay listening, the client
+// connecting, and the far end never seeing a packet.
+//
 // relayAll records whether the driver actually IMPLEMENTS FORWARD_MODE=all, and it
 // is deliberately not assumed from the setting existing. The schema offers
 // "none all ports" for every tunnel (tunnel/modules/schema.sh), but only the GRE
@@ -205,7 +218,7 @@ func (s *InboundService) SyncRelayForwards(inbound *model.Inbound) {
 // configured tunnel, and a service nothing reaches.
 type tunnelPortSpec struct {
 	field     string // settings key holding the forward list
-	protoForm bool   // true: "proto:local:dest"; false: "local=dest"
+	protoForm bool   // true: "proto:local:dest"; false: "[udp:]local=dest"
 	udp       bool   // can this tunnel carry UDP?
 	relayAll  bool   // does this driver implement FORWARD_MODE=all?
 }
@@ -218,14 +231,14 @@ func tunnelPortSpecFor(protocol string) (tunnelPortSpec, bool) {
 		return tunnelPortSpec{"FORWARDS", true, true, false}, true
 	case "hysteria":
 		return tunnelPortSpec{"HY_PORTS", false, true, false}, true
+	case "rathole":
+		return tunnelPortSpec{"RH_PORTS", false, true, false}, true
+	case "backhaul":
+		return tunnelPortSpec{"BH_PORTS", false, true, false}, true
+	case "backpack":
+		return tunnelPortSpec{"BP_PORTS", false, true, false}, true
 	case "gost":
 		return tunnelPortSpec{"GO_PORTS", false, false, false}, true
-	case "backpack":
-		return tunnelPortSpec{"BP_PORTS", false, false, false}, true
-	case "backhaul":
-		return tunnelPortSpec{"BH_PORTS", false, false, false}, true
-	case "rathole":
-		return tunnelPortSpec{"RH_PORTS", false, false, false}, true
 	case "frp":
 		return tunnelPortSpec{"FRP_PORTS", false, false, false}, true
 	}
@@ -233,9 +246,15 @@ func tunnelPortSpecFor(protocol string) (tunnelPortSpec, bool) {
 }
 
 // entry renders one forward in this tunnel's own syntax.
+//
+// TCP entries keep the bare "local=dest" they have always had, so nothing has to
+// rewrite a list that already exists; UDP is the new spelling and is marked.
 func (s tunnelPortSpec) entry(proto string, port int) string {
 	if s.protoForm {
 		return fmt.Sprintf("%s:%d:%d", proto, port, port)
+	}
+	if proto == "udp" {
+		return fmt.Sprintf("udp:%d=%d", port, port)
 	}
 	return fmt.Sprintf("%d=%d", port, port)
 }

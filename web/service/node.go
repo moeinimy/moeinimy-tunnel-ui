@@ -466,8 +466,21 @@ func (s *NodeService) EnsureForward(dest, proto string, port int) (string, error
 	// panel hinting that the tunnel was never able to carry it.
 	if proto == "udp" && !spec.udp {
 		return "", fmt.Errorf("tunnel %q (%s) carries TCP only, so it cannot relay UDP port %d — "+
-			"use GRE, Paqet or Hysteria for that, or run the service over TCP",
+			"use GRE, Paqet, Hysteria, rathole, backhaul or backpack for that, "+
+			"or run the service over TCP",
 			t.name, t.protocol, port)
+	}
+	// backhaul and backpack carry UDP with accept_udp, which upstream documents for
+	// the plain `tcp` transport. On tcpmux/ws/wsmux the ports array is shared between
+	// both protocols, so the entry would be accepted and listed while the UDP half
+	// went nowhere — the exact silent shape this refusal exists to prevent. rathole
+	// needs no such check: its type is per service and applies on every transport.
+	if proto == "udp" && (t.protocol == "backhaul" || t.protocol == "backpack") &&
+		strings.ToLower(strings.TrimSpace(t.transport)) != "tcp" {
+		return "", fmt.Errorf("tunnel %q (%s) is on the %q transport, which carries TCP only — "+
+			"UDP port %d needs its transport set to \"tcp\" (accept_udp applies there), "+
+			"or a rathole/GRE/Paqet tunnel instead",
+			t.name, t.protocol, t.transport, port)
 	}
 
 	entry := spec.entry(proto, port)
@@ -525,6 +538,10 @@ type nodeTunnel struct {
 	protocol string
 	mode     string
 	forwards string
+	// transport is the relay's own carrier (backhaul/backpack: tcp, tcpmux, ws,
+	// wsmux, …). It decides whether UDP can ride along: accept_udp is documented
+	// for the plain tcp transport only.
+	transport string
 }
 
 // forwardingTunnel picks the tunnel on a node that relays client ports.
@@ -567,7 +584,11 @@ func (s *NodeService) forwardingTunnel(id string) (nodeTunnel, error) {
 		if known {
 			forwards = str(spec.field)
 		}
-		cur := nodeTunnel{item.Name, protocol, mode, forwards}
+		transport := str("BH_TRANSPORT")
+		if transport == "" {
+			transport = str("BP_TRANSPORT")
+		}
+		cur := nodeTunnel{item.Name, protocol, mode, forwards, transport}
 		// Prefer a tunnel already set up to relay ports; otherwise remember the
 		// first one, so a single-tunnel node still gets configured. "all" only
 		// counts as relaying where the driver implements it — see spec.relayAll.

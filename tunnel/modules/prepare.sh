@@ -62,6 +62,10 @@ gre_prepare() {
     : "${TUN[FORWARD_MODE]:=none}"
     : "${TUN[FORWARDS]:=}"
     : "${TUN[FORWARD_EXCEPT]:=22}"
+    # Off for every existing tunnel, which is the point of defaulting it here: an
+    # upgrade must not change the data plane of a live relay. Turning it on needs a
+    # peer that installs the return route (gre_preserve_src_return).
+    : "${TUN[FORWARD_PRESERVE_SRC]:=no}"
 }
 
 # --- Paqet (KCP/raw; foreign = server) ---------------------------------------

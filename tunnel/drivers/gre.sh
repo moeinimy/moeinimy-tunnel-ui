@@ -8,6 +8,24 @@
 # Relevant TUN keys:
 #   ROLE(iran|foreign) LOCAL_IP REMOTE_IP INNER_LOCAL INNER_REMOTE INNER_CIDR
 #   MTU GRE_KEY TTL IFNAME IPAM_INDEX ENABLE_NAT FORWARDS
+#   FORWARD_MODE(none|all|ports) FORWARD_EXCEPT FORWARD_PRESERVE_SRC
+
+# The mark and routing table the source-preserving return path uses.
+#
+# Deliberately NOT fwmark 1 / table 100. Those are the PANEL's TPROXY policy route
+# (web/service/l2tp.go and its siblings all install `ip rule add fwmark 1 lookup
+# 100`), and table 100 holds `local default dev lo` so that TPROXY can hand packets
+# to a local socket. Borrowing either would deliver this traffic to lo instead of
+# the tunnel — a whole-relay outage whose cause is two files away.
+GRE_PRESERVE_MARK=0x2f
+GRE_PRESERVE_TABLE=47
+
+# gre_preserve_src — does this tunnel hand the far end the CLIENT's own source
+# address rather than the tunnel's?
+#
+# Off by default, and it must stay that way: turning it on changes the data plane
+# of a live relay, and the two ends have to be running code that knows about it.
+gre_preserve_src() { [[ "${TUN[FORWARD_PRESERVE_SRC]:-no}" == yes ]]; }
 
 # gre_ifname NAME -> a <=15 char interface name derived from the tunnel name.
 gre_ifname() { printf 'tm%s' "$1" | tr -cd 'a-z0-9' | cut -c1-15; }
@@ -107,11 +125,25 @@ gre_wizard_forward_mode() {
     case "$fmode" in
         relay*)
             TUN[FORWARD_MODE]="all"; TUN[FORWARDS]=""
-            ask TUN[FORWARD_EXCEPT] "Ports to keep LOCAL here (comma-sep; keep your SSH port!)" "${TUN[FORWARD_EXCEPT]:-22}" ;;
+            ask TUN[FORWARD_EXCEPT] "Ports to keep LOCAL here (comma-sep; keep your SSH port!)" "${TUN[FORWARD_EXCEPT]:-22}"
+            gre_wizard_preserve_src ;;
         specific*)
-            TUN[FORWARD_MODE]="ports"; gre_wizard_forwards ;;
+            TUN[FORWARD_MODE]="ports"; gre_wizard_forwards
+            gre_wizard_preserve_src ;;
         *)  TUN[FORWARD_MODE]="none"; TUN[FORWARDS]="" ;;
     esac
+}
+
+# gre_wizard_preserve_src — offer to hand the far end the client's own address.
+#
+# Asked, not assumed, and defaulted to no: it needs the FOREIGN end running a
+# version that installs the return route (see gre_preserve_src_return), and turning
+# it on against an older peer breaks the relay outright.
+gre_wizard_preserve_src() {
+    TUN[FORWARD_PRESERVE_SRC]="no"
+    if confirm "Keep each client's real IP? (needed for per-account IP limits; the peer must run tunnel-manager >= 3.7.0)" no; then
+        TUN[FORWARD_PRESERVE_SRC]="yes"
+    fi
 }
 
 # gre_wizard_forwards — collect proto:localport:destport entries into FORWARDS.
@@ -204,6 +236,7 @@ gre_rules_up() {
 
     gre_forwards_apply ensure
     [[ "${TUN[FORWARD_MODE]:-none}" == all ]] && gre_relay_all ensure
+    [[ "${TUN[ROLE]}" == foreign ]] && gre_preserve_src_return ensure
     return 0
 }
 
@@ -217,6 +250,7 @@ gre_rules_down() {
     _ipt_remove filter FORWARD -i "$wan" -o "$dev" -m state --state RELATED,ESTABLISHED -j ACCEPT
     gre_forwards_apply remove
     gre_relay_all remove
+    [[ "${TUN[ROLE]}" == foreign ]] && gre_preserve_src_return remove
     return 0
 }
 
@@ -237,8 +271,14 @@ gre_relay_all() {
     # DNAT everything else arriving on the WAN to the peer inner IP.
     "$fn" nat PREROUTING -i "$wan" -p tcp -j DNAT --to-destination "${TUN[INNER_REMOTE]}"
     "$fn" nat PREROUTING -i "$wan" -p udp -j DNAT --to-destination "${TUN[INNER_REMOTE]}"
-    # SNAT so the peer's replies come back through the tunnel.
-    "$fn" nat POSTROUTING -o "$dev" -j SNAT --to-source "${TUN[INNER_LOCAL]}"
+    # SNAT so the peer's replies come back through the tunnel — unless this tunnel
+    # preserves the client's address, in which case the SNAT is the very thing being
+    # removed and the peer routes its replies back by fwmark instead.
+    if gre_preserve_src; then
+        _ipt_remove nat POSTROUTING -o "$dev" -j SNAT --to-source "${TUN[INNER_LOCAL]}"
+    else
+        "$fn" nat POSTROUTING -o "$dev" -j SNAT --to-source "${TUN[INNER_LOCAL]}"
+    fi
     # Permit the forwarding both ways.
     "$fn" filter FORWARD -o "$dev" -j ACCEPT
     "$fn" filter FORWARD -i "$dev" -j ACCEPT
@@ -261,9 +301,58 @@ gre_forwards_apply() {
         IFS=':' read -r proto lp dp <<<"$entry"
         [[ -n "$proto" && -n "$lp" && -n "$dp" ]] || continue
         "$fn" nat PREROUTING  -i "$wan" -p "$proto" --dport "$lp" -j DNAT --to-destination "${TUN[INNER_REMOTE]}:$dp"
-        "$fn" nat POSTROUTING -o "$dev" -p "$proto" -d "${TUN[INNER_REMOTE]}" --dport "$dp" -j SNAT --to-source "${TUN[INNER_LOCAL]}"
+        if gre_preserve_src; then
+            _ipt_remove nat POSTROUTING -o "$dev" -p "$proto" -d "${TUN[INNER_REMOTE]}" --dport "$dp" -j SNAT --to-source "${TUN[INNER_LOCAL]}"
+        else
+            "$fn" nat POSTROUTING -o "$dev" -p "$proto" -d "${TUN[INNER_REMOTE]}" --dport "$dp" -j SNAT --to-source "${TUN[INNER_LOCAL]}"
+        fi
         "$fn" filter FORWARD  -p "$proto" -d "${TUN[INNER_REMOTE]}" --dport "$dp" -j ACCEPT
     done
+}
+
+# gre_preserve_src_return ensure|remove — the FOREIGN end of source preservation.
+#
+# With the Iran end's SNAT gone, a relayed packet arrives here carrying the CLIENT's
+# own address. That is the entire point: a per-account IP limit counts distinct
+# source addresses, and behind the SNAT every client of every account arrived as one
+# address, so the cap held one slot for all of them and could never trip. Geo rules
+# and access logs were equally blind.
+#
+# The cost is the reply. It is addressed to that client, and this host's default
+# route is its own WAN, so the reply would leave directly with this host's address
+# on it — a reply the client never asked for and drops. So: mark the conntrack entry
+# of anything arriving on the tunnel, put that mark back on the replies this host
+# generates for it, and give marked traffic a table whose default IS the tunnel.
+#
+# Installed on the foreign end whether or not the Iran end preserves yet, and that
+# is deliberate. While the Iran end still SNATs, every reply is addressed to the
+# tunnel's own /30 peer, which this table sends out the same device the connected
+# route already would — identical behaviour. It only becomes load-bearing once the
+# Iran end stops rewriting, which is what makes the two ends safe to update in
+# either order.
+gre_preserve_src_return() {
+    local action="$1" dev="${TUN[IFNAME]}"
+    local fn=_ipt_ensure; [[ "$action" == remove ]] && fn=_ipt_remove
+    "$fn" mangle PREROUTING -i "$dev" -j CONNMARK --set-mark "$GRE_PRESERVE_MARK"
+    # Restores only OUR mark, never a blanket `--restore-mark`. The panel steers VPN
+    # traffic into Xray on fwmark 1, and overwriting a packet's mark from whatever
+    # conntrack entry it happens to belong to is exactly how that would break.
+    "$fn" mangle OUTPUT -m connmark --mark "$GRE_PRESERVE_MARK" -j MARK --set-mark "$GRE_PRESERVE_MARK"
+    if [[ "$action" == remove ]]; then
+        ip rule del fwmark "$GRE_PRESERVE_MARK" lookup "$GRE_PRESERVE_TABLE" 2>/dev/null || true
+        ip route del default table "$GRE_PRESERVE_TABLE" 2>/dev/null || true
+        return 0
+    fi
+    # `ip rule add` has no idempotent form and happily stacks duplicates, so it is
+    # checked first; `ip route replace` needs no such guard.
+    ip rule show 2>/dev/null | grep -q "fwmark $GRE_PRESERVE_MARK lookup $GRE_PRESERVE_TABLE" \
+        || ip rule add fwmark "$GRE_PRESERVE_MARK" lookup "$GRE_PRESERVE_TABLE" 2>/dev/null || true
+    ip route replace default via "${TUN[INNER_REMOTE]}" dev "$dev" table "$GRE_PRESERVE_TABLE" 2>/dev/null || true
+    # A preserved packet reaches this host on the tunnel carrying a public source
+    # address whose route is the WAN, so strict reverse-path filtering drops it
+    # before any of the above is consulted. Loose (2) accepts it.
+    sysctl -qw "net.ipv4.conf.$dev.rp_filter=2" >/dev/null 2>&1 || true
+    return 0
 }
 
 # _ipt_ensure TABLE CHAIN RULE... — add a rule if not already present.
@@ -334,6 +423,11 @@ gre_status() {
         all)   ui_kv "Forwarding" "ALL ports → ${TUN[INNER_REMOTE]} (except: ${TUN[FORWARD_EXCEPT]:-22})" ;;
         ports) ui_kv "Forwarding" "ports: ${TUN[FORWARDS]}" ;;
     esac
+    # Named where it is read: with this off, every relayed client reaches the far end
+    # as one address, so anything counting client IPs there sees exactly one.
+    if [[ "${TUN[FORWARD_MODE]:-none}" != none ]]; then
+        ui_kv "Client IP" "$(gre_preserve_src && echo "preserved" || echo "replaced by ${TUN[INNER_LOCAL]} (per-account IP limits cannot work)")"
+    fi
     if [[ -d "/sys/class/net/$dev" ]]; then
         local rx tx; read -r rx tx <<<"$(gre_sample "${TUN[NAME]}")"
         ui_kv "Link"     "$(status_dot up) present  RX $(human_bytes "$rx")  TX $(human_bytes "$tx")"

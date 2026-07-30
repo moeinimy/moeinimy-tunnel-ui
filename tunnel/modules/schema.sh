@@ -142,6 +142,7 @@ api_schema() {
     _sf FORWARD_MODE "Forwarding mode" select none "none all ports" iran "How traffic uses the tunnel"
     _sf FORWARD_EXCEPT "Keep local (ports)" text "22" "" iran "Only for mode=all — KEEP YOUR SSH PORT here"
     _sf FORWARDS "$_CLIENT_PORTS_LABEL" forwards "" "" iran "Only when forwarding mode = ports"
+    _sf FORWARD_PRESERVE_SRC "Keep client's real IP" select no "no yes" iran "Relay each client's own source address instead of the tunnel's. Required for per-account IP limits, geo rules and per-client logs on the far end — without it every client arrives there as ONE address. The foreign peer must run tunnel-manager >= 3.7.0."
     _sp_close
 
     printf '}\n'

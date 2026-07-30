@@ -265,7 +265,10 @@ func (a *TunnelController) set(c *gin.Context) {
 		jsonMsg(c, I18nWeb(c, "pages.tunnel.toasts.saveFailed"), err)
 		return
 	}
-	err := a.tunnelService.SetField(c.Param("name"), req.Key, req.Value)
+	// Everywhere, not just here: a tunnel is two profiles on two hosts and most of
+	// what an operator edits — every driver's port map among them — belongs to the
+	// OTHER one. See TunnelService.SetFieldEverywhere.
+	err := a.tunnelService.SetFieldEverywhere(c.Param("name"), req.Key, req.Value)
 	jsonMsg(c, I18nWeb(c, "pages.tunnel.toasts.saved"), err)
 }
 

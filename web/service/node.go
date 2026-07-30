@@ -943,3 +943,60 @@ func selfSignedPEM(host string) (certPEM, keyPEM []byte, err error) {
 	}()})
 	return certPEM, keyPEM, nil
 }
+
+// SetFieldOnTunnel applies one field edit to every node that carries a tunnel of
+// this name, and reports how many it reached.
+//
+// The panel's own `tunnelctl set` only ever touches the host the panel runs on —
+// the FOREIGN half. Most of what an operator edits does not live there: every
+// driver's port map is a side="iran" field (BH_PORTS, BP_PORTS, GO_PORTS,
+// HY_PORTS, FORWARDS), because only the side users connect to holds one. So
+// adding a port in the panel wrote it to the half that does not read it, the node
+// never heard about it, and the UI reported success over a change that did
+// nothing.
+//
+// Best effort by design: a node that is offline or has no such tunnel is skipped,
+// because refusing the whole edit for one unreachable node would be worse than
+// applying it where it can be applied and saying so.
+func (s *NodeService) SetFieldOnTunnel(name, key, value string) (int, error) {
+	var ids []string
+	nodeReg.mu.Lock()
+	nodeReg.load()
+	for id := range nodeReg.nodes {
+		ids = append(ids, id)
+	}
+	nodeReg.mu.Unlock()
+
+	touched := 0
+	var firstErr error
+	for _, id := range ids {
+		raw, err := s.Exec(id, []string{"json", "list"})
+		if err != nil {
+			continue // offline, or no agent yet
+		}
+		var list []struct {
+			Name string `json:"name"`
+		}
+		if json.Unmarshal([]byte(strings.TrimSpace(raw)), &list) != nil {
+			continue
+		}
+		found := false
+		for _, it := range list {
+			if it.Name == name {
+				found = true
+				break
+			}
+		}
+		if !found {
+			continue
+		}
+		if _, err := s.Exec(id, []string{"set", name, key, value}); err != nil {
+			if firstErr == nil {
+				firstErr = fmt.Errorf("node %s: %w", s.NameOf(id), err)
+			}
+			continue
+		}
+		touched++
+	}
+	return touched, firstErr
+}

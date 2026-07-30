@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"regexp"
@@ -258,4 +259,67 @@ func (s *TunnelService) Optimize(action string) error {
 	}
 	_, err := s.run("optimize", action)
 	return err
+}
+
+// SetFieldEverywhere edits one field on whichever HALF of a tunnel owns it.
+//
+// A tunnel is two profiles on two hosts and its fields are not shared: the schema
+// says of each one whether it belongs to the iran side, the foreign side, or both.
+// SetField alone writes only the host the panel runs on, so editing a side="iran"
+// field there — which is every driver's port map — changed a copy nothing reads.
+// The operator adds a port, the panel says saved, and the relay goes on forwarding
+// exactly what it did before.
+//
+// Unknown fields and unreadable schemas fall back to "both", which is the
+// forgiving direction: the value lands on the host that uses it, and on one that
+// merely stores it.
+func (s *TunnelService) SetFieldEverywhere(name, key, value string) error {
+	side := s.fieldSide(name, key)
+
+	var err error
+	if side != "iran" {
+		err = s.SetField(name, key, value)
+	}
+	if side == "foreign" {
+		return err
+	}
+
+	var nodeService NodeService
+	touched, nerr := nodeService.SetFieldOnTunnel(name, key, value)
+	if err == nil && nerr != nil {
+		err = nerr
+	}
+	// A field that lives ONLY on the far side and reached no node changed nothing
+	// at all, and saying so is the whole point — that silence is the bug this
+	// method exists to end.
+	if err == nil && side == "iran" && touched == 0 {
+		return fmt.Errorf("%s belongs to the other end of this tunnel, and no node carrying %q could be reached — "+
+			"bring the node online, or set it there directly", key, name)
+	}
+	return err
+}
+
+// fieldSide reports which half of a tunnel owns a field: "iran", "foreign" or
+// "both".
+func (s *TunnelService) fieldSide(name, key string) string {
+	raw, err := s.Tunnel(name)
+	if err != nil {
+		return "both"
+	}
+	var d map[string]any
+	if json.Unmarshal(raw, &d) != nil {
+		return "both"
+	}
+	protocol, _ := tunnelConfigOf(d)["PROTOCOL"].(string)
+	if protocol == "" {
+		return "both"
+	}
+	schemaRaw, err := s.Schema()
+	if err != nil {
+		return "both"
+	}
+	if side := schemaSides(schemaRaw, protocol)[key]; side != "" {
+		return side
+	}
+	return "both"
 }

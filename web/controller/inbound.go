@@ -200,6 +200,25 @@ func (a *InboundController) openVpnChanged(clientOnly bool) {
 		}
 	}
 	a.openvpnService.KillDisabledSessions()
+	// An OpenVPN inbound can also answer L2TP/IPsec from the same account list
+	// (openvpnSettings.l2tpEnable). That half is built by the L2TP STACK — the
+	// xl2tpd LNS, the IPsec connection, the PPP options, the TPROXY rules — and
+	// none of it used to be reached from here: every one of those was written only
+	// by l2tpChanged, which runs when an inbound of PROTOCOL l2tp changes.
+	//
+	// On a panel whose only L2TP comes from a shared inbound, that never happens.
+	// So the config was never generated and xl2tpd was never started: OpenVPN
+	// worked perfectly, nothing answered on 1701, and no error said why — the
+	// switch in the form was the whole of the feature that ran.
+	//
+	// Inbound-level changes only. A client add or edit needs nothing on the L2TP
+	// side (the in-binary RADIUS reads accounts live from the DB, and no
+	// per-client data lives in the xl2tpd config), and running it there would
+	// restart xl2tpd and drop every connected tunnel each time an account was
+	// touched.
+	if !clientOnly && a.l2tpService.StackInvolved() {
+		a.l2tpChanged(false)
+	}
 	// OpenVPN routes through Xray via dokodemo-door, so Xray routing must refresh.
 	a.xrayService.SetToNeedRestart()
 }

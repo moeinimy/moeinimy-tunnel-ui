@@ -91,6 +91,24 @@ func (s *L2tpService) GetL2tpInbounds() ([]*model.Inbound, error) {
 	return out, nil
 }
 
+// StackInvolved reports whether the L2TP stack has anything to do: something in
+// the DB wants L2TP served, or xl2tpd is still up from a configuration that no
+// longer does.
+//
+// It exists so the OPENVPN change hook can decide whether to run the L2TP side at
+// all. An OpenVPN inbound may serve L2TP from the same account list, and that half
+// is built here, not by the OpenVPN service — so a panel whose only L2TP came from
+// a shared inbound never generated it (nothing of PROTOCOL l2tp had changed) and
+// answered nothing on 1701. The second half of the condition is what lets turning
+// the last one OFF tear the daemon back down.
+func (s *L2tpService) StackInvolved() bool {
+	inbounds, err := s.GetL2tpInbounds()
+	if err == nil && len(inbounds) > 0 {
+		return true
+	}
+	return procMgr.IsRunning("xl2tpd")
+}
+
 // openvpnServesL2tp reports whether an OpenVPN inbound also answers L2TP.
 func openvpnServesL2tp(inbound *model.Inbound) bool {
 	if inbound == nil || inbound.Protocol != model.OPENVPN {

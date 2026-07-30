@@ -66,24 +66,61 @@ func (c sharedConflict) Error() string {
 		c.Field, "L2TP", c.OtherId, c.OtherRemark, c.Other)
 }
 
-// checkL2tpSharedConflicts reports a setting that the incoming l2tp inbound would
-// lose to another enabled l2tp inbound. excludeId skips the row being edited.
+// l2tpSharedFor projects an inbound onto the settings the shared L2TP daemon can
+// only honour one of, and reports whether this inbound serves L2TP at all.
+//
+// It answers for an OPENVPN inbound too, because one that opted into serving L2TP
+// (openvpnSettings.l2tpEnable) runs on exactly the same xl2tpd LNS and the same
+// charon connection, and is therefore subject to the same one-value-wins rule.
+// While this check looked only at protocol l2tp, such an inbound could be saved
+// with its own PSK, be told it saved, and then lose silently to whichever
+// L2TP-serving inbound writeL2tpSwanctlConn happened to reach first — its clients
+// get a profile that cannot authenticate, which from the outside is
+// indistinguishable from "L2TP does not work".
+func l2tpSharedFor(inbound *model.Inbound) (settings l2tpSharedSettings, servesL2tp bool) {
+	if inbound == nil || !inbound.Enable {
+		return settings, false
+	}
+	switch inbound.Protocol {
+	case model.L2TP:
+		if json.Unmarshal([]byte(inbound.Settings), &settings) != nil {
+			return settings, false // malformed settings fail elsewhere, with a better message
+		}
+		return settings, true
+	case model.OPENVPN:
+		var o openvpnSettings
+		if json.Unmarshal([]byte(inbound.Settings), &o) != nil {
+			return settings, false
+		}
+		enabled, psk := o.l2tpServingSettings()
+		if !enabled {
+			return settings, false
+		}
+		// IPsec is not optional on this path: l2tpServingSettings already refused
+		// to serve L2TP without a key.
+		return l2tpSharedSettings{
+			IpsecEnable: true, IpsecPsk: psk,
+			Dns1: o.Dns1, Dns2: o.Dns2, Mtu: o.Mtu,
+		}, true
+	}
+	return settings, false
+}
+
+// checkL2tpSharedConflicts reports a setting that the incoming inbound would lose
+// to another enabled inbound serving L2TP. excludeId skips the row being edited.
 func checkL2tpSharedConflicts(inbound *model.Inbound, excludeId int) error {
-	if inbound == nil || inbound.Protocol != model.L2TP || !inbound.Enable {
+	mine, serves := l2tpSharedFor(inbound)
+	if !serves {
 		return nil
 	}
-	var mine l2tpSharedSettings
-	if err := json.Unmarshal([]byte(inbound.Settings), &mine); err != nil {
-		return nil // malformed settings fail elsewhere with a better message
-	}
 
-	others, err := enabledInboundsOfProtocol(model.L2TP, excludeId)
+	others, err := enabledL2tpServingInbounds(excludeId)
 	if err != nil {
 		return nil // never block a save because the conflict check itself failed
 	}
 	for _, other := range others {
-		var theirs l2tpSharedSettings
-		if json.Unmarshal([]byte(other.Settings), &theirs) != nil {
+		theirs, otherServes := l2tpSharedFor(other)
+		if !otherServes {
 			continue
 		}
 		// The PSK is the damaging one: a mismatch means clients get a profile that
@@ -94,6 +131,13 @@ func checkL2tpSharedConflicts(inbound *model.Inbound, excludeId int) error {
 				Field: "The IPsec pre-shared key", Mine: mine.IpsecPsk, Other: theirs.IpsecPsk,
 				OtherRemark: other.Remark, OtherId: other.Id,
 			}
+		}
+		// DNS and MTU are only refused between two L2TP inbounds. On an OpenVPN
+		// inbound those fields are primarily its OWN clients' link options, and a
+		// mismatch costs its L2TP half the wrong resolver — worth logging, not
+		// worth refusing to save an OpenVPN inbound over.
+		if inbound.Protocol != model.L2TP || other.Protocol != model.L2TP {
+			continue
 		}
 		if mine.Dns1 != "" && theirs.Dns1 != "" && mine.Dns1 != theirs.Dns1 {
 			return sharedConflict{
@@ -148,6 +192,26 @@ func CheckSharedDaemonConflicts(inbound *model.Inbound, excludeId int) error {
 		return err
 	}
 	return checkIkev2SharedConflicts(inbound, excludeId)
+}
+
+// enabledL2tpServingInbounds returns every enabled inbound the L2TP daemons serve:
+// the l2tp ones, and the OpenVPN ones that also answer L2TP. Mirrors
+// L2tpService.GetL2tpInbounds, which is what the generators actually walk — the
+// caller filters the OpenVPN rows that do not serve L2TP via l2tpSharedFor.
+func enabledL2tpServingInbounds(excludeId int) ([]*model.Inbound, error) {
+	db := database.GetDB()
+	if db == nil {
+		return nil, fmt.Errorf("no database")
+	}
+	var out []*model.Inbound
+	q := db.Model(model.Inbound{}).
+		Where("protocol IN ? AND enable = ?",
+			[]string{string(model.L2TP), string(model.OPENVPN)}, true)
+	if excludeId > 0 {
+		q = q.Where("id != ?", excludeId)
+	}
+	err := q.Find(&out).Error
+	return out, err
 }
 
 func enabledInboundsOfProtocol(protocol model.Protocol, excludeId int) ([]*model.Inbound, error) {

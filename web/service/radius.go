@@ -994,10 +994,27 @@ func (s *RadiusService) getClientIP(protocol string, inboundId int, username, st
 	if len(ranges) == 0 && settings.IpRange != "" {
 		ranges = []string{settings.IpRange}
 	}
-	// An L2TP session on an OpenVPN inbound uses that inbound's L2TP pool.
-	if protocol == string(model.L2TP) && inbound.Protocol == model.OPENVPN &&
-		len(settings.L2tpIpRanges) > 0 {
-		ranges = settings.L2tpIpRanges
+	// An L2TP session on an OpenVPN inbound uses that inbound's L2TP pool — and
+	// falls back to the SAME derived range the rest of the L2TP stack falls back
+	// to, never to IpRanges.
+	//
+	// The empty case is not exotic, it is the default: l2tpIpRanges is typed by
+	// hand in the inbound form and AutoExpandVpnRanges only walks rows whose
+	// protocol IS "l2tp", so nothing ever allocates one. Left blank, this used to
+	// hand the dialling client an address out of the OPENVPN pool (10.2.x) while
+	// GenerateXl2tpdConfig had given the LNS 10.0.<id>.x and the nftables TPROXY
+	// rules were written for 10.0.<id> as well. Three components, three different
+	// answers: the Framed-IP-Address fell outside the LNS range, and even where
+	// pppd accepted it the address had no TPROXY rule and collided with the same
+	// account's live OpenVPN address — which is the one thing the separate pool
+	// exists to prevent.
+	if protocol == string(model.L2TP) && inbound.Protocol == model.OPENVPN {
+		if len(settings.L2tpIpRanges) > 0 {
+			ranges = settings.L2tpIpRanges
+		} else {
+			l2tp := L2tpService{}
+			ranges = []string{defaultRange(l2tp.GetSubnetForInbound(&inbound))}
+		}
 	}
 
 	email := settings.Clients[clientIndex].Email

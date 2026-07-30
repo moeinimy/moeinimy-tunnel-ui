@@ -102,6 +102,15 @@ func openvpnForwards(inbound *model.Inbound) []relayForward {
 	if o.tcpEnabled() {
 		out = append(out, relayForward{"tcp", o.tcpListenPort(inbound.Port)})
 	}
+	// The same inbound may also answer L2TP/IPsec (l2tpEnable), and that half does
+	// not live on the inbound's port at all: it negotiates on the fixed UDP 500 and
+	// moves to 4500 behind NAT — which a relay always is. Without these the OpenVPN
+	// half worked through the node and the L2TP half could not even begin, since
+	// nothing carried the IKE packets. Same two ports the L2TP protocol's own case
+	// asks for, for the same reason.
+	if enabled, _ := o.l2tpServingSettings(); enabled {
+		out = append(out, relayForward{"udp", 500}, relayForward{"udp", 4500})
+	}
 	return out
 }
 
@@ -183,30 +192,42 @@ func (s *InboundService) SyncRelayForwards(inbound *model.Inbound) {
 // is accepted and silently carries nothing, which is exactly how a UDP service
 // behind a TCP-only tunnel presents itself: the relay listens, the client
 // connects, and the far end logs "connection refused".
+// relayAll records whether the driver actually IMPLEMENTS FORWARD_MODE=all, and it
+// is deliberately not assumed from the setting existing. The schema offers
+// "none all ports" for every tunnel (tunnel/modules/schema.sh), but only the GRE
+// driver acts on "all" — gre_relay_all() installs the blanket
+// PREROUTING DNAT for tcp AND udp, minus FORWARD_EXCEPT. No other driver reads the
+// value, so on those a tunnel set to "all" forwards NOTHING.
+//
+// That matters because EnsureForward treats "all" as "already relayed" and stops.
+// On a paqet tunnel set to "all" that meant the panel quietly declined to add the
+// port while the tunnel carried none of it: the operator sees a saved inbound, a
+// configured tunnel, and a service nothing reaches.
 type tunnelPortSpec struct {
 	field     string // settings key holding the forward list
 	protoForm bool   // true: "proto:local:dest"; false: "local=dest"
 	udp       bool   // can this tunnel carry UDP?
+	relayAll  bool   // does this driver implement FORWARD_MODE=all?
 }
 
 func tunnelPortSpecFor(protocol string) (tunnelPortSpec, bool) {
 	switch strings.ToLower(strings.TrimSpace(protocol)) {
 	case "gre":
-		return tunnelPortSpec{"FORWARDS", true, true}, true
+		return tunnelPortSpec{"FORWARDS", true, true, true}, true
 	case "paqet":
-		return tunnelPortSpec{"FORWARDS", true, true}, true
+		return tunnelPortSpec{"FORWARDS", true, true, false}, true
 	case "hysteria":
-		return tunnelPortSpec{"HY_PORTS", false, true}, true
+		return tunnelPortSpec{"HY_PORTS", false, true, false}, true
 	case "gost":
-		return tunnelPortSpec{"GO_PORTS", false, false}, true
+		return tunnelPortSpec{"GO_PORTS", false, false, false}, true
 	case "backpack":
-		return tunnelPortSpec{"BP_PORTS", false, false}, true
+		return tunnelPortSpec{"BP_PORTS", false, false, false}, true
 	case "backhaul":
-		return tunnelPortSpec{"BH_PORTS", false, false}, true
+		return tunnelPortSpec{"BH_PORTS", false, false, false}, true
 	case "rathole":
-		return tunnelPortSpec{"RH_PORTS", false, false}, true
+		return tunnelPortSpec{"RH_PORTS", false, false, false}, true
 	case "frp":
-		return tunnelPortSpec{"FRP_PORTS", false, false}, true
+		return tunnelPortSpec{"FRP_PORTS", false, false, false}, true
 	}
 	return tunnelPortSpec{}, false
 }

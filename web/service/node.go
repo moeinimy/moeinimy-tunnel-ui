@@ -448,14 +448,18 @@ func (s *NodeService) EnsureForward(dest, proto string, port int) (string, error
 	if t.name == "" {
 		return "", errors.New("this node has no tunnel yet — create one on the Tunnels page first")
 	}
-	// FORWARD_MODE=all already relays every port; the entry list is ignored there.
-	if t.mode == "all" {
-		return "", nil
-	}
 	spec, known := tunnelPortSpecFor(t.protocol)
 	if !known {
 		return "", fmt.Errorf("tunnel %q uses protocol %q, which this panel cannot configure forwards for",
 			t.name, t.protocol)
+	}
+	// FORWARD_MODE=all already relays every port, so there is no entry to add — but
+	// only where the driver IMPLEMENTS it (spec.relayAll; today that is GRE alone,
+	// whose gre_relay_all installs the blanket tcp+udp DNAT). This used to trust the
+	// setting for every protocol, so a paqet tunnel left on "all" — which its driver
+	// never reads — got no forward from the panel either, and carried nothing.
+	if t.mode == "all" && spec.relayAll {
+		return "", nil
 	}
 	// Saying this plainly is the whole point: a UDP service behind a TCP-only
 	// relay fails as "connection refused" on the far side, with nothing in the
@@ -565,8 +569,9 @@ func (s *NodeService) forwardingTunnel(id string) (nodeTunnel, error) {
 		}
 		cur := nodeTunnel{item.Name, protocol, mode, forwards}
 		// Prefer a tunnel already set up to relay ports; otherwise remember the
-		// first one, so a single-tunnel node still gets configured.
-		if mode == "ports" || mode == "all" {
+		// first one, so a single-tunnel node still gets configured. "all" only
+		// counts as relaying where the driver implements it — see spec.relayAll.
+		if mode == "ports" || (mode == "all" && known && spec.relayAll) {
 			return cur, nil
 		}
 		if found.name == "" {

@@ -100,7 +100,7 @@
                          allowance cannot be priced against a balance that charges
                          per account, so the entry would only offer a dead end. -->
                     <a-button v-if="!RESELLER.isReseller" icon="usergroup-add"
-                      @click="openCombinedAccount">
+                      @click="openCombinedAccount()">
                       <template v-if="!isMobile">{{ i18n
                         "pages.combined.open" }}</template>
                     </a-button>
@@ -902,6 +902,10 @@
 {{template "component/aThemeSwitch" .}}
 {{template "component/aCustomStatistic" .}}
 {{template "component/aPersianDatepicker" .}}
+<!-- Before the modals, not after: each of them creates its Vue instance as it is
+     parsed, and a component registered later than that is a component those instances
+     never saw. -->
+{{template "component/aClientForm"}}
 {{template "modals/inboundModal"}}
 {{template "modals/promptModal"}}
 {{template "modals/qrcodeModal"}}
@@ -2195,14 +2199,19 @@
           default: return clients.findIndex(item => item && item.id === client.id && item.email === client.email);
         }
       },
-      // One customer, several protocols, one allowance. The modal builds an account
-      // per protocol with the ordinary per-protocol constructors; this only posts
-      // them, so the accounts are byte-identical to hand-made ones.
-      openCombinedAccount() {
-        // Mirrors COMBINED_PROTOCOLS in the modal: this only decides whether opening
-        // the form is worth it at all, so the two lists must name the same protocols.
+      // One customer, as many accounts as they are sold, one allowance. The modal
+      // builds each account with the ordinary per-protocol constructor and the
+      // ordinary account form; this only posts them, so the accounts are
+      // byte-identical to hand-made ones.
+      //
+      // `seed` carries an account already being typed in the Add Client dialog over as
+      // the first slot.
+      openCombinedAccount(seed = null) {
+        // Only decides whether opening the form is worth it at all; the modal's own
+        // usableInbounds is the list it actually offers, and both read the same
+        // CLIENT_PROTOCOLS.
         const usable = this.dbInbounds.filter(row =>
-          [Protocols.OPENVPN, Protocols.VLESS].includes(row.protocol));
+          CLIENT_PROTOCOLS.includes(row.protocol));
         if (usable.length === 0) {
           this.$message.warning('{{ i18n "pages.combined.noInbounds" }}');
           return;
@@ -2211,6 +2220,7 @@
           title: '{{ i18n "pages.combined.title"}}',
           okText: '{{ i18n "pages.combined.submit"}}',
           dbInbounds: this.dbInbounds,
+          seed: seed,
           confirm: async (payloads) => {
             await this.addCombinedAccount(payloads, combinedModal);
           },

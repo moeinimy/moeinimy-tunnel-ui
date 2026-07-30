@@ -321,44 +321,12 @@
             this.delayedStart = false;
             this.reset = 0;
         },
+        // Single definition in model/inbound.js. The protocol argument is kept for the
+        // call sites, but the shape comes from the INBOUND: Shadowsocks needs its
+        // cipher, and reading it off shadowsockses[0] broke on an inbound whose
+        // accounts had all been deleted.
         newClient(protocol) {
-            switch (protocol) {
-                case Protocols.VMESS:
-                    return new Inbound.VmessSettings.VMESS();
-                case Protocols.VLESS:
-                    return new Inbound.VLESSSettings.VLESS();
-                case Protocols.TROJAN:
-                    return new Inbound.TrojanSettings.Trojan();
-                case Protocols.SHADOWSOCKS:
-                    return new Inbound.ShadowsocksSettings.Shadowsocks(
-                        clientsBulkModal.inbound.settings.shadowsockses[0]
-                            .method,
-                    );
-                case Protocols.HYSTERIA:
-                    return new Inbound.HysteriaSettings.Hysteria();
-                case Protocols.L2TP:
-                    return new Inbound.L2tpSettings.L2tpUser();
-                case Protocols.PPTP:
-                    return new Inbound.PptpSettings.PptpUser();
-                case Protocols.OPENVPN:
-                    return new Inbound.OpenvpnSettings.OpenvpnUser();
-                case Protocols.OPENCONNECT:
-                    return new Inbound.OcservSettings.OcservUser();
-                case Protocols.SSTP:
-                    return new Inbound.SstpSettings.SstpUser();
-                case Protocols.IKEV2:
-                    return new Inbound.Ikev2Settings.Ikev2User();
-                case Protocols.WGC:
-                    return new Inbound.WgcSettings.WgUser();
-                case Protocols.AWG:
-                    return new Inbound.AwgSettings.AwgUser();
-                case Protocols.MTPROTO:
-                    return new Inbound.MtprotoSettings.MtprotoUser();
-                case Protocols.SSH:
-                    return new Inbound.SshSettings.SshUser();
-                default:
-                    return null;
-            }
+            return createClientForInbound(clientsBulkModal.inbound);
         },
         close() {
             clientsBulkModal.visible = false;

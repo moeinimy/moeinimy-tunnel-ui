@@ -52,6 +52,169 @@ function getClientIdentity(protocol, client) {
     }
 }
 
+// A blank account of the shape an inbound's protocol expects, with its credential
+// already minted.
+//
+// ONE definition, for the same reason getClientIdentity above is one: this switch used
+// to exist three times — the Add Client form, the bulk form and the combined form — and
+// a protocol added to one of them was a protocol the other two silently could not
+// create. The combined form now opens a slot on ANY inbound, so a missing case there
+// would be a slot that renders empty and posts nothing.
+//
+// Takes an Inbound (not a DBInbound): Shadowsocks reads the cipher off the inbound's
+// settings, because every account on one of those inbounds must share it.
+function createClientForInbound(inbound) {
+    if (!inbound) return null;
+    switch (inbound.protocol) {
+        case Protocols.VMESS:
+            return new Inbound.VmessSettings.VMESS();
+        case Protocols.VLESS:
+            return new Inbound.VLESSSettings.VLESS();
+        case Protocols.TROJAN:
+            return new Inbound.TrojanSettings.Trojan();
+        case Protocols.SHADOWSOCKS: {
+            // The cipher comes off the INBOUND, and the existing accounts only decide
+            // it when the inbound itself has none — an inbound with no accounts yet is
+            // exactly the case the old `clients[0].method` threw on.
+            const method = (inbound.settings && inbound.settings.method) || "";
+            const existing = inbound.clients || [];
+            const clientMethod =
+                existing.length && existing[0].method ? existing[0].method : method;
+            return new Inbound.ShadowsocksSettings.Shadowsocks(
+                clientMethod,
+                RandomUtil.randomShadowsocksPassword(method),
+            );
+        }
+        case Protocols.HYSTERIA:
+            return new Inbound.HysteriaSettings.Hysteria();
+        case Protocols.L2TP:
+            return new Inbound.L2tpSettings.L2tpUser();
+        case Protocols.PPTP:
+            return new Inbound.PptpSettings.PptpUser();
+        case Protocols.OPENVPN:
+            return new Inbound.OpenvpnSettings.OpenvpnUser();
+        case Protocols.OPENCONNECT:
+            return new Inbound.OcservSettings.OcservUser();
+        case Protocols.SSTP:
+            return new Inbound.SstpSettings.SstpUser();
+        case Protocols.IKEV2:
+            return new Inbound.Ikev2Settings.Ikev2User();
+        case Protocols.WGC:
+            return new Inbound.WgcSettings.WgUser();
+        case Protocols.AWG:
+            return new Inbound.AwgSettings.AwgUser();
+        case Protocols.MTPROTO:
+            return new Inbound.MtprotoSettings.MtprotoUser();
+        case Protocols.SSH:
+            return new Inbound.SshSettings.SshUser();
+        default:
+            return null;
+    }
+}
+
+// What makes an account a DIFFERENT account rather than a second copy of one. Never
+// carried across when a form repeats an account: the credential, the identity the
+// panel looks it up by, and the material the SERVER mints per account.
+//
+// privKey/pubKey/psk/devices are on that list because WireGuard's keys are one
+// keypair per account; slot because it is the account's index into the inbound's
+// address pool and only the backend may allocate one.
+const CLIENT_PER_ACCOUNT_FIELDS = [
+    "id",
+    "password",
+    "secret",
+    "auth",
+    "email",
+    "subId",
+    "privKey",
+    "pubKey",
+    "psk",
+    "devices",
+    "slot",
+    "created_at",
+    "updated_at",
+];
+
+// A detached copy of `template` as an account on `inbound`.
+//
+// With freshIdentity, the copy is the same OFFER on a BRAND-NEW account: same limits,
+// same protocol settings, its own credential. That is what "create this package for 50
+// customers" means, and what duplicating a slot of a combined customer means.
+//
+// Built by constructing a fresh client and copying onto it, rather than by cloning and
+// then overwriting the credential: several protocols expose `id` as a getter over email
+// (wg-c, awg, mtproto) and assigning to it does nothing at all, so the overwrite would
+// hand two customers one identity and only surface later, at the duplicate-email check,
+// naming a field the operator never typed. Own enumerable keys only, which is exactly
+// what keeps those prototype getters out of the copy.
+//
+// Without freshIdentity it is a plain detached copy, used so that posting a form does
+// not write the posted figures back into the form's own state.
+function cloneClientForInbound(inbound, template, { freshIdentity = false } = {}) {
+    const fresh = createClientForInbound(inbound);
+    if (!fresh || !template) return fresh;
+    for (const key of Object.keys(template)) {
+        if (freshIdentity && CLIENT_PER_ACCOUNT_FIELDS.includes(key)) continue;
+        const value = template[key];
+        // Deep-copied: externalProxy and the MTProto rows are arrays of objects, and a
+        // shared reference means editing one customer's after the fact edits everyone's.
+        fresh[key] =
+            value && typeof value === "object"
+                ? JSON.parse(JSON.stringify(value))
+                : value;
+    }
+    return fresh;
+}
+
+// Which protocols have ACCOUNTS at all. Must stay in step with the switch above: a
+// protocol createClientForInbound cannot build is an inbound no form may offer a slot
+// on, because the slot would render empty and post nothing.
+//
+// This answers "could this protocol ever hold an account". Whether a PARTICULAR inbound
+// can take one MORE is DBInbound.isMultiUser(), which also knows about the
+// single-account cases (a Shadowsocks cipher with no user list, IKEv2 psk/eap-tls).
+const CLIENT_PROTOCOLS = [
+    Protocols.VMESS,
+    Protocols.VLESS,
+    Protocols.TROJAN,
+    Protocols.SHADOWSOCKS,
+    Protocols.HYSTERIA,
+    Protocols.L2TP,
+    Protocols.PPTP,
+    Protocols.OPENVPN,
+    Protocols.OPENCONNECT,
+    Protocols.SSTP,
+    Protocols.IKEV2,
+    Protocols.WGC,
+    Protocols.AWG,
+    Protocols.MTPROTO,
+    Protocols.SSH,
+];
+
+// The tag appended to a customer's name to make one account's email, per protocol.
+//
+// Emails exist as a family because an email is the panel's GLOBAL account identity and
+// is unique across every inbound: the several accounts belonging to one customer cannot
+// all be called "ali". The tag is what keeps them one readable family in the client list
+// rather than a handful of unrelated random names.
+const PROTOCOL_EMAIL_TAG = {
+    vmess: "vmess",
+    vless: "vless",
+    trojan: "trojan",
+    shadowsocks: "ss",
+    hysteria: "hy",
+    l2tp: "l2tp",
+    pptp: "pptp",
+    openvpn: "ovpn",
+    openconnect: "ocserv",
+    sstp: "sstp",
+    ikev2: "ikev2",
+    "wg-c": "wg",
+    awg: "awg",
+    mtproto: "mtp",
+    ssh: "ssh",
+};
+
 // Display labels for the protocol picker. The Add/Edit inbound dropdown shows
 // these while binding the lowercase Protocols VALUE (openvpn/http/openconnect/…),
 // which is what the backend parses — so the pretty text never reaches the server.
@@ -188,6 +351,9 @@ const MODE_OPTION = {
 
 Object.freeze(Protocols);
 Object.freeze(ProtocolLabels);
+Object.freeze(CLIENT_PROTOCOLS);
+Object.freeze(CLIENT_PER_ACCOUNT_FIELDS);
+Object.freeze(PROTOCOL_EMAIL_TAG);
 Object.freeze(SSMethods);
 Object.freeze(TLS_FLOW_CONTROL);
 Object.freeze(TLS_VERSION_OPTION);

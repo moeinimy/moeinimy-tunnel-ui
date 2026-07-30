@@ -663,6 +663,10 @@
 {{template "component/aSidebar" .}}
 {{template "component/aThemeSwitch" .}}
 {{template "component/aPersianDatepicker" .}}
+<!-- Before the modals, not after: each of them creates its Vue instance as it is
+     parsed, and a component registered later than that is a component those instances
+     never saw. -->
+{{template "component/aClientForm"}}
 {{template "modals/promptModal"}}
 {{template "modals/qrcodeModal"}}
 {{template "modals/textModal"}}
@@ -1685,13 +1689,25 @@
           const r = this.resolveRow(m);
           // resolveRow re-parses the inbound's settings, so every client here is a
           // detached copy: the form edits them freely and a cancel discards the lot.
-          if (r) members.push({ dbInbound: r.dbInbound, client: r.client });
+          if (r) members.push({
+            dbInbound: r.dbInbound,
+            client: r.client,
+            // This account's OWN counters, shown beside its fields. The customer's
+            // shared total is on the allowance half; the reset button beside these is
+            // withheld (the account form hides it whenever a group owns the quota),
+            // because zeroing one member hands the customer back that much of a
+            // shared allowance without the group having been renewed.
+            stats: r.dbInbound.clientStats
+              ? r.dbInbound.clientStats.find(s => s.email === m.email) || null
+              : null,
+          });
         }
         if (!members.length) return;
         combinedEditModal.show({
           title: '{{ i18n "pages.combinedEdit.title" }} — ' + row.email,
           group: row.group,
           members,
+          dbInbounds: this.dbInbounds,
           usedBytes: row.used,
           confirm: async (payload) => {
             await this.saveCustomer(payload);
@@ -1699,21 +1715,37 @@
         });
       },
 
-      // Saves the allowance and every account it was opened with.
+      // Saves the allowance, every account it was opened with, and whatever the
+      // operator added to or took off the customer while it was open.
       //
       // The GROUP goes first, deliberately. If an account write fails the customer is
       // left with the entitlement the operator just set and their old credentials, which
       // is recoverable by reopening the dialog; the other order leaves new credentials
       // billed against the old allowance, which reads as the save having half worked.
+      //
+      // Then ADDS before REMOVES, which is not arbitrary either: the panel refuses to
+      // delete an inbound's last account, so an operator replacing the only account on
+      // an inbound would be refused if the delete went first — and would be refused
+      // AFTER their new one had already been created, leaving the customer holding both.
+      //
+      // The list is re-read ONCE, at the end. Reloading after each call turned editing a
+      // customer with four accounts into four full page loads, and each of them raced
+      // the writes still to come.
       async saveCustomer(payload) {
         combinedEditModal.loading(true);
+        let touched = false;
         try {
+          const post = async (url, data) => {
+            const msg = await HttpUtil.postWithModal(url, data);
+            return msg.success;
+          };
+
           const g = payload.group;
-          const ok = await this.submit('/panel/api/inbounds/clientGroups/update/' + g.id, {
+          if (!await post('/panel/api/inbounds/clientGroups/update/' + g.id, {
             name: g.name, total: g.total, expiryTime: g.expiryTime,
             reset: g.reset, enable: g.enable, comment: g.comment,
-          });
-          if (!ok) return;
+          })) return;
+          touched = true;
 
           for (const acc of payload.accounts) {
             const data = {
@@ -1722,13 +1754,37 @@
             };
             // clientId is the credential the account had when the dialog opened, which
             // is how the route finds it — the body is what it becomes.
-            const done = await this.submit(
-              '/panel/api/inbounds/updateClient/' + acc.clientId, data);
-            if (!done) return;
+            if (!await post('/panel/api/inbounds/updateClient/' + acc.clientId, data)) return;
           }
+
+          // Created, then attached — in that order and both before anything is
+          // reported as done. An account created but not attached is billing its own
+          // quota against a customer who was sold one allowance, so the membership
+          // call is what actually finishes the add.
+          const joined = [];
+          for (const acc of (payload.added || [])) {
+            if (!await post('/panel/api/inbounds/addClient',
+              { id: acc.inboundId, settings: acc.settings })) return;
+            if (acc.email) joined.push(acc.email);
+          }
+          if (joined.length) {
+            // A JSON string in a "data" field: the panel form-urlencodes every request
+            // body (assets/js/axios-init.js), so a nested payload has no other way through.
+            if (!await post('/panel/api/inbounds/clientGroups/membership',
+              { data: JSON.stringify({ groupId: g.id, emails: joined }) })) return;
+          }
+
+          for (const acc of (payload.removed || [])) {
+            if (!await post(
+              '/panel/api/inbounds/' + acc.inboundId + '/delClient/' + acc.clientId)) return;
+          }
+
           combinedEditModal.close();
         } finally {
           combinedEditModal.loading(false);
+          // Even a half-finished save moved something, and the table must show what
+          // actually exists rather than what the operator asked for.
+          if (touched) await this.load();
         }
       },
 
@@ -1803,9 +1859,11 @@
       },
 
       // --- combined account ---------------------------------------------
-      openCombinedAccount() {
+      // `seed` carries an account already being typed in the Add Client dialog over as
+      // the combined form's first slot.
+      openCombinedAccount(seed = null) {
         const usable = this.dbInbounds.filter(row =>
-          [Protocols.OPENVPN, Protocols.VLESS].includes(row.protocol));
+          CLIENT_PROTOCOLS.includes(row.protocol));
         if (usable.length === 0) {
           this.$message.warning('{{ i18n "pages.combined.noInbounds" }}');
           return;
@@ -1814,6 +1872,7 @@
           title: '{{ i18n "pages.combined.title"}}',
           okText: '{{ i18n "pages.combined.submit"}}',
           dbInbounds: this.dbInbounds,
+          seed: seed,
           confirm: async (payloads) => {
             await this.addCombinedAccount(payloads, combinedModal);
           },

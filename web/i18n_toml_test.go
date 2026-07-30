@@ -162,22 +162,23 @@ var knownMissing = keySet(
 	// English fallback until translated.
 	"pages.combined.open", "pages.combined.title", "pages.combined.submit",
 	"pages.combined.desc", "pages.combined.name", "pages.combined.nameDesc",
-	"pages.combined.accounts", "pages.combined.credentials", "pages.combined.allowance",
-	"pages.combined.noInbound", "pages.combined.noInbounds", "pages.combined.emailPreview",
-	"pages.combined.usernameDesc", "pages.combined.uuid",
-	"pages.combined.sharedQuotaDesc", "pages.combined.sharedExpiryDesc",
-	"pages.combined.ipLimitDesc", "pages.combined.subIdDesc",
+	"pages.combined.accounts", "pages.combined.allowance",
+	"pages.combined.noInbounds", "pages.combined.sharedQuotaDesc", "pages.combined.sharedExpiryDesc",
+	"pages.combined.subIdDesc",
 	"pages.combined.created", "pages.combined.needName", "pages.combined.needProtocol",
 	"pages.combined.sharedWith", "pages.combined.ownUsage", "pages.combined.groupTagDesc",
-	"pages.combined.userLimit", "pages.combined.userLimitDesc",
 	"pages.combined.delayedStartDesc",
-	"pages.combined.limits", "pages.combined.ipLimitVless",
 	"pages.combined.count", "pages.combined.countDesc",
+	"pages.combined.addSlot", "pages.combined.removeSlot",
+	"pages.combined.duplicateSlot", "pages.combined.slotInbound",
+	"pages.combined.slotInboundDesc", "pages.combined.duplicateEmail",
+	"pages.combinedEdit.newAccount", "pages.combinedEdit.removeAccount",
+	"pages.client.addAnotherAccount",
 
 	// The customer editor.
 	"pages.combinedEdit.title", "pages.combinedEdit.desc",
 	"pages.combinedEdit.daysDesc", "pages.combinedEdit.enableDesc",
-	"pages.combinedEdit.accountEnableDesc", "pages.combinedEdit.needEmail",
+	"pages.combinedEdit.needEmail",
 
 	// The cross-inbound Clients page. Translated in en_US and fa_IR; the other
 	// locales render via the English fallback until translated.

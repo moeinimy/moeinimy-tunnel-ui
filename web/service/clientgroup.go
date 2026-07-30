@@ -545,8 +545,10 @@ func (s *ClientGroupService) enforceGroups(tx *gorm.DB) (bool, error) {
 
 // --- Combined accounts -------------------------------------------------------------
 
-// CombinedMember is one protocol's half of a combined account: the inbound the account
-// lands on, and the account itself in exactly the shape /addClient already takes.
+// CombinedMember is ONE ACCOUNT of a combined account: the inbound it lands on, and the
+// account itself in exactly the shape /addClient already takes. Several members may name
+// the same inbound — a customer sold two VLESS configs in one subscription is two members
+// on one inbound, differing only in their credential and their email.
 //
 // The client arrives ALREADY BUILT rather than being assembled here out of a flat
 // form. Each protocol's client is a different shape — VLESS carries a uuid and a flow,
@@ -622,14 +624,15 @@ func (s *ClientGroupService) CreateCombined(group *model.ClientGroup, members []
 	prepared := make([]*model.Inbound, 0, len(members))
 	emails := make([]string, 0, len(members))
 	protocols := make([]model.Protocol, 0, len(members))
-	seenInbound := make(map[int]bool, len(members))
+	// The EMAILS have to differ, and nothing else does. A customer holding two accounts
+	// on ONE inbound is ordinary — two VLESS configs in a single subscription, sold as a
+	// spare route — and the guard that used to sit here refused exactly that while
+	// claiming to protect a constraint the panel does not have. What the panel does have
+	// is a globally unique client_traffics.Email, so a repeat within one request is
+	// caught here rather than halfway through creating the customer, where it would have
+	// to be unwound.
+	seenEmail := make(map[string]bool, len(members))
 	for _, m := range members {
-		if seenInbound[m.InboundId] {
-			return nil, common.NewError("two of these accounts land on inbound", m.InboundId,
-				"- one customer needs at most one account per inbound")
-		}
-		seenInbound[m.InboundId] = true
-
 		dbInbound, err := inboundService.GetInbound(m.InboundId)
 		if err != nil {
 			return nil, err
@@ -639,16 +642,22 @@ func (s *ClientGroupService) CreateCombined(group *model.ClientGroup, members []
 		if err != nil {
 			return nil, err
 		}
-		// Exactly one, per member: this is one customer's account on one inbound, and a
-		// member carrying several would put accounts in the group that the operator
-		// never saw priced against the shared quota.
+		// Exactly one, per member: a member IS one account, and one carrying several
+		// would put accounts in the group that the operator never saw priced against
+		// the shared quota. Several accounts means several members, which is what the
+		// form's slots are.
 		if len(clients) != 1 {
-			return nil, common.NewError("each protocol of a combined account carries exactly one account")
+			return nil, common.NewError("each slot of a combined account carries exactly one account")
 		}
 		email := strings.TrimSpace(clients[0].Email)
 		if email == "" {
 			return nil, common.NewError("every account in a combined account needs an email")
 		}
+		if seenEmail[email] {
+			return nil, common.NewError("two of these accounts are called", email,
+				"- an email is one account's name across the whole panel")
+		}
+		seenEmail[email] = true
 
 		prepared = append(prepared, posted)
 		emails = append(emails, email)

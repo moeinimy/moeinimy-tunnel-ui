@@ -10,6 +10,7 @@
     :ok-text="combinedModal.okText"
     cancel-text='{{ i18n "close" }}'
     :class="themeSwitcher.currentTheme"
+    :width="isMobile ? '96vw' : 760"
 >
     <a-alert
         type="info"
@@ -34,7 +35,14 @@
                     <a-icon type="question-circle"></a-icon>
                 </a-tooltip>
             </template>
-            <a-input v-model.trim="combinedModal.name"></a-input>
+            <!-- :value + @change, not v-model: every slot whose email the operator has
+                 not touched is derived from this, and the derivation has to run on the
+                 same keystroke or the preview in each panel header lags a character
+                 behind what was typed. -->
+            <a-input
+                :value="combinedModal.name"
+                @change="e => combinedModal.setName(e.target.value)"
+            ></a-input>
         </a-form-item>
 
         <!-- Selling the same package to several customers at once. Only the identity
@@ -63,171 +71,121 @@
                 combinedModal.count ]]</span
             >
         </a-form-item>
+    </a-form>
 
-        <a-divider>{{ i18n "pages.combined.accounts" }}</a-divider>
+    <a-divider>{{ i18n "pages.combined.accounts" }}</a-divider>
 
-        <!-- One row per protocol. Each is independent: a customer who only wants
-             two of the three simply leaves the third off, and the group still
-             shares one allowance across whatever is left. -->
-        <a-form-item
-            v-for="slot in combinedModal.slots"
-            :key="slot.protocol"
-            :label="slot.label"
+    <!-- One panel per ACCOUNT, not per protocol. A customer may hold as many as they
+         are sold, including several on the same protocol -- two VLESS on two different
+         inbounds is one subscription carrying two configs, which is the ordinary way to
+         sell a spare route, and it was unrepresentable while this list was
+         one-slot-per-protocol. Each panel is the ordinary account form, so a slot has
+         every setting its protocol has and gains new ones the day the protocol does. -->
+    <div v-if="!combinedModal.usableInbounds.length" class="bo-muted">
+        {{ i18n "pages.combined.noInbounds" }}
+    </div>
+
+    <a-collapse
+        v-else
+        :bordered="false"
+        v-model="combinedModal.openPanels"
+        :class="themeSwitcher.currentTheme"
+    >
+        <a-collapse-panel
+            v-for="(slot, idx) in combinedModal.slots"
+            :key="String(slot.key)"
         >
-            <a-space>
-                <a-switch
-                    v-model="slot.enabled"
-                    :disabled="combinedModal.inboundsFor(slot.protocol).length === 0"
-                ></a-switch>
-                <a-select
-                    v-model="slot.inboundId"
-                    :disabled="!slot.enabled || combinedModal.inboundsFor(slot.protocol).length === 0"
-                    :style="{ minWidth: '190px' }"
-                    :dropdown-class-name="themeSwitcher.currentTheme"
-                >
-                    <a-select-option
-                        v-for="row in combinedModal.inboundsFor(slot.protocol)"
-                        :key="row.id"
-                        :value="row.id"
-                        >[[ row.remark || ('#' + row.id) ]]</a-select-option
+            <template slot="header">
+                <a-space>
+                    <a-tag color="blue">[[ combinedModal.protocolLabel(slot) ]]</a-tag>
+                    <span>[[ slot.client.email || '—' ]]</span>
+                    <span class="bo-muted"
+                        >[[ combinedModal.inboundLabel(slot.inboundId) ]]</span
                     >
-                </a-select>
-            </a-space>
-            <!-- The derived email, shown before anything is created: it is what the
-                 operator will look the account up by, and it is not what they typed. -->
-            <div :style="{ opacity: 0.65, lineHeight: '1.6' }">
-                <span v-if="combinedModal.inboundsFor(slot.protocol).length === 0"
-                    >{{ i18n "pages.combined.noInbound" }}</span
-                >
-                <span v-else-if="slot.enabled && combinedModal.name"
-                    >{{ i18n "pages.combined.emailPreview" }}: [[
-                    combinedModal.emailFor(slot) ]]</span
-                >
-            </div>
-        </a-form-item>
+                </a-space>
+            </template>
+            <!-- In `extra`, and each stopping propagation: the header itself is the
+                 collapse toggle, so an icon that did not would fold the panel it just
+                 acted on. -->
+            <template slot="extra">
+                <a-tooltip title='{{ i18n "pages.combined.duplicateSlot" }}'>
+                    <a-icon
+                        type="copy"
+                        :style="{ marginInlineEnd: '12px' }"
+                        @click.stop="combinedModal.duplicateSlot(idx)"
+                    ></a-icon>
+                </a-tooltip>
+                <a-tooltip title='{{ i18n "pages.combined.removeSlot" }}'>
+                    <a-icon
+                        type="delete"
+                        :style="{ color: '#FF4D4F' }"
+                        @click.stop="combinedModal.removeSlot(idx)"
+                    ></a-icon>
+                </a-tooltip>
+            </template>
 
-        <a-divider>{{ i18n "pages.combined.credentials" }}</a-divider>
-
-        <!-- The username-and-password half of the account. VLESS is not offered
-             these because it authenticates by UUID, which is exactly why the
-             protocols cannot share one account and share an entitlement instead. -->
-        <template v-if="combinedModal.needsUserPass">
-            <a-form-item>
-                <template slot="label">
-                    <a-tooltip>
-                        <template slot="title">
-                            <span>{{ i18n "pages.combined.usernameDesc" }}</span>
-                        </template>
-                        {{ i18n "username" }}
-                        <a-icon
-                            @click="combinedModal.username = RandomUtil.randomVpnUser()"
-                            type="sync"
-                        ></a-icon>
-                    </a-tooltip>
-                </template>
-                <a-input v-model.trim="combinedModal.username"></a-input>
-            </a-form-item>
-            <a-form-item>
-                <template slot="label">
-                    <a-tooltip>
-                        <template slot="title">
-                            <span>{{ i18n "reset" }}</span>
-                        </template>
-                        {{ i18n "password" }}
-                        <a-icon
-                            @click="combinedModal.password = RandomUtil.randomVpnPassword()"
-                            type="sync"
-                        ></a-icon>
-                    </a-tooltip>
-                </template>
-                <a-input v-model.trim="combinedModal.password"></a-input>
-            </a-form-item>
-        </template>
-
-        <!-- Device limits are PER PROTOCOL, not one figure for the customer. They
-             count different things and are enforced by different machinery: OpenVPN
-             authenticates by username so its User Limit counts SESSIONS, while an IP
-             Limit counts distinct addresses seen for the account. Only the traffic
-             allowance is genuinely shared; a single number here would have to mean
-             something different on each row. -->
-        <template
-            v-if="combinedModal.needsUserLimit || (app.ipLimitEnable && combinedModal.needsUuid)"
-        >
-            <a-divider>{{ i18n "pages.combined.limits" }}</a-divider>
-
-            <!-- OpenVPN gets User Limit and NOT an IP Limit, deliberately. A per-account
-                 IP Limit is enforced by the patched core at admission, and the core never
-                 sees an OpenVPN client: ipLimitEnforcedInCore() excludes every VPN
-                 protocol, so the field would publish to nothing and silently do nothing.
-                 What actually caps an OpenVPN account's devices is its session count,
-                 which is what User Limit is. -->
-            <a-form-item v-if="combinedModal.needsUserLimit">
-                <template slot="label">
-                    <a-tooltip>
-                        <template slot="title">
-                            <span>{{ i18n "pages.combined.userLimitDesc" }}</span>
-                        </template>
-                        <span>{{ i18n "pages.combined.userLimit" }} </span>
-                        <a-icon type="question-circle"></a-icon>
-                    </a-tooltip>
-                </template>
-                <a-input-number
-                    v-model.number="combinedModal.userLimit"
-                    :min="0"
-                    :max="64"
-                ></a-input-number>
-            </a-form-item>
-
-            <a-form-item v-if="app.ipLimitEnable && combinedModal.needsUuid">
-                <template slot="label">
-                    <a-tooltip>
-                        <template slot="title">
-                            <span>{{ i18n "pages.combined.ipLimitDesc" }}</span>
-                        </template>
-                        <span>{{ i18n "pages.combined.ipLimitVless" }} </span>
-                        <a-icon type="question-circle"></a-icon>
-                    </a-tooltip>
-                </template>
-                <a-input-number
-                    v-model.number="combinedModal.limitIpVless"
-                    :min="0"
-                ></a-input-number>
-            </a-form-item>
-        </template>
-
-        <template v-if="combinedModal.needsUuid">
-            <a-form-item>
-                <template slot="label">
-                    <a-tooltip>
-                        <template slot="title">
-                            <span>{{ i18n "reset" }}</span>
-                        </template>
-                        {{ i18n "pages.combined.uuid" }}
-                        <a-icon
-                            @click="combinedModal.uuid = RandomUtil.randomUUID()"
-                            type="sync"
-                        ></a-icon>
-                    </a-tooltip>
-                </template>
-                <a-input v-model.trim="combinedModal.uuid"></a-input>
-            </a-form-item>
-            <a-form-item label="Flow" v-if="canEnableTlsFlow">
-                <a-select
-                    v-model="combinedModal.flow"
-                    :dropdown-class-name="themeSwitcher.currentTheme"
-                >
-                    <a-select-option value="" selected
-                        >{{ i18n "none" }}</a-select-option
+            <a-form
+                :colon="false"
+                :label-col="{ md: {span:8} }"
+                :wrapper-col="{ md: {span:14} }"
+            >
+                <a-form-item>
+                    <template slot="label">
+                        <a-tooltip>
+                            <template slot="title">
+                                <span>{{ i18n "pages.combined.slotInboundDesc" }}</span>
+                            </template>
+                            {{ i18n "pages.combined.slotInbound" }}
+                            <a-icon type="question-circle"></a-icon>
+                        </a-tooltip>
+                    </template>
+                    <!-- Changing this REBUILDS the account: a VLESS client and an
+                         OpenVPN client are different shapes, and keeping the old one
+                         would post a uuid to a daemon that authenticates on a
+                         password. -->
+                    <a-select
+                        :value="slot.inboundId"
+                        @change="id => combinedModal.setSlotInbound(idx, id)"
+                        :dropdown-class-name="themeSwitcher.currentTheme"
+                        :style="{ width: '100%' }"
                     >
-                    <a-select-option v-for="key in TLS_FLOW_CONTROL" :value="key"
-                        >[[ key ]]</a-select-option
-                    >
-                </a-select>
-            </a-form-item>
-        </template>
+                        <a-select-option
+                            v-for="row in combinedModal.usableInbounds"
+                            :key="row.id"
+                            :value="row.id"
+                            >[[ combinedModal.inboundLabel(row.id) ]]</a-select-option
+                        >
+                    </a-select>
+                </a-form-item>
+            </a-form>
 
-        <a-divider>{{ i18n "pages.combined.allowance" }}</a-divider>
+            <a-client-form
+                :client="slot.client"
+                :inbound="slot.inbound"
+                :datepicker="datepicker"
+                :hide="COMBINED_SLOT_HIDDEN"
+                @email-input="() => combinedModal.markEmailTouched(idx)"
+            ></a-client-form>
+        </a-collapse-panel>
+    </a-collapse>
 
+    <a-button
+        v-if="combinedModal.usableInbounds.length"
+        type="dashed"
+        icon="plus"
+        block
+        :style="{ marginTop: '8px' }"
+        @click="combinedModal.addSlot()"
+        >{{ i18n "pages.combined.addSlot" }}</a-button
+    >
+
+    <a-divider>{{ i18n "pages.combined.allowance" }}</a-divider>
+
+    <a-form
+        :colon="false"
+        :label-col="{ md: {span:8} }"
+        :wrapper-col="{ md: {span:14} }"
+    >
         <a-form-item>
             <template slot="label">
                 <a-tooltip>
@@ -245,7 +203,7 @@
         </a-form-item>
 
         <!-- Start on first use. For a group this is ONE clock for the customer: it
-             starts on whichever protocol they happen to open first, and the other two
+             starts on whichever protocol they happen to open first, and the others
              expire on that same date rather than each waiting for its own first use. -->
         <a-form-item>
             <template slot="label">
@@ -364,30 +322,19 @@
     </a-form>
 </a-modal>
 <script>
-    // The protocols a combined account is offered across, and the suffix each one's
-    // email gets.
-    //
-    // Suffixes exist because an email is the panel's GLOBAL account identity and is
-    // unique across every inbound: the three accounts belonging to one customer
-    // cannot all be called "ali". The suffix is what keeps them one readable family
-    // in the client list rather than three unrelated random names, and the form
-    // shows each derived email before anything is created.
-    // L2TP is deliberately NOT here. The group service itself is protocol-agnostic —
-    // it takes inbound ids and knows nothing about which — so this list is the only
-    // thing that decides what the form offers, and an operator who wants an L2TP
-    // account on a customer can still add it and put it in the group through the
-    // /clientGroups API. Removing it here does not touch any account that already
-    // exists.
-    const COMBINED_PROTOCOLS = [
-        { protocol: Protocols.OPENVPN, label: "OpenVPN", suffix: "ovpn" },
-        { protocol: Protocols.VLESS, label: "VLESS", suffix: "vless" },
-    ];
-
-    // Protocols whose accounts log in with a username and a password, as opposed to
-    // VLESS's UUID. A list rather than a bare comparison because username uniqueness
-    // is checked PER PROTOCOL by the backend, so several of these could share one
-    // pair if the form ever offers more than one again.
-    const COMBINED_USERPASS = [Protocols.OPENVPN];
+    // The rows a slot does NOT answer for. The allowance belongs to the group; the
+    // subscription id, the Telegram chat, the comment and the master switch are asked
+    // once, above, because they describe the CUSTOMER — one subscription link that
+    // carries every one of their configs, one person to notify, one switch that turns
+    // the lot off. Everything else a protocol has is the slot's own and is right there
+    // in the ordinary account form.
+    const COMBINED_SLOT_HIDDEN = Object.freeze([
+        "allowance",
+        "enable",
+        "comment",
+        "subId",
+        "tgId",
+    ]);
 
     const combinedModal = {
         visible: false,
@@ -396,28 +343,24 @@
         okText: "",
         confirm: null,
         dbInbounds: [],
+        // One entry per ACCOUNT the customer will get:
+        //   { key, inboundId, inbound, client, emailTouched }
+        // `key` is a counter, not the inbound id and not the index: it is the collapse
+        // panel's identity, and both of those change under a slot that is still open.
         slots: [],
+        nextKey: 1,
+        openPanels: [],
         name: "",
         // How many customers to create from this one form. 1 is the ordinary case and
         // behaves exactly as before, down to the name not being numbered.
         count: 1,
-        username: "",
-        password: "",
-        uuid: "",
-        flow: "",
         totalGB: 0,
         expiryTime: 0,
         // Start on first use: the expiry is stored NEGATIVE, as minus the duration in
         // milliseconds, and becomes a real date when the customer first sends traffic.
         // For a group it is the GROUP's clock that starts, on whichever protocol they
-        // happen to connect with first — not three clocks, one per protocol.
+        // happen to connect with first — not one clock per account.
         delayedStart: false,
-        // Device limits are per protocol: they count different things (OpenVPN's
-        // User Limit counts sessions, an IP Limit counts addresses) and are enforced
-        // by different machinery, so one figure for the customer would mean something
-        // different on every row.
-        userLimit: 0,
-        limitIpVless: 0,
         reset: 0,
         subId: "",
         tgId: 0,
@@ -428,6 +371,11 @@
             title = "",
             okText = '{{ i18n "sure" }}',
             dbInbounds = [],
+            // An account already being typed elsewhere, carried in as the first slot:
+            // { dbInbound, client }. This is what the + on the ordinary Add Client form
+            // hands over, so adding a second protocol to someone does not mean starting
+            // the first one again.
+            seed = null,
             confirm = (payload) => {},
         }) {
             this.visible = true;
@@ -440,85 +388,209 @@
             // submittable and the name is there to be overwritten when it matters.
             this.name = RandomUtil.randomCustomerName();
             this.count = 1;
-            this.username = RandomUtil.randomVpnUser();
-            this.password = RandomUtil.randomVpnPassword();
-            this.uuid = RandomUtil.randomUUID();
-            this.flow = "";
             this.totalGB = 0;
             this.expiryTime = 0;
             this.delayedStart = false;
-            this.userLimit = 0;
-            this.limitIpVless = 0;
             this.reset = 0;
-            // One subscription id across all three, so a single subscription link
+            // One subscription id across every account, so a single subscription link
             // carries whichever of them the client app understands.
             this.subId = RandomUtil.randomLowerAndNum(16);
             this.tgId = 0;
             this.comment = "";
             this.enable = true;
-            // A protocol with no inbound to put the account on starts off and cannot
-            // be switched on; the row stays visible so the operator can see WHY the
-            // customer will not get it.
-            this.slots = COMBINED_PROTOCOLS.map((p) => {
-                const rows = this.inboundsFor(p.protocol);
-                return {
-                    protocol: p.protocol,
-                    label: p.label,
-                    suffix: p.suffix,
-                    enabled: rows.length > 0,
-                    inboundId: rows.length > 0 ? rows[0].id : null,
-                };
+            this.slots = [];
+            this.nextKey = 1;
+            this.openPanels = [];
+
+            if (seed && seed.dbInbound && seed.client) {
+                const slot = this.makeSlot(seed.dbInbound.id);
+                if (slot) {
+                    // The operator's own account, not a fresh one: they typed it.
+                    slot.client = cloneClientForInbound(slot.inbound, seed.client);
+                    slot.emailTouched = !!(seed.client.email || "").trim();
+                    if (slot.emailTouched) this.name = seed.client.email.trim();
+                    this.slots.push(slot);
+                }
+            }
+            // Opens with one slot ready rather than an empty list: a customer with no
+            // accounts is not a thing anyone wants to create, so the first one is the
+            // default and the + is for the second.
+            if (!this.slots.length) this.addSlot();
+            this.syncEmails();
+            this.openPanels = this.slots.map((s) => String(s.key));
+        },
+
+        // The inbounds a new account can actually be put on. isMultiUser() is the
+        // panel's own answer to "can this inbound take another account", so it already
+        // knows about the single-account cases (a Shadowsocks cipher with no user list);
+        // the IKEv2 test is the one it deliberately leaves to the UI — psk and eap-tls
+        // hold exactly one email-only account, so an inbound already holding it is full.
+        get usableInbounds() {
+            return (this.dbInbounds || []).filter((row) => {
+                if (!CLIENT_PROTOCOLS.includes(row.protocol)) return false;
+                const db = new DBInbound(row);
+                if (!db.isMultiUser()) return false;
+                if (db.isIkev2SingleClient()) {
+                    try {
+                        return (db.toInbound().clients || []).length === 0;
+                    } catch (e) {
+                        return false;
+                    }
+                }
+                return true;
             });
         },
 
-        inboundsFor(protocol) {
-            return this.dbInbounds.filter((row) => row.protocol === protocol);
+        inboundRow(inboundId) {
+            return (this.dbInbounds || []).find((row) => row.id === inboundId);
         },
 
-        emailFor(slot, name) {
-            const base = ((name === undefined ? this.name : name) || "").trim();
-            return base ? base + "-" + slot.suffix : "";
+        inboundLabel(inboundId) {
+            const row = this.inboundRow(inboundId);
+            if (!row) return "#" + inboundId;
+            const label = ProtocolLabels[row.protocol] || row.protocol;
+            return "[" + label + "] " + (row.remark || "#" + row.id);
         },
 
-        // The per-customer half of the form: everything that must be DIFFERENT for each
-        // customer when several are created at once. The allowance, the limits and the
-        // comment are deliberately not here — those are the same offer being sold N
-        // times, which is the only reason to create N of them in one go.
-        //
-        // Numbering starts at 1 and is only applied when there is more than one, so a
-        // single customer keeps exactly the name that was typed.
-        identityFor(index, count) {
-            const base = (this.name || "").trim();
+        protocolLabel(slot) {
+            const row = this.inboundRow(slot.inboundId);
+            const protocol = row ? row.protocol : "";
+            return ProtocolLabels[protocol] || protocol || "?";
+        },
+
+        // A slot on `inboundId`, with a brand-new account of that inbound's shape.
+        // Returns null for an inbound that cannot hold one, so no caller has to guess.
+        makeSlot(inboundId) {
+            const row = this.inboundRow(inboundId);
+            if (!row) return null;
+            // Detached: toInbound() re-parses the stored settings, and fromJson(toJson())
+            // makes sure nothing the slot does can reach the row behind the dialog.
+            const inbound = Inbound.fromJson(new DBInbound(row).toInbound().toJson());
+            const client = createClientForInbound(inbound);
+            if (!client) return null;
             return {
-                name: count > 1 ? base + "-" + (index + 1) : base,
-                // Regenerated per customer rather than reused: these are credentials,
-                // and N customers sharing one password is not a bulk create, it is one
-                // account handed out N times.
-                username: index === 0 ? this.username : RandomUtil.randomVpnUser(),
-                password: index === 0 ? this.password : RandomUtil.randomVpnPassword(),
-                uuid: index === 0 ? this.uuid : RandomUtil.randomUUID(),
-                subId: index === 0 ? this.subId : RandomUtil.randomLowerAndNum(16),
+                key: this.nextKey++,
+                inboundId: row.id,
+                inbound: inbound,
+                client: client,
+                // Until an operator types in the email field it stays derived from the
+                // customer's name, which is what keeps a customer's accounts a legible
+                // family and keeps two accounts of the SAME protocol apart.
+                emailTouched: false,
             };
         },
 
-        activeSlots() {
-            return this.slots.filter((s) => s.enabled && s.inboundId);
-        },
-
-        get needsUserPass() {
-            return this.activeSlots().some((s) =>
-                COMBINED_USERPASS.includes(s.protocol),
+        addSlot(inboundId) {
+            const usable = this.usableInbounds;
+            if (!usable.length) {
+                Vue.prototype.$message.warning(
+                    '{{ i18n "pages.combined.noInbounds" }}',
+                );
+                return;
+            }
+            // Defaults to the inbound the LAST slot used, not the first in the list: the
+            // second account of a customer is usually a second route of the same kind,
+            // and repeating the previous answer is fewer clicks than re-picking it.
+            const fallback = this.slots.length
+                ? this.slots[this.slots.length - 1].inboundId
+                : usable[0].id;
+            const slot = this.makeSlot(
+                inboundId === undefined ? fallback : inboundId,
             );
+            if (!slot) return;
+            slot.client.subId = this.subId;
+            this.slots.push(slot);
+            this.syncEmails();
+            this.openPanels = [String(slot.key)];
         },
 
-        get needsUuid() {
-            return this.activeSlots().some((s) => s.protocol === Protocols.VLESS);
+        // The same account again, on the same inbound, with its own credential. This is
+        // the short way to the case the fixed one-slot-per-protocol list could not
+        // express at all: two of one protocol, configured identically.
+        duplicateSlot(index) {
+            const source = this.slots[index];
+            if (!source) return;
+            const slot = this.makeSlot(source.inboundId);
+            if (!slot) return;
+            slot.client = cloneClientForInbound(slot.inbound, source.client, {
+                freshIdentity: true,
+            });
+            this.slots.splice(index + 1, 0, slot);
+            this.syncEmails();
+            this.openPanels = [String(slot.key)];
         },
 
-        get needsUserLimit() {
-            return this.activeSlots().some(
-                (s) => s.protocol === Protocols.OPENVPN,
-            );
+        removeSlot(index) {
+            if (this.slots.length <= 1) {
+                Vue.prototype.$message.warning(
+                    '{{ i18n "pages.combined.needProtocol" }}',
+                );
+                return;
+            }
+            this.slots.splice(index, 1);
+            this.syncEmails();
+        },
+
+        // Swapping a slot's inbound REPLACES its account. The shapes differ per
+        // protocol — a uuid here, a username and password there — so carrying the old
+        // object across would post fields the new protocol has no use for and omit the
+        // ones it needs. What survives is what is about the CUSTOMER rather than about
+        // the protocol.
+        setSlotInbound(index, inboundId) {
+            const slot = this.slots[index];
+            if (!slot || slot.inboundId === inboundId) return;
+            const next = this.makeSlot(inboundId);
+            if (!next) return;
+            next.key = slot.key;
+            next.emailTouched = slot.emailTouched;
+            if (slot.emailTouched) next.client.email = slot.client.email;
+            next.client.subId = slot.client.subId;
+            next.client.tgId = slot.client.tgId;
+            next.client.comment = slot.client.comment;
+            next.client.enable = slot.client.enable;
+            this.slots.splice(index, 1, next);
+            this.syncEmails();
+        },
+
+        markEmailTouched(index) {
+            const slot = this.slots[index];
+            if (slot) slot.emailTouched = true;
+        },
+
+        setName(value) {
+            this.name = value;
+            this.syncEmails();
+        },
+
+        // The email a slot gets when nobody has typed one: the customer's name, the
+        // protocol's tag, and an ordinal from the SECOND account of that protocol
+        // onwards. The ordinal is the whole reason a customer can hold two VLESS —
+        // client_traffics.Email is unique across the panel, so without it the second
+        // one is the first one's name and the create fails on a duplicate.
+        derivedEmail(index, name) {
+            const slot = this.slots[index];
+            if (!slot) return "";
+            const base = (name === undefined ? this.name : name || "").trim();
+            if (!base) return "";
+            const row = this.inboundRow(slot.inboundId);
+            const protocol = row ? row.protocol : "";
+            const tag = PROTOCOL_EMAIL_TAG[protocol] || String(protocol || "acct");
+            let ordinal = 0;
+            for (let i = 0; i <= index; i++) {
+                const other = this.slots[i];
+                const otherRow = this.inboundRow(other.inboundId);
+                if (otherRow && otherRow.protocol === protocol) ordinal++;
+            }
+            return base + "-" + tag + (ordinal > 1 ? "-" + ordinal : "");
+        },
+
+        // Re-derives every email nobody has typed into. Runs whenever the name, the
+        // slot list or a slot's protocol changes, because all three move the answer.
+        syncEmails() {
+            for (let i = 0; i < this.slots.length; i++) {
+                if (this.slots[i].emailTouched) continue;
+                this.slots[i].client.email = this.derivedEmail(i);
+            }
         },
 
         // The shared expiry as a millisecond epoch, or NEGATIVE for a delayed start
@@ -531,106 +603,151 @@
             return t.valueOf();
         },
 
-        // One account, built by the SAME constructor the ordinary Add Client form
-        // uses. Building the per-protocol shapes here rather than server-side is
-        // what keeps there being one definition of each of them.
-        buildClient(slot, ident) {
-            const id = ident || this.identityFor(0, 1);
-            let client;
-            // limitIp is set inside each case rather than shared below: it is a
-            // per-protocol figure, and a protocol whose case does not set it keeps
-            // the model's own 0, which means unlimited.
-            switch (slot.protocol) {
-                case Protocols.OPENVPN:
-                    client = new Inbound.OpenvpnSettings.OpenvpnUser();
-                    client.id = id.username;
-                    client.password = id.password;
-                    // OpenVPN only: VLESS has no notion of it, and a stray userLimit
-                    // key on its client JSON would just be dead weight.
-                    client.userLimit = this.userLimit;
-                    break;
-                case Protocols.VLESS:
-                    client = new Inbound.VLESSSettings.VLESS();
-                    client.id = id.uuid;
-                    client.flow = this.flow;
-                    client.limitIp = this.limitIpVless;
-                    break;
-                default:
-                    return null;
+        // One customer's name. Numbering starts at 1 and is only applied when there is
+        // more than one, so a single customer keeps exactly the name that was typed.
+        nameFor(index, count) {
+            const base = (this.name || "").trim();
+            return count > 1 ? base + "-" + (index + 1) : base;
+        },
+
+        // One slot's email for customer `index`. A derived email follows the customer's
+        // numbered name; one the operator TYPED is theirs, so it only gets the customer
+        // number appended — and only when there is more than one customer, where two
+        // identical typed emails would otherwise be a duplicate the panel refuses.
+        emailFor(slotIndex, index, count) {
+            const slot = this.slots[slotIndex];
+            if (slot.emailTouched) {
+                const typed = (slot.client.email || "").trim();
+                return count > 1 ? typed + "-" + (index + 1) : typed;
             }
-            client.email = this.emailFor(slot, id.name);
-            // Seeded with the GROUP's figures rather than left at zero. The traffic
-            // job mirrors the group onto its members every tick anyway, but not
-            // before the first one: an account created at totalGB 0 would be
-            // unlimited for as long as that took.
-            client.totalGB = NumberFormatter.toFixed(
-                this.totalGB * SizeFormatter.ONE_GB,
-                0,
-            );
-            client.expiryTime = this.expiryMillis();
-            client.reset = this.reset;
-            client.subId = id.subId;
-            client.tgId = this.tgId;
-            client.comment = this.comment;
-            client.enable = this.enable;
-            return client;
+            return this.derivedEmail(slotIndex, this.nameFor(index, count));
+        },
+
+        // One customer's accounts, detached from the form.
+        //
+        // Every customer gets copies, including the first: the figures below are stamped
+        // onto them, and stamping them onto the objects the form is still showing would
+        // mean a failed create leaves the operator looking at a form that has quietly
+        // been written to. Customers after the first get a FRESH credential each — N
+        // customers sharing one password is not a bulk create, it is one account handed
+        // out N times.
+        buildMembers(index, count) {
+            const members = [];
+            // ONE subscription id for this customer, minted before the loop rather
+            // than inside it. Per member it gave every account of customers 2..N a
+            // subscription of its own, so the one thing the whole feature is for —
+            // a single link that carries every config the customer holds — worked
+            // for the first customer of a bulk run and silently for no other.
+            const subId =
+                index === 0 ? this.subId : RandomUtil.randomLowerAndNum(16);
+            for (let i = 0; i < this.slots.length; i++) {
+                const slot = this.slots[i];
+                const client = cloneClientForInbound(slot.inbound, slot.client, {
+                    freshIdentity: index > 0,
+                });
+                if (!client) continue;
+                client.email = this.emailFor(i, index, count);
+                // Seeded with the GROUP's figures rather than left at zero. The traffic
+                // job mirrors the group onto its members every tick anyway, but not
+                // before the first one: an account created at totalGB 0 would be
+                // unlimited for as long as that took.
+                client.totalGB = NumberFormatter.toFixed(
+                    this.totalGB * SizeFormatter.ONE_GB,
+                    0,
+                );
+                client.expiryTime = this.expiryMillis();
+                client.reset = this.reset;
+                client.subId = subId;
+                client.tgId = this.tgId;
+                client.comment = this.comment;
+                client.enable = this.enable;
+                members.push({
+                    inboundId: slot.inboundId,
+                    // The exact shape /addClient takes, so the server runs the same
+                    // validation on these accounts as on a hand-made one.
+                    settings: '{"clients": [' + client.toString() + "]}",
+                });
+            }
+            return members;
         },
 
         ok() {
-            const name = (combinedModal.name || "").trim();
+            const self = combinedModal;
+            const name = (self.name || "").trim();
             if (!name) {
                 Vue.prototype.$message.error(
                     '{{ i18n "pages.combined.needName" }}',
                 );
                 return;
             }
-            const active = combinedModal.activeSlots();
-            if (active.length === 0) {
+            if (!self.slots.length) {
                 Vue.prototype.$message.error(
                     '{{ i18n "pages.combined.needProtocol" }}',
                 );
                 return;
             }
 
-            // One payload per customer. The allowance is built once and shared by
-            // value across them: they are being sold the same package, and a figure
-            // recomputed per customer is a figure that can drift between them.
-            const count = Math.max(1, Math.min(200, Number(combinedModal.count) || 1));
-            const allowance = {
-                total: NumberFormatter.toFixed(
-                    combinedModal.totalGB * SizeFormatter.ONE_GB,
-                    0,
-                ),
-                expiryTime: combinedModal.expiryMillis(),
-                reset: combinedModal.reset,
-                enable: combinedModal.enable,
-                comment: combinedModal.comment,
-            };
+            const count = Math.max(1, Math.min(200, Number(self.count) || 1));
 
+            // Built for every customer before anything is posted, and checked as one
+            // set. An email is the panel's global account identity: a collision is
+            // refused server-side, and finding it here names the two slots instead of
+            // failing halfway through a run of fifty.
             const payloads = [];
+            const seen = new Map();
             for (let i = 0; i < count; i++) {
-                const ident = combinedModal.identityFor(i, count);
-                const members = [];
-                for (const slot of active) {
-                    const client = combinedModal.buildClient(slot, ident);
-                    if (!client) continue;
-                    members.push({
-                        inboundId: slot.inboundId,
-                        // The exact shape /addClient takes, so the server runs the same
-                        // validation on these accounts as on a hand-made one.
-                        settings:
-                            '{"clients": [' + client.toString() + "]}",
-                    });
+                const members = self.buildMembers(i, count);
+                if (!members.length) {
+                    Vue.prototype.$message.error(
+                        '{{ i18n "pages.combined.needProtocol" }}',
+                    );
+                    return;
+                }
+                for (const m of members) {
+                    const email = self.emailFromSettings(m.settings);
+                    if (!email) {
+                        Vue.prototype.$message.error(
+                            '{{ i18n "pages.combinedEdit.needEmail" }}',
+                        );
+                        return;
+                    }
+                    if (seen.has(email)) {
+                        Vue.prototype.$message.error(
+                            '{{ i18n "pages.combined.duplicateEmail" }}: ' + email,
+                        );
+                        return;
+                    }
+                    seen.set(email, true);
                 }
                 payloads.push({
-                    group: Object.assign({ name: ident.name }, allowance),
+                    group: {
+                        name: self.nameFor(i, count),
+                        total: NumberFormatter.toFixed(
+                            self.totalGB * SizeFormatter.ONE_GB,
+                            0,
+                        ),
+                        expiryTime: self.expiryMillis(),
+                        reset: self.reset,
+                        enable: self.enable,
+                        comment: self.comment,
+                    },
                     members: members,
                 });
             }
 
             // Always an array, even for one: a caller that had to handle both shapes
             // is exactly how the single-client Add button broke.
-            ObjectUtil.execute(combinedModal.confirm, payloads);
+            ObjectUtil.execute(self.confirm, payloads);
+        },
+
+        emailFromSettings(settings) {
+            try {
+                const parsed = JSON.parse(settings);
+                const first = (parsed && parsed.clients) || [];
+                return first.length ? (first[0].email || "").trim() : "";
+            } catch (e) {
+                return "";
+            }
         },
 
         close() {
@@ -647,6 +764,10 @@
         el: "#combined-client-modal",
         data: {
             combinedModal,
+            themeSwitcher,
+            get isMobile() {
+                return app.isMobile;
+            },
             get datepicker() {
                 return app.datepicker;
             },
@@ -659,24 +780,6 @@
             },
             set delayedExpireDays(days) {
                 combinedModal.expiryTime = -86400000 * days;
-            },
-            // Flow is a property of the VLESS INBOUND's stream (TLS or Reality over
-            // TCP), not of the account, so the control only appears once an inbound
-            // that supports it has actually been picked.
-            get canEnableTlsFlow() {
-                const slot = combinedModal.slots.find(
-                    (s) => s.protocol === Protocols.VLESS,
-                );
-                if (!slot || !slot.enabled || !slot.inboundId) return false;
-                const row = combinedModal.dbInbounds.find(
-                    (r) => r.id === slot.inboundId,
-                );
-                if (!row) return false;
-                try {
-                    return new DBInbound(row).toInbound().canEnableTlsFlow();
-                } catch (e) {
-                    return false;
-                }
             },
         },
     });

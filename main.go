@@ -270,13 +270,23 @@ func runWebServer() {
 		return
 	}
 
+	// The subscription server is NOT worth the panel's life, for the same reason the
+	// control socket above is not: it hands out subscription links, and a panel
+	// carrying VPN traffic without them beats a panel that refused to boot over
+	// them.
+	//
+	// It used to be log.Fatalf, and that turned one stuck port into a total outage.
+	// Anything holding :2053 — a previous instance not yet reaped, a daemon that
+	// outlived it, another program — made the process exit; systemd restarted it;
+	// it bound :2053's neighbours, spawned the VPN daemons, hit the same bind and
+	// died again. Observed at restart counter 202, with the panel, its web UI, RADIUS
+	// and every VPN down the whole time, over a feature none of them need. The one
+	// error in the log scrolled past between two full startup banners.
 	var subServer *sub.Server
 	subServer = sub.NewServer()
 	global.SetSubServer(subServer)
-	err = subServer.Start()
-	if err != nil {
-		log.Fatalf("Error starting sub server: %v", err)
-		return
+	if err := subServer.Start(); err != nil {
+		logger.Warning("subscription server unavailable (subscription links will not be served):", err)
 	}
 
 	sigCh := make(chan os.Signal, 1)

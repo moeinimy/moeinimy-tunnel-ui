@@ -72,7 +72,7 @@ rathole_prepare_transport() {
             # DNS name: nothing resolves it, the client is told to expect exactly it,
             # and a fixed string would be a fingerprint shared by every install.
             : "${TUN[RH_TLS_HOST]:=$(gen_secret 8).local}"
-            if [[ -z "${TUN[RH_TLS_P12]:-}" || -z "${TUN[RH_TLS_CRT]:-}" ]]; then
+            if [[ -z "${TUN[RH_TLS_CRT]:-}" || -z "${TUN[RH_TLS_KEY]:-}" ]]; then
                 rathole_gen_selfsigned || {
                     log_warn "rathole: could not build a TLS identity (openssl missing?); falling back to tcp transport"
                     TUN[RH_TRANSPORT]=tcp
@@ -93,13 +93,11 @@ rathole_gen_selfsigned() {
         -subj "/CN=${TUN[RH_TLS_HOST]}" \
         -addext "subjectAltName=DNS:${TUN[RH_TLS_HOST]}" \
         -keyout "$d/k.pem" -out "$d/c.pem" >/dev/null 2>&1 || { rm -rf "$d"; return 1; }
-    openssl pkcs12 -export -out "$d/id.p12" -inkey "$d/k.pem" -in "$d/c.pem" \
-        -passout "pass:$pass" >/dev/null 2>&1 || { rm -rf "$d"; return 1; }
-    TUN[RH_TLS_P12]="$(base64 -w0 <"$d/id.p12" 2>/dev/null || base64 <"$d/id.p12" | tr -d '\n')"
     TUN[RH_TLS_CRT]="$(base64 -w0 <"$d/c.pem" 2>/dev/null || base64 <"$d/c.pem" | tr -d '\n')"
+    TUN[RH_TLS_KEY]="$(base64 -w0 <"$d/k.pem" 2>/dev/null || base64 <"$d/k.pem" | tr -d '\n')"
     TUN[RH_TLS_PASS]="$pass"
     rm -rf "$d"
-    [[ -n "${TUN[RH_TLS_P12]}" && -n "${TUN[RH_TLS_CRT]}" ]]
+    [[ -n "${TUN[RH_TLS_CRT]}" && -n "${TUN[RH_TLS_KEY]}" ]]
 }
 
 # rathole_materialise_tls — write this side's half of the shared TLS material to
@@ -107,15 +105,31 @@ rathole_gen_selfsigned() {
 # trust. Both live in the config as base64 (see rathole_prepare_transport) because
 # provisioning copies values between the hosts, never files.
 rathole_materialise_tls() {
-    local what="$1" b64 out
+    local what="$1" out d
+    mkdir -p "$TM_RATHOLE_DIR"
     case "$what" in
-        p12) b64="${TUN[RH_TLS_P12]:-}"; out="$TM_RATHOLE_DIR/${TUN[NAME]}.p12" ;;
-        crt) b64="${TUN[RH_TLS_CRT]:-}"; out="$TM_RATHOLE_DIR/${TUN[NAME]}.crt" ;;
+        crt)
+            out="$TM_RATHOLE_DIR/${TUN[NAME]}.crt"
+            [[ -n "${TUN[RH_TLS_CRT]:-}" ]] || return 1
+            printf '%s' "${TUN[RH_TLS_CRT]}" | base64 -d >"$out" 2>/dev/null || return 1
+            ;;
+        p12)
+            # Built HERE from the shared PEMs rather than carried as a .p12, so the
+            # panel can mint the identity in Go without needing a PKCS#12 encoder —
+            # and so both ends demonstrably hold the same certificate. openssl is
+            # already a dependency of the self-signed path.
+            out="$TM_RATHOLE_DIR/${TUN[NAME]}.p12"
+            [[ -n "${TUN[RH_TLS_CRT]:-}" && -n "${TUN[RH_TLS_KEY]:-}" ]] || return 1
+            command -v openssl >/dev/null 2>&1 || return 1
+            d="$(mktemp -d)" || return 1
+            printf '%s' "${TUN[RH_TLS_CRT]}" | base64 -d >"$d/c.pem" 2>/dev/null || { rm -rf "$d"; return 1; }
+            printf '%s' "${TUN[RH_TLS_KEY]}" | base64 -d >"$d/k.pem" 2>/dev/null || { rm -rf "$d"; return 1; }
+            openssl pkcs12 -export -out "$out" -inkey "$d/k.pem" -in "$d/c.pem" \
+                -passout "pass:${TUN[RH_TLS_PASS]:-}" >/dev/null 2>&1 || { rm -rf "$d"; return 1; }
+            rm -rf "$d"
+            ;;
         *) return 1 ;;
     esac
-    [[ -n "$b64" ]] || return 1
-    mkdir -p "$TM_RATHOLE_DIR"
-    printf '%s' "$b64" | base64 -d >"$out" 2>/dev/null || return 1
     chmod 600 "$out"
     printf '%s' "$out"
 }

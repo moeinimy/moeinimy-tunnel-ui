@@ -1,16 +1,25 @@
 package service
 
 import (
+	"crypto/ecdh"
 	"crypto/rand"
+	"crypto/rsa"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"encoding/pem"
 	"errors"
 	"fmt"
+	"math/big"
 	"net"
 	"os"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/mhsanaei/3x-ui/v2/logger"
 )
 
 // NodeService implements the Iran-node control plane.
@@ -210,6 +219,11 @@ func (s *NodeService) Create(name string, setup *NodeSetup) (id, token string) {
 		if key := protoSecretKey[setup.Protocol]; key != "" && setup.Fields[key] == "" {
 			setup.Fields[key] = randToken()[:32]
 		}
+		// The rathole transport material, for the same reason and at the same
+		// moment: both ends must receive ONE generation of it.
+		if err := fillRatholeTransportFields(setup.Protocol, setup.Fields); err != nil {
+			logger.Warning("node: could not prepare the rathole transport material: ", err)
+		}
 		for k, v := range setup.Fields {
 			if v == "" && strings.HasSuffix(k, "_SECRET") {
 				setup.Fields[k] = randToken()[:32]
@@ -318,6 +332,17 @@ func (s *NodeService) BuildPair(id, name, protocol string, fields map[string]str
 	// side's <p>_prepare would mint its own and the two ends would never authenticate.
 	if key := protoSecretKey[protocol]; key != "" && fields[key] == "" {
 		fields[key] = randToken()[:32]
+	}
+	// Same rule, for the material rathole's non-TCP transports need. It is not one
+	// field but a matched SET — a noise keypair, or a certificate and its key — and
+	// the halves are useless unless they came from the same generation, so it is
+	// minted here and pushed to both sides exactly as the token above is.
+	//
+	// Without this each host's rathole_prepare_transport mints its own on first
+	// write and the two ends never complete a handshake: the tunnel comes up, stays
+	// down, and the reason is a key neither side ever agreed to.
+	if err := fillRatholeTransportFields(protocol, fields); err != nil {
+		return nil, nil, false, err
 	}
 
 	sides := schemaSides(schemaRaw, protocol)
@@ -748,4 +773,90 @@ func (s *NodeService) remotePortList(tunnelName, field string) (string, error) {
 		}
 	}
 	return "", errors.New("no node reported a port list for " + tunnelName)
+}
+
+// fillRatholeTransportFields mints the shared material a rathole transport needs,
+// once, so BuildPair can hand both ends the same values.
+//
+// The panel is the only place this can happen. Each host's own
+// rathole_prepare_transport generates when the fields are empty, which is right for
+// a hand-made tunnel on one box and wrong for a provisioned pair: run on both, it
+// produces two unrelated keypairs. Filling them here means the drivers find them
+// already set and leave them alone.
+//
+// The certificate is emitted as PEM rather than PKCS#12 so no PKCS#12 encoder is
+// needed here; the server side builds the .p12 from these two with openssl, which
+// it already has. Both sides receive both PEMs and each writes only what it uses.
+func fillRatholeTransportFields(protocol string, fields map[string]string) error {
+	if protocol != "rathole" {
+		return nil
+	}
+	switch fields["RH_TRANSPORT"] {
+	case "noise":
+		if fields["RH_NOISE_PRIV"] != "" && fields["RH_NOISE_PUB"] != "" {
+			return nil
+		}
+		// Raw X25519, which is what snowstorm's Noise_*_25519_* patterns take and
+		// what `rathole --genkey` prints.
+		priv, err := ecdh.X25519().GenerateKey(rand.Reader)
+		if err != nil {
+			return fmt.Errorf("rathole: generating a noise keypair: %w", err)
+		}
+		fields["RH_NOISE_PRIV"] = base64.StdEncoding.EncodeToString(priv.Bytes())
+		fields["RH_NOISE_PUB"] = base64.StdEncoding.EncodeToString(priv.PublicKey().Bytes())
+	case "tls", "websocket":
+		if fields["RH_TLS_CRT"] != "" && fields["RH_TLS_KEY"] != "" {
+			return nil
+		}
+		if fields["RH_TLS_HOST"] == "" {
+			// Nothing resolves this; the client is told to expect exactly it. Random
+			// per tunnel so it is not a string every install shares.
+			fields["RH_TLS_HOST"] = randToken()[:10] + ".local"
+		}
+		crt, key, err := selfSignedPEM(fields["RH_TLS_HOST"])
+		if err != nil {
+			return fmt.Errorf("rathole: generating a TLS identity: %w", err)
+		}
+		fields["RH_TLS_CRT"] = base64.StdEncoding.EncodeToString(crt)
+		fields["RH_TLS_KEY"] = base64.StdEncoding.EncodeToString(key)
+		if fields["RH_TLS_PASS"] == "" {
+			fields["RH_TLS_PASS"] = randToken()[:16]
+		}
+	}
+	return nil
+}
+
+// selfSignedPEM returns a self-signed certificate and its private key, both PEM.
+// Ten years: nothing renews it, and an expiry is a tunnel that stops one day for a
+// reason nobody will connect to a certificate.
+func selfSignedPEM(host string) (certPEM, keyPEM []byte, err error) {
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		return nil, nil, err
+	}
+	serial, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128))
+	if err != nil {
+		return nil, nil, err
+	}
+	tmpl := x509.Certificate{
+		SerialNumber:          serial,
+		Subject:               pkix.Name{CommonName: host},
+		DNSNames:              []string{host},
+		NotBefore:             time.Now().Add(-time.Hour),
+		NotAfter:              time.Now().AddDate(10, 0, 0),
+		KeyUsage:              x509.KeyUsageKeyEncipherment | x509.KeyUsageDigitalSignature | x509.KeyUsageCertSign,
+		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		BasicConstraintsValid: true,
+		IsCA:                  true,
+	}
+	der, err := x509.CreateCertificate(rand.Reader, &tmpl, &tmpl, &key.PublicKey, key)
+	if err != nil {
+		return nil, nil, err
+	}
+	certPEM = pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
+	keyPEM = pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: func() []byte {
+		b, _ := x509.MarshalPKCS8PrivateKey(key)
+		return b
+	}()})
+	return certPEM, keyPEM, nil
 }

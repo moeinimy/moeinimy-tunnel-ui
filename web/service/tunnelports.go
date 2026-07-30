@@ -227,10 +227,23 @@ func (s *TunnelService) FieldsMerged(name string) (json.RawMessage, error) {
 		if !strings.HasSuffix(f.Key, "_PORTS") && f.Key != "FORWARDS" {
 			continue
 		}
-		if strings.TrimSpace(f.Value) != "" {
-			continue
-		}
-		if remote, rerr := (&NodeService{}).remotePortList(name, f.Key); rerr == nil {
+		// The NODE's answer wins, and it is not merely a fallback for a blank local
+		// value. The port map belongs to the half that accepts client connections;
+		// the half this panel runs on does not use it, and any value sitting there
+		// is a leftover from when edits were written locally and went nowhere.
+		//
+		// Preferring the local value "when it is not empty" therefore showed the
+		// leftover — one stale row where the node had the real list — and that was
+		// merely confusing until edits started reaching the node. Then saving the
+		// dialog wrote what the dialog was SHOWING, and the leftover overwrote the
+		// customer's actual forwards. A display bug became data loss because the
+		// write path was fixed and the read path was not.
+		//
+		// An unreachable node leaves the local value in place so the dialog is not
+		// blank; it cannot cause the same loss, because SetFieldEverywhere refuses
+		// to save a far-side field that reached no node.
+		if remote, rerr := (&NodeService{}).remotePortList(name, f.Key); rerr == nil &&
+			strings.TrimSpace(remote) != "" {
 			fields[i].Value = remote
 		}
 	}

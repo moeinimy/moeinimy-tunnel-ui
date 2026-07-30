@@ -314,24 +314,89 @@ func panelHost(c *gin.Context) string {
 //
 // Falls back to the unresolved host so the driver still reports the real
 // problem instead of an empty field.
+// It must be THIS SERVER's address, and the browser's Host header is only
+// evidence of that when the operator typed the server's own name or IP. Reach the
+// panel through a domain that is fronted — a CDN, a reverse proxy, a tunnel
+// hostname — and the lookup returns the FRONT's address, which is then handed to
+// the Iran node as the peer to dial. It dials the CDN, gets nothing back, and the
+// tunnel list shows a peer the operator has never seen:
+//
+//	bpp  backhaul  iran  ● up  185.143.233.238
+//
+// with a sibling tunnel on 185.143.234.238, because consecutive lookups land on
+// different edges. Every tunnel created or edited through that hostname is built
+// against an address that was never the server.
+//
+// So a resolved address is only used when this machine actually holds it;
+// otherwise the address this machine reaches the internet from is the answer.
 func panelPeerIP(c *gin.Context) string {
 	host := panelHost(c)
+	resolved := host
 	if ip := net.ParseIP(host); ip != nil {
-		if v4 := ip.To4(); v4 != nil {
-			return v4.String()
+		v4 := ip.To4()
+		if v4 == nil {
+			return host // a literal IPv6; let the driver decide whether it can use it
 		}
-		return host // a literal IPv6; let the driver decide whether it can use it
+		resolved = v4.String()
+	} else if addrs, err := net.LookupIP(host); err == nil {
+		for _, a := range addrs {
+			if v4 := a.To4(); v4 != nil {
+				resolved = v4.String()
+				break
+			}
+		}
 	}
-	addrs, err := net.LookupIP(host)
+	if ownsIP(resolved) {
+		return resolved
+	}
+	if own := outboundIPv4(); own != "" {
+		return own
+	}
+	// Nothing better to offer: keep the old answer so the driver still reports the
+	// real problem rather than an empty field.
+	return resolved
+}
+
+// ownsIP reports whether this machine holds addr on one of its interfaces.
+func ownsIP(addr string) bool {
+	want := net.ParseIP(addr)
+	if want == nil {
+		return false
+	}
+	addrs, err := net.InterfaceAddrs()
 	if err != nil {
-		return host
+		return false
 	}
 	for _, a := range addrs {
-		if v4 := a.To4(); v4 != nil {
+		var ip net.IP
+		switch v := a.(type) {
+		case *net.IPNet:
+			ip = v.IP
+		case *net.IPAddr:
+			ip = v.IP
+		}
+		if ip != nil && ip.Equal(want) {
+			return true
+		}
+	}
+	return false
+}
+
+// outboundIPv4 is the address this machine reaches the internet from. Connecting a
+// UDP socket sends nothing — it only makes the kernel pick the route and with it
+// the source address — so this costs no traffic and cannot block.
+func outboundIPv4() string {
+	conn, err := net.Dial("udp", "8.8.8.8:80")
+	if err != nil {
+		return ""
+	}
+	defer conn.Close()
+	if a, ok := conn.LocalAddr().(*net.UDPAddr); ok {
+		if v4 := a.IP.To4(); v4 != nil {
 			return v4.String()
 		}
 	}
-	return host
+	return ""
 }
 
 // nodePanelURL is the base URL the Iran node's control agent polls.

@@ -901,9 +901,9 @@ func (s *RadiusService) findClientInbound(protocol, username string) (*model.Inb
 	db := database.GetDB()
 	var inbounds []*model.Inbound
 	protocols := []string{protocol}
-	if protocol == string(model.L2TP) {
-		// An OpenVPN inbound can serve its accounts over L2TP too, so those have
-		// to be searched as well or the account is "not found" on the L2TP side.
+	if protocol == string(model.L2TP) || protocol == string(model.SSTP) {
+		// An OpenVPN inbound can serve its accounts over L2TP or SSTP too, so those
+		// have to be searched as well or the account is "not found" on that side.
 		protocols = append(protocols, string(model.OPENVPN))
 	}
 	if err := db.Where("protocol IN ? AND enable = ?", protocols, true).Find(&inbounds).Error; err != nil {
@@ -968,6 +968,8 @@ func (s *RadiusService) getClientIP(protocol string, inboundId int, username, st
 		// OpenVPN and an L2TP session, and the address is derived from the
 		// account's slot — one shared pool would hand them the same IP.
 		L2tpIpRanges []string `json:"l2tpIpRanges"`
+		// The same, for an OpenVPN inbound that also serves SSTP.
+		SstpIpRanges []string `json:"sstpIpRanges"`
 	}
 
 	var settings settingsJSON
@@ -1014,6 +1016,17 @@ func (s *RadiusService) getClientIP(protocol string, inboundId int, username, st
 		} else {
 			l2tp := L2tpService{}
 			ranges = []string{defaultRange(l2tp.GetSubnetForInbound(&inbound))}
+		}
+	}
+	// An SSTP session on an OpenVPN inbound, for the same reasons: its own pool, and
+	// the same derived fallback the rest of the SSTP stack uses when none is set,
+	// never IpRanges (which is the account's OPENVPN address and may be live).
+	if protocol == string(model.SSTP) && inbound.Protocol == model.OPENVPN {
+		if len(settings.SstpIpRanges) > 0 {
+			ranges = settings.SstpIpRanges
+		} else {
+			sstp := SstpService{}
+			ranges = []string{defaultRange(sstp.GetSubnetForInbound(&inbound))}
 		}
 	}
 
@@ -1719,16 +1732,25 @@ ATTRIBUTE	MS-CHAP2-Success	26	string	Microsoft
 // the given protocol. Normally that means its own protocol and nothing else —
 // an account must not authenticate against a service it was not created for.
 //
-// The one exception is an OpenVPN inbound that opted in to serving L2TP/IPsec
-// (openvpnSettings.L2tpEnable + a PSK), which exists so a single account works
-// from both an .ovpn profile and a phone's built-in L2TP client. Without the
-// opt-in the answer stays a flat no, so enabling it is always deliberate.
+// The exceptions are both an OpenVPN inbound serving its own accounts over a
+// second protocol, and both are opt-in, so the answer stays a flat no until an
+// operator deliberately turns one on:
+//
+//   - L2TP/IPsec (L2tpEnable + a PSK), so one account works from both an .ovpn
+//     profile and a phone's built-in L2TP client. UDP, so it needs a tunnel that
+//     carries UDP.
+//   - SSTP (SstpEnable), the same idea entirely over TCP — and on the SAME port,
+//     via the OpenVPN listener's port-share. That is the combination that survives
+//     a TCP-only relay, where L2TP cannot go at all.
 func inboundServesProtocol(inbound *model.Inbound, protocol string) bool {
 	if inbound == nil {
 		return false
 	}
 	if string(inbound.Protocol) == protocol {
 		return true
+	}
+	if protocol == string(model.SSTP) {
+		return openvpnServesSstp(inbound)
 	}
 	return protocol == string(model.L2TP) && openvpnServesL2tp(inbound)
 }

@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/mhsanaei/3x-ui/v2/database/model"
 	"github.com/mhsanaei/3x-ui/v2/logger"
 	"github.com/mhsanaei/3x-ui/v2/xray"
 
@@ -222,10 +223,21 @@ func (s *XrayService) GetXrayConfig() (*xray.Config, error) {
 		xrayConfig.InboundConfigs = append(xrayConfig.InboundConfigs, *inboundConfig)
 	}
 
-	// Inject paired dokodemo-door inbounds for L2TP
+	// Inject paired dokodemo-door inbounds for L2TP.
+	//
+	// An OpenVPN inbound that also serves L2TP is skipped here, because it ALREADY
+	// contributed a dokodemo of its own below — on the very same port. Every one of
+	// these services derives the port as 12300+inbound.Id, which is unique per
+	// INBOUND and therefore not unique when one inbound is served by two of them: the
+	// pair collided first on the tag (fixed by giving the L2TP one a -l2tp suffix,
+	// which is what stopped xray rejecting the config outright) and still collided on
+	// the bind. One dokodemo is also the correct shape, not merely the working one:
+	// it is one inbound, so its clients' traffic belongs under one tag however they
+	// dialled in, and the TPROXY rules already point every one of its subnets at that
+	// same port.
 	l2tpInbounds, _ := s.l2tpService.GetL2tpInbounds()
 	for _, l2tpInbound := range l2tpInbounds {
-		if !l2tpInbound.Enable {
+		if !l2tpInbound.Enable || l2tpInbound.Protocol == model.OPENVPN {
 			continue
 		}
 		dokodemoConfig := s.l2tpService.GetDokodemoConfig(l2tpInbound)
@@ -262,10 +274,12 @@ func (s *XrayService) GetXrayConfig() (*xray.Config, error) {
 		xrayConfig.InboundConfigs = append(xrayConfig.InboundConfigs, *dokodemoConfig)
 	}
 
-	// Inject paired dokodemo-door inbounds for SSTP
+	// Inject paired dokodemo-door inbounds for SSTP. An OpenVPN inbound serving SSTP
+	// is skipped for the same reason as the L2TP loop above: it already has one, on
+	// the same port, under its own tag.
 	sstpInbounds, _ := s.sstpService.GetSstpInbounds()
 	for _, sstpInbound := range sstpInbounds {
-		if !sstpInbound.Enable {
+		if !sstpInbound.Enable || sstpInbound.Protocol == model.OPENVPN {
 			continue
 		}
 		dokodemoConfig := s.sstpService.GetDokodemoConfig(sstpInbound)

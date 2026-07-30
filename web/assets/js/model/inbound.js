@@ -4034,6 +4034,8 @@ Inbound.OpenvpnSettings = class extends Inbound.Settings {
     l2tpEnable = false,
     ipsecPsk = "",
     l2tpIpRanges = [],
+    sstpEnable = false,
+    sstpIpRanges = [],
   ) {
     super(protocol);
     this.udpEnable = udpEnable;
@@ -4078,6 +4080,10 @@ Inbound.OpenvpnSettings = class extends Inbound.Settings {
     this.l2tpEnable = l2tpEnable;
     this.ipsecPsk = ipsecPsk;
     this.l2tpIpRanges = l2tpIpRanges;
+    // SSTP served from this same inbound and on its own TCP port (port-share): the
+    // all-TCP counterpart of l2tpEnable, for relays that carry no UDP at all.
+    this.sstpEnable = sstpEnable;
+    this.sstpIpRanges = sstpIpRanges;
   }
 
   static fromJson(json = {}) {
@@ -4115,6 +4121,8 @@ Inbound.OpenvpnSettings = class extends Inbound.Settings {
       json.l2tpEnable ?? false,
       json.ipsecPsk ?? "",
       Array.isArray(json.l2tpIpRanges) ? json.l2tpIpRanges.slice() : [],
+      json.sstpEnable ?? false,
+      Array.isArray(json.sstpIpRanges) ? json.sstpIpRanges.slice() : [],
     );
   }
 
@@ -4151,6 +4159,8 @@ Inbound.OpenvpnSettings = class extends Inbound.Settings {
       l2tpEnable: this.l2tpEnable,
       ipsecPsk: this.ipsecPsk,
       l2tpIpRanges: this.l2tpIpRanges || [],
+      sstpEnable: this.sstpEnable,
+      sstpIpRanges: this.sstpIpRanges || [],
     };
   }
 };

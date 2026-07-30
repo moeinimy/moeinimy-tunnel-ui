@@ -113,18 +113,108 @@ func (s *SstpService) getRadiusSecret() string {
 	return secret
 }
 
-// GetSstpInbounds returns every SSTP inbound.
+// GetSstpInbounds returns everything the SSTP stack must serve: the sstp inbounds,
+// plus any OpenVPN inbound that opted in to serving its own accounts over SSTP as
+// well (openvpnSettings.SstpEnable). Callers reach the settings through
+// parseSettings, which normalises both shapes, so every generator below treats them
+// alike — the same arrangement GetL2tpInbounds uses.
 func (s *SstpService) GetSstpInbounds() ([]*model.Inbound, error) {
 	db := database.GetDB()
 	var inbounds []*model.Inbound
-	err := db.Model(model.Inbound{}).Where("protocol = ?", "sstp").Find(&inbounds).Error
-	return inbounds, err
+	err := db.Model(model.Inbound{}).
+		Where("protocol IN ?", []string{"sstp", string(model.OPENVPN)}).
+		Find(&inbounds).Error
+	if err != nil {
+		return nil, err
+	}
+	out := inbounds[:0]
+	for _, in := range inbounds {
+		if in.Protocol == model.OPENVPN && !openvpnServesSstp(in) {
+			continue
+		}
+		out = append(out, in)
+	}
+	return out, nil
 }
 
+// openvpnServesSstp reports whether an OpenVPN inbound also answers SSTP.
+func openvpnServesSstp(inbound *model.Inbound) bool {
+	if inbound == nil || inbound.Protocol != model.OPENVPN {
+		return false
+	}
+	var o openvpnSettings
+	if json.Unmarshal([]byte(inbound.Settings), &o) != nil {
+		return false
+	}
+	return o.sstpServingSettings()
+}
+
+// sstpSharedPort is the LOOPBACK port accel-pppd's SSTP listener binds when it is
+// served from an OpenVPN inbound. Nothing reaches it from the network: OpenVPN owns
+// the public TCP port and port-shares the non-OpenVPN connections here.
+//
+// Deterministic and disjoint from the other per-inbound bands — 12300+id is TPROXY
+// and 13300+id is accel-cmd's control socket.
+func sstpSharedPort(inbound *model.Inbound) int {
+	return 14300 + inbound.Id
+}
+
+// parseSettings reads an inbound's SSTP settings. An OpenVPN inbound serving SSTP
+// is translated into the same shape, so nothing downstream needs to know which kind
+// of inbound it came from.
 func (s *SstpService) parseSettings(inbound *model.Inbound) (*sstpSettings, error) {
+	if inbound.Protocol == model.OPENVPN {
+		return sstpSettingsFromOpenVpn(inbound)
+	}
 	settings := &sstpSettings{}
 	err := json.Unmarshal([]byte(inbound.Settings), settings)
 	return settings, err
+}
+
+// sstpSettingsFromOpenVpn projects an OpenVPN inbound onto the SSTP settings the
+// generators expect. The client roster is shared verbatim — that is the whole point:
+// one account, one password, both protocols, one port.
+//
+// The certificate is the PANEL's own, in path mode. An SSTP inbound offers three
+// ways to get one and this projection deliberately offers none of them: a client
+// only trusts a certificate its OS already trusts, so the useful answer is always
+// the panel's real (ACME) certificate, and the other two would be new fields on the
+// OpenVPN form that mostly produce a cert nothing connects to.
+func sstpSettingsFromOpenVpn(inbound *model.Inbound) (*sstpSettings, error) {
+	var o openvpnSettings
+	if err := json.Unmarshal([]byte(inbound.Settings), &o); err != nil {
+		return nil, fmt.Errorf("failed to parse OpenVPN settings for inbound %d: %w", inbound.Id, err)
+	}
+	if !o.sstpServingSettings() {
+		return nil, fmt.Errorf("inbound %d does not serve SSTP", inbound.Id)
+	}
+
+	var settingService SettingService
+	certFile, _ := settingService.GetCertFile()
+	keyFile, _ := settingService.GetKeyFile()
+
+	out := &sstpSettings{
+		TlsUseFile:      true,
+		CertificateFile: certFile,
+		KeyFile:         keyFile,
+		ClientToClient:  o.ClientToClient,
+		CrossInbound:    o.CrossInbound,
+		UserLimit:       o.UserLimit,
+		// A pool of its own, never IpRanges: one account may hold an OpenVPN and an
+		// SSTP session at the same time, and both are indexed by the client's slot,
+		// so a shared range would assign them the same address.
+		IpRanges:          o.SstpIpRanges,
+		UserLimitStrategy: o.UserLimitStrategy,
+		Dns1:              o.Dns1,
+		Dns2:              o.Dns2,
+		Mtu:               o.Mtu,
+	}
+	for _, c := range o.Clients {
+		out.Clients = append(out.Clients, sstpClient{
+			ID: c.ID, Password: c.Password, Email: c.Email, Enable: c.Enable,
+		})
+	}
+	return out, nil
 }
 
 // effectiveRanges returns the inbound's configured /24 ranges, seeding from the
@@ -361,8 +451,14 @@ func (s *SstpService) generateServerConfig(inbound *model.Inbound) error {
 func (s *SstpService) buildServerConfig(inbound *model.Inbound, settings *sstpSettings) string {
 	id := inbound.Id
 	dir := s.configDir(id)
+	// An SSTP inbound owns its own public port. One served FROM an OpenVPN inbound
+	// does not: OpenVPN owns that port and hands the non-OpenVPN connections here
+	// (see port-share in buildServerConfig), so accel-pppd listens on loopback and
+	// binding the public port would be a collision the OpenVPN listener always wins.
 	port := inbound.Port
-	if port == 0 {
+	if inbound.Protocol == model.OPENVPN {
+		port = sstpSharedPort(inbound)
+	} else if port == 0 {
 		port = 443
 	}
 
@@ -551,7 +647,17 @@ func (s *SstpService) RestartServices() error {
 			continue
 		}
 		if !s.hasUsableCert(settings, inbound.Id) {
-			logger.Warning("SSTP: inbound", inbound.Id, "has no TLS cert yet — generate a self-signed cert or set a cert path")
+			// Named differently for a shared inbound, because the fix is different and
+			// the wrong instruction is worse than none: an OpenVPN inbound serving SSTP
+			// has no cert fields of its own — it uses the PANEL's certificate, so an
+			// operator sent looking for a "generate self-signed" button on that form
+			// would never find one.
+			if inbound.Protocol == model.OPENVPN {
+				logger.Warning("SSTP on OpenVPN inbound", inbound.Id,
+					"cannot start: the panel has no TLS certificate set. It serves SSTP with the panel's own cert (Settings > Security), and Windows will only connect to one its OS already trusts.")
+			} else {
+				logger.Warning("SSTP: inbound", inbound.Id, "has no TLS cert yet — generate a self-signed cert or set a cert path")
+			}
 			continue
 		}
 		dir := s.configDir(inbound.Id)

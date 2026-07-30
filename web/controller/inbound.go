@@ -219,6 +219,19 @@ func (a *InboundController) openVpnChanged(clientOnly bool) {
 	if !clientOnly && a.l2tpService.StackInvolved() {
 		a.l2tpChanged(false)
 	}
+	// The same for the SSTP half (openvpnSettings.sstpEnable), which is built by the
+	// SSTP stack and shares this inbound's TCP port through port-share. An accel-pppd
+	// that was never (re)generated is a port-share pointing at nothing, so the SSTP
+	// half would refuse every connection while OpenVPN kept working — the exact shape
+	// of the L2TP bug above.
+	//
+	// Unconditional rather than gated: GenerateAllConfigs and RestartServices are
+	// per-inbound for SSTP (one accel-pppd each, unlike xl2tpd's single shared LNS),
+	// so a panel with no SSTP anywhere does no work here, and one whose last shared
+	// inbound just turned the switch off gets that daemon stopped.
+	if !clientOnly {
+		a.sstpChanged(false)
+	}
 	// OpenVPN routes through Xray via dokodemo-door, so Xray routing must refresh.
 	a.xrayService.SetToNeedRestart()
 }

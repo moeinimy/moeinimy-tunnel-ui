@@ -155,6 +155,46 @@
             ></a-input>
         </a-form-item>
     </template>
+    <a-form-item>
+        <template slot="label">
+            <a-tooltip>
+                <template slot="title">
+                    Serve these same accounts over SSTP as well, on THIS INBOUND'S OWN TCP PORT — no second port. This is the all-TCP counterpart of the L2TP switch above: L2TP/IPsec has no TCP transport at all (IKE is UDP 500, NAT-T UDP 4500, ESP is IP protocol 50), so a TCP-only tunnel — backhaul, gost, rathole, frp — cannot carry it on any port. SSTP is the same username-and-password PPP account with TLS-over-TCP underneath, so it goes wherever HTTPS goes. Requires TCP to be enabled above; it is served through the OpenVPN listener's port-share.
+                </template>
+                Also serve SSTP (same TCP port)
+                <a-icon type="question-circle"></a-icon>
+            </a-tooltip>
+        </template>
+        <a-switch v-model="inbound.settings.sstpEnable" :disabled="!inbound.settings.tcpEnable"></a-switch>
+        <span class="bo-muted" :style="{ marginInlineStart: '10px' }" v-if="!inbound.settings.tcpEnable">
+            Enable TCP above first — SSTP is served through the TCP listener.
+        </span>
+    </a-form-item>
+    <template v-if="inbound.settings.sstpEnable && inbound.settings.tcpEnable">
+        <a-alert
+            type="info"
+            show-icon
+            :style="{ marginBottom: '16px' }"
+            message="SSTP uses the panel's own TLS certificate"
+            description="There is no certificate field here on purpose: a client only connects to a certificate its operating system already trusts, so the useful answer is always the panel's real (ACME) certificate from Settings. With no panel certificate set, the SSTP half will not start and the reason is logged. Windows has an SSTP client built in; Android and iOS do not."
+        ></a-alert>
+        <a-form-item>
+            <template slot="label">
+                <a-tooltip>
+                    <template slot="title">
+                        Address pool for the SSTP side. Kept separate from the OpenVPN ranges above because one account may hold an OpenVPN and an SSTP session at the same time — a shared pool would give both the same IP. Leave empty to use the inbound's derived default.
+                    </template>
+                    SSTP IP range
+                    <a-icon type="question-circle"></a-icon>
+                </a-tooltip>
+            </template>
+            <a-input
+                :value="(inbound.settings.sstpIpRanges || []).join(', ')"
+                @change="e => inbound.settings.sstpIpRanges = e.target.value.split(',').map(s => s.trim()).filter(s => s)"
+                placeholder="10.8.0.2-10.8.0.254"
+            ></a-input>
+        </a-form-item>
+    </template>
     <a-form-item label="External Proxy">
         <a-switch v-model="ovpnExternalProxy"></a-switch>
         <a-button

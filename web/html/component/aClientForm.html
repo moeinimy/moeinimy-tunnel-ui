@@ -167,11 +167,7 @@
     <a-form-item v-if="showComment && client.email" label='{{ i18n "comment" }}'>
         <a-input v-model.trim="client.comment"></a-input>
     </a-form-item>
-    <!-- An IP Limit is enforced by the patched core AT ADMISSION, and the core never
-         sees a client of a VPN protocol (ipLimitEnforcedInCore excludes every one of
-         them), so on those inbounds the field would publish to nothing and silently do
-         nothing. What caps their devices is User Limit, below. -->
-    <a-form-item v-if="app.ipLimitEnable && ipLimitApplies">
+    <a-form-item v-if="app.ipLimitEnable">
         <template slot="label">
             <a-tooltip>
                 <template slot="title">
@@ -209,7 +205,7 @@
         ></a-input-number>
     </a-form-item>
     <a-form-item
-        v-if="app.ipLimitEnable && ipLimitApplies && client.limitIp > 0 && client.email && isEdit"
+        v-if="app.ipLimitEnable && client.limitIp > 0 && client.email && isEdit"
     >
         <template slot="label">
             <a-tooltip>
@@ -665,26 +661,6 @@
             },
             showTgId() {
                 return !this.hide.includes("tgId");
-            },
-            // An IP Limit is published to the patched Xray core and checked at
-            // admission. The core never sees a client of a VPN protocol, so on those
-            // inbounds the field is not "unset", it is unenforceable — mirrors
-            // ipLimitEnforcedInCore() in web/service/inbound.go. MTProto has its own
-            // limit, on its own row, enforced by the proxy.
-            ipLimitApplies() {
-                if (!this.inbound) return false;
-                return ![
-                    Protocols.L2TP,
-                    Protocols.PPTP,
-                    Protocols.OPENVPN,
-                    Protocols.OPENCONNECT,
-                    Protocols.SSTP,
-                    Protocols.IKEV2,
-                    Protocols.WGC,
-                    Protocols.AWG,
-                    Protocols.MTPROTO,
-                    Protocols.SSH,
-                ].includes(this.inbound.protocol);
             },
             delayedExpireDays: {
                 get() {

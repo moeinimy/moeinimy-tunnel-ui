@@ -531,6 +531,24 @@ func (s *NodeService) EnsureForward(dest, proto string, port int, siblings []rel
 	if _, err := s.Exec(id, []string{"restart", t.name}); err != nil {
 		return "", err
 	}
+
+	// Some relays need the SAME list on BOTH ends, and the schema says which: for
+	// backhaul and backpack the ports array is side="iran" and only the server has
+	// one, but rathole (and frp) declare every forwarded port TWICE — the server
+	// binds it, the client says where to deliver it, and the two must agree on the
+	// service name. Writing only the node's half left this side with no matching
+	// service, so the port was accepted on the relay and delivered nowhere: the
+	// panel logged "relay forward added", and tcpdump on this server saw nothing.
+	var tunnelService TunnelService
+	if tunnelService.fieldSide(t.name, spec.field) == "both" {
+		if err := tunnelService.SetField(t.name, spec.field, updated); err != nil {
+			return "", fmt.Errorf("%s was applied on %s but not on this side, so it carries nothing: %w",
+				entry, s.NameOf(id), err)
+		}
+		if err := tunnelService.Restart(t.name); err != nil {
+			logger.Warning("relay forward: this side did not restart after ", entry, ": ", err)
+		}
+	}
 	return fmt.Sprintf("%s → %s on %s", entry, t.name, s.NameOf(id)), nil
 }
 

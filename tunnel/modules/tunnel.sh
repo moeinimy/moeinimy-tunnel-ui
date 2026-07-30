@@ -116,7 +116,7 @@ tunnel_remove() {
 # Edit (a focused subset of safely-editable fields)
 # ---------------------------------------------------------------------------
 # Internal profile keys the user should not edit directly.
-_TM_NOEDIT_KEYS=" NAME PROTOCOL ROLE CREATED_AT IPAM_INDEX IFNAME INNER_LOCAL INNER_REMOTE INNER_CIDR PAQET_ROLE BH_ROLE BP_ROLE RH_ROLE GO_ROLE FRP_ROLE WW_ROLE HY_ROLE GO_USER "
+_TM_NOEDIT_KEYS=" NAME PROTOCOL ROLE CREATED_AT IPAM_INDEX IFNAME INNER_LOCAL INNER_REMOTE INNER_CIDR PAQET_ROLE BH_ROLE BP_ROLE RH_ROLE GO_ROLE FRP_ROLE WW_ROLE HY_ROLE GO_USER RH_NOISE_PRIV RH_NOISE_PUB RH_TLS_P12 RH_TLS_CRT RH_TLS_PASS RH_TLS_HOST "
 
 # _field_label KEY — a friendly hint for known keys (helps identify ports).
 _field_label() {

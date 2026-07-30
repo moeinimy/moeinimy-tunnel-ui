@@ -77,7 +77,7 @@ api_schema() {
     # ---- BackPack: iran = server users hit, foreign = client ----------------
     _sp_open backpack "BackPack (wssmux)"
     _sf BP_TRANSPORT "Transport" select wssmux "wssmux wsmux wss ws tcpmux tcp" both \
-        "wssmux = TLS websocket + mux: DPI-resistant, best for xray/Reality"
+        "wssmux = TLS websocket + mux: DPI-resistant, best for xray/Reality. But UDP forwards (L2TP/IPsec, WireGuard, QUIC) need \"tcp\": BackPack's own code sets accept_udp = false on every other transport, and only its TcpTransport opens a UDP listener. To have both DPI cover and UDP, use rathole — there the transport and the per-service protocol are independent."
     _sf BP_PORT "Tunnel port (server ↔ server)" port 8444 "" both "$_TUNNEL_PORT_HELP"
     _sf BP_TOKEN "Shared token" password "" "" both "Blank = auto-generate; must match on both sides"
     _sf BP_PORTS "$_CLIENT_PORTS_LABEL" portmap "443=443" "" iran \
@@ -87,7 +87,7 @@ api_schema() {
 
     # ---- Backhaul: iran = server, foreign = client --------------------------
     _sp_open backhaul "Backhaul"
-    _sf BH_TRANSPORT "Transport" select tcpmux "tcp tcpmux ws wsmux" both ""
+    _sf BH_TRANSPORT "Transport" select tcpmux "tcp tcpmux ws wsmux" both "UDP forwards (L2TP/IPsec, WireGuard, QUIC) need this set to \"tcp\": accept_udp is wired to backhaul's plain TCP transport in its engine and is ignored on tcpmux/ws/wsmux. If you need both DPI cover and UDP, use rathole — its transports and its per-service protocol are independent."
     _sf BH_PORT "Tunnel port (server ↔ server)" port 3080 "" both "$_TUNNEL_PORT_HELP"
     _sf BH_TOKEN "Shared token" password "" "" both "Blank = auto-generate; must match on both sides"
     _sf BH_PORTS "$_CLIENT_PORTS_LABEL" portmap "443=443" "" iran "Ports users connect to on the Iran side"
@@ -97,6 +97,7 @@ api_schema() {
     _sp_open rathole "Rathole"
     _sf RH_PORT "Tunnel port (server ↔ server)" port 2333 "" both "$_TUNNEL_PORT_HELP"
     _sf RH_TOKEN "Shared token" password "" "" both "Blank = auto-generate; must match on both sides"
+    _sf RH_TRANSPORT "Transport" select tcp "tcp tls noise websocket" both "How the two ends talk. tcp is bare and easiest to fingerprint; websocket wraps the tunnel in TLS so it looks like ordinary HTTPS; noise is a compact encrypted handshake with no certificate to manage; tls is TLS without the websocket framing. Unlike backhaul and backpack, rathole carries UDP on EVERY one of these, so a DPI-resistant transport and L2TP are not a choice between two things."
     _sf RH_PORTS "Client ports (public on Iran → local on foreign)" portmap "443=443" "" both ""
     _sp_close
 

@@ -146,6 +146,9 @@ rathole_prepare() {
     : "${TUN[MTU]:=1400}"
     [[ -n "${TUN[RH_TOKEN]:-}" ]] || TUN[RH_TOKEN]="$(gen_secret 32)"
     : "${TUN[RH_PORTS]:=$_PREP_DEFAULT_PORTS}"
+    # tcp keeps every tunnel made before transports existed exactly as it was.
+    : "${TUN[RH_TRANSPORT]:=tcp}"
+    rathole_prepare_transport
 }
 
 # --- FRP (iran = server/frps; foreign = client/frpc) -------------------------

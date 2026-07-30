@@ -466,7 +466,10 @@ func (s *NodeService) EnsureForward(dest, proto string, port int) (string, error
 		return "", nil
 	}
 
-	t, err := s.forwardingTunnel(id)
+	// The forward being asked for decides WHICH tunnel gets it: a node running one
+	// relay for xray and another for the VPN ports has to send each port to the one
+	// that can actually carry it.
+	t, err := s.forwardingTunnel(id, proto, port)
 	if err != nil {
 		return "", err
 	}
@@ -570,7 +573,64 @@ type nodeTunnel struct {
 }
 
 // forwardingTunnel picks the tunnel on a node that relays client ports.
-func (s *NodeService) forwardingTunnel(id string) (nodeTunnel, error) {
+// canCarry reports whether this tunnel is able to relay proto at all.
+//
+// Shared by the SELECTION in forwardingTunnel and by EnsureForward's refusal, so a
+// tunnel can never be chosen on one rule and then rejected on another.
+func (t nodeTunnel) canCarry(proto string) bool {
+	spec, known := tunnelPortSpecFor(t.protocol)
+	if !known {
+		return false
+	}
+	if proto != "udp" {
+		return true
+	}
+	if !spec.udp {
+		return false
+	}
+	// accept_udp is wired to these two relays' plain TCP transport alone.
+	if t.protocol == "backhaul" || t.protocol == "backpack" {
+		return strings.EqualFold(strings.TrimSpace(t.transport), "tcp")
+	}
+	return true
+}
+
+// relaysPorts reports whether this tunnel is the one carrying client ports: it has
+// entries already, or GRE's blanket mode is on.
+func (t nodeTunnel) relaysPorts() bool {
+	if strings.TrimSpace(t.forwards) != "" {
+		return true
+	}
+	spec, known := tunnelPortSpecFor(t.protocol)
+	return t.mode == "ports" || (t.mode == "all" && known && spec.relayAll)
+}
+
+func (t nodeTunnel) hasForward(entry string) bool {
+	for _, f := range strings.Split(t.forwards, ";") {
+		if strings.TrimSpace(f) == entry {
+			return true
+		}
+	}
+	return false
+}
+
+// forwardingTunnel picks which of a node's tunnels should carry one forward.
+//
+// A node commonly runs SEVERAL — one shaped for xray (a muxed websocket, say) and
+// another carrying the VPN ports — and the old version could not tell them apart.
+// It looked for FORWARD_MODE, which is a GRE-ONLY field: on backhaul, rathole and
+// the rest it is simply absent, so every candidate scored the same and the FIRST
+// tunnel the node happened to list won. With a backhaul and a rathole side by side
+// that meant UDP 500 was aimed at the backhaul — refused, because its transport
+// cannot carry UDP — while the rathole tunnel actually holding the L2TP ports was
+// never considered. The refusal named a real limit of the wrong tunnel, which is
+// what made it so convincing.
+//
+// Now the choice is about the forward being asked for, most specific first:
+// the tunnel that already carries it, then one that CAN carry it and is the one
+// relaying client ports, then any that can carry it, and only then whatever exists
+// so the error names something real.
+func (s *NodeService) forwardingTunnel(id, proto string, port int) (nodeTunnel, error) {
 	var found nodeTunnel
 	raw, err := s.Exec(id, []string{"json", "list"})
 	if err != nil {
@@ -582,6 +642,7 @@ func (s *NodeService) forwardingTunnel(id string) (nodeTunnel, error) {
 	if err := json.Unmarshal([]byte(strings.TrimSpace(raw)), &list); err != nil {
 		return found, fmt.Errorf("could not read the node's tunnel list: %w", err)
 	}
+	var all []nodeTunnel
 	for _, item := range list {
 		detail, derr := s.Exec(id, []string{"json", "tunnel", item.Name})
 		if derr != nil {
@@ -613,18 +674,40 @@ func (s *NodeService) forwardingTunnel(id string) (nodeTunnel, error) {
 		if transport == "" {
 			transport = str("BP_TRANSPORT")
 		}
-		cur := nodeTunnel{item.Name, protocol, mode, forwards, transport}
-		// Prefer a tunnel already set up to relay ports; otherwise remember the
-		// first one, so a single-tunnel node still gets configured. "all" only
-		// counts as relaying where the driver implements it — see spec.relayAll.
-		if mode == "ports" || (mode == "all" && known && spec.relayAll) {
-			return cur, nil
-		}
-		if found.name == "" {
-			found = cur
+		all = append(all, nodeTunnel{item.Name, protocol, mode, forwards, transport})
+	}
+
+	return pickForwardingTunnel(all, proto, port), nil
+}
+
+// pickForwardingTunnel chooses which tunnel carries one forward, most specific
+// first. Split out from the node round-trip so the choice itself is testable.
+func pickForwardingTunnel(all []nodeTunnel, proto string, port int) nodeTunnel {
+	// 1. Already carries this exact forward — definitively the right tunnel, and
+	//    EnsureForward will then find nothing to add.
+	for _, t := range all {
+		if sp, ok := tunnelPortSpecFor(t.protocol); ok && t.hasForward(sp.entry(proto, port)) {
+			return t
 		}
 	}
-	return found, nil
+	// 2. Can carry it AND is the one relaying client ports.
+	for _, t := range all {
+		if t.canCarry(proto) && t.relaysPorts() {
+			return t
+		}
+	}
+	// 3. Can carry it.
+	for _, t := range all {
+		if t.canCarry(proto) {
+			return t
+		}
+	}
+	// 4. Nothing can: return one anyway so the refusal names a real tunnel and its
+	//    real limit rather than "this node has no tunnel yet".
+	if len(all) > 0 {
+		return all[0]
+	}
+	return nodeTunnel{}
 }
 
 // Remove deletes a node.

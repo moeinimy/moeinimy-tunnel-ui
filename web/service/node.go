@@ -515,40 +515,57 @@ func (s *NodeService) EnsureForward(dest, proto string, port int, siblings []rel
 
 	entry := spec.entry(proto, port)
 	sep := ";"
-	for _, f := range strings.Split(t.forwards, sep) {
-		if strings.TrimSpace(f) == entry {
-			return "", nil // already forwarded
-		}
+
+	// "Already forwarded" has to be asked of EVERY end that needs the entry, not
+	// just the node. rathole and frp declare each port on both — the server binds
+	// it, the client says where to deliver it — so a list present on the node and
+	// absent here is a port the relay accepts and delivers nowhere.
+	//
+	// The previous version returned here the moment the NODE had it, which is
+	// exactly the state a half-applied forward leaves behind: the node's half was
+	// written, this side's was not, and every later attempt to repair it saw the
+	// node's copy and stopped. The forward could never complete itself.
+	var tunnelService TunnelService
+	bothEnds := tunnelService.fieldSide(t.name, spec.field) == "both"
+
+	nodeHas := t.hasForward(entry)
+	localHas := true
+	if bothEnds {
+		localHas = forwardListContains(tunnelService.fieldValue(t.name, spec.field), entry)
 	}
-	updated := entry
-	if strings.TrimSpace(t.forwards) != "" {
-		updated = strings.TrimRight(t.forwards, sep) + sep + entry
-	}
-	if _, err := s.Exec(id, []string{"set", t.name, spec.field, updated}); err != nil {
-		return "", err
-	}
-	// The relay only picks up a new port map on restart.
-	if _, err := s.Exec(id, []string{"restart", t.name}); err != nil {
-		return "", err
+	if nodeHas && localHas {
+		return "", nil
 	}
 
-	// Some relays need the SAME list on BOTH ends, and the schema says which: for
-	// backhaul and backpack the ports array is side="iran" and only the server has
-	// one, but rathole (and frp) declare every forwarded port TWICE — the server
-	// binds it, the client says where to deliver it, and the two must agree on the
-	// service name. Writing only the node's half left this side with no matching
-	// service, so the port was accepted on the relay and delivered nowhere: the
-	// panel logged "relay forward added", and tcpdump on this server saw nothing.
-	var tunnelService TunnelService
-	if tunnelService.fieldSide(t.name, spec.field) == "both" {
-		if err := tunnelService.SetField(t.name, spec.field, updated); err != nil {
-			return "", fmt.Errorf("%s was applied on %s but not on this side, so it carries nothing: %w",
+	// The list both ends must end up with: the node's, plus this entry when missing.
+	desired := t.forwards
+	if !nodeHas {
+		desired = entry
+		if strings.TrimSpace(t.forwards) != "" {
+			desired = strings.TrimRight(t.forwards, sep) + sep + entry
+		}
+	}
+
+	if !nodeHas {
+		if _, err := s.Exec(id, []string{"set", t.name, spec.field, desired}); err != nil {
+			return "", err
+		}
+		// The relay only picks up a new port map on restart.
+		if _, err := s.Exec(id, []string{"restart", t.name}); err != nil {
+			return "", err
+		}
+	}
+
+	if bothEnds && !localHas {
+		if err := tunnelService.SetField(t.name, spec.field, desired); err != nil {
+			return "", fmt.Errorf("%s is on %s but could not be written on this side, so it carries nothing: %w",
 				entry, s.NameOf(id), err)
 		}
 		if err := tunnelService.Restart(t.name); err != nil {
 			logger.Warning("relay forward: this side did not restart after ", entry, ": ", err)
 		}
 	}
+
 	return fmt.Sprintf("%s → %s on %s", entry, t.name, s.NameOf(id)), nil
 }
 

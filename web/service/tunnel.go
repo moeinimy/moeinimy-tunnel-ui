@@ -323,3 +323,18 @@ func (s *TunnelService) fieldSide(name, key string) string {
 	}
 	return "both"
 }
+
+// fieldValue reads one stored field of a tunnel on THIS host, or "" if the tunnel
+// or the field is not there.
+func (s *TunnelService) fieldValue(name, key string) string {
+	raw, err := s.Tunnel(name)
+	if err != nil {
+		return ""
+	}
+	var d map[string]any
+	if json.Unmarshal(raw, &d) != nil {
+		return ""
+	}
+	v, _ := tunnelConfigOf(d)[key].(string)
+	return v
+}

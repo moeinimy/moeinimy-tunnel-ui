@@ -261,3 +261,14 @@ func (s tunnelPortSpec) entry(proto string, port int) string {
 	}
 	return fmt.Sprintf("%d=%d", port, port)
 }
+
+// forwardListContains reports whether a ';'-separated forward list already holds
+// this exact entry.
+func forwardListContains(list, entry string) bool {
+	for _, f := range strings.Split(list, ";") {
+		if strings.TrimSpace(f) == entry {
+			return true
+		}
+	}
+	return false
+}

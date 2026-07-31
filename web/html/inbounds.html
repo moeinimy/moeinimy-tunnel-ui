@@ -2022,6 +2022,11 @@
           speedLimitAfter: dbInbound.speedLimitAfter,
           ipLimit: dbInbound.ipLimit,
           ipLimitStrategy: dbInbound.ipLimitStrategy,
+          // The server that will serve this inbound. This payload is an explicit
+          // field list, so a key missing here never reaches the backend at all:
+          // the assignment was silently dropped and every inbound was created on
+          // the panel's own server, whatever the form said.
+          nodeId: dbInbound.nodeId || '',
 
           listen: '',
           port: RandomUtil.randomInteger(10000, 60000),
@@ -2094,6 +2099,11 @@
           speedLimitAfter: dbInbound.speedLimitAfter,
           ipLimit: dbInbound.ipLimit,
           ipLimitStrategy: dbInbound.ipLimitStrategy,
+          // The server that will serve this inbound. This payload is an explicit
+          // field list, so a key missing here never reaches the backend at all:
+          // the assignment was silently dropped and every inbound was created on
+          // the panel's own server, whatever the form said.
+          nodeId: dbInbound.nodeId || '',
 
           listen: inbound.listen,
           port: inbound.port,
@@ -2130,6 +2140,11 @@
           speedLimitAfter: dbInbound.speedLimitAfter,
           ipLimit: dbInbound.ipLimit,
           ipLimitStrategy: dbInbound.ipLimitStrategy,
+          // The server that will serve this inbound. This payload is an explicit
+          // field list, so a key missing here never reaches the backend at all:
+          // the assignment was silently dropped and every inbound was created on
+          // the panel's own server, whatever the form said.
+          nodeId: dbInbound.nodeId || '',
 
           listen: inbound.listen,
           port: inbound.port,
@@ -2515,6 +2530,11 @@
           speedLimitAfter: dbInbound.speedLimitAfter,
           ipLimit: dbInbound.ipLimit,
           ipLimitStrategy: dbInbound.ipLimitStrategy,
+          // The server that will serve this inbound. This payload is an explicit
+          // field list, so a key missing here never reaches the backend at all:
+          // the assignment was silently dropped and every inbound was created on
+          // the panel's own server, whatever the form said.
+          nodeId: dbInbound.nodeId || '',
 
           listen: inbound.listen,
           port: inbound.port,

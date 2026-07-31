@@ -87,10 +87,20 @@ install_tunnel_backend() {
     bash "$SRC_DIR/tunnel/install.sh"
 }
 
+# install_panel [unattended]
+#
+# unattended=1 answers every question deploy.sh would ask with its default. A node
+# is installed by a one-liner the master printed, so there is nobody at that
+# terminal to answer them — and the whole promise is that this server takes one
+# command and nothing else.
 install_panel() {
     echo "==> Installing / updating the vpn-ui panel"
     # deploy.sh fetches the latest published release binary and installs the unit.
-    VPNUI_REPO="$REPO" bash "$SRC_DIR/deploy.sh"
+    if [[ "${1:-}" == "unattended" ]]; then
+        VPNUI_REPO="$REPO" VPNUI_NONINTERACTIVE=1 bash "$SRC_DIR/deploy.sh"
+    else
+        VPNUI_REPO="$REPO" bash "$SRC_DIR/deploy.sh"
+    fi
 }
 
 # --- role: foreign ----------------------------------------------------------
@@ -139,7 +149,7 @@ if [[ "$ROLE" == "iran" || "$ROLE" == "foreign-node" ]]; then
     # and only then schedules the sync, so installing it first would leave it idle
     # until something restarted it.
     if [[ "$NODE_ROLE" == "foreign" ]]; then
-        install_panel
+        install_panel unattended
     fi
 
     # jq is required by the node agent to parse the panel's command payloads.

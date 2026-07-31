@@ -749,7 +749,11 @@
       fieldsFor(proto, role) {
         const s = this.schema[proto];
         if (!s || !s.fields) return [];
-        if (role === null) return s.fields;
+        // Building a pair: the panel knows both ends' addresses and fills each
+        // side's own LOCAL_IP itself. Asking for it once and sending that answer to
+        // both halves gave one end the other's address, and the tunnel never came
+        // up — so the question is not asked at all here.
+        if (role === null) return s.fields.filter(f => f.key !== 'LOCAL_IP');
         return s.fields.filter(f => f.side === 'both' || f.side === role);
       },
       // Vue 2 can't see properties added to an object after creation, so every

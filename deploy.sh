@@ -369,7 +369,9 @@ if [[ "$MODE" == "install" ]]; then
     # terminal. A piped install with no IMPORT_DB set skips it and starts fresh.
     imported=""
     import_path="${IMPORT_DB:-}"
-    if [[ -z "$import_path" && -r /dev/tty ]]; then
+    # A node is installed by the master's one-liner, where there is nobody to
+    # answer questions: every prompt below takes its default instead.
+    if [[ -z "$import_path" && -r /dev/tty && -z "${VPNUI_NONINTERACTIVE:-}" ]]; then
         {
             printf '%s::%s %sExisting 3x-ui data%s\n' "$B$BLUE" "$R" "$WHITE" "$R"
             printf '    Import inbounds, clients and traffic from a 3x-ui backup database?\n'
@@ -405,6 +407,10 @@ if [[ "$MODE" == "install" ]]; then
             # A preset DEPLOY_DOMAIN implies a non-interactive real-cert request.
             if [[ -n "$DOMAIN" ]]; then
                 tls_choice="letsencrypt"
+            elif [[ -n "${VPNUI_NONINTERACTIVE:-}" ]]; then
+                # Unattended: HTTPS with a self-signed certificate. A panel put up
+                # without being asked must not be one served in the clear.
+                tls_choice="selfsign"
             elif [[ -r /dev/tty ]]; then
                 {
                     printf '%s::%s %sPanel access mode%s\n' "$B$BLUE" "$R" "$WHITE" "$R"
@@ -443,7 +449,7 @@ if [[ "$MODE" == "install" ]]; then
         # The import brought its own admin login; randomizing now would throw it
         # away. Keep it and just install the unit (the port was preserved too).
         cred_mode="keep"
-    elif [[ -r /dev/tty ]]; then
+    elif [[ -r /dev/tty && -z "${VPNUI_NONINTERACTIVE:-}" ]]; then
         {
             printf '%s::%s %sPanel login / access%s\n' "$B$BLUE" "$R" "$WHITE" "$R"
             printf '    %s1)%s Randomize  (port, username, password, web path) %s[default]%s\n' "$GREEN" "$R" "$D" "$R"

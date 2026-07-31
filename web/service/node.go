@@ -409,7 +409,7 @@ func (s *NodeService) BuildPair(iranID, foreignID, name, protocol string, fields
 
 	sides := schemaSides(schemaRaw, protocol)
 
-	side := func(role, remote string) map[string]string {
+	side := func(role, self, remote string) map[string]string {
 		m := map[string]string{}
 		for k, v := range fields {
 			// Only copy a field to the side it applies to. Side-specific options are
@@ -430,14 +430,23 @@ func (s *NodeService) BuildPair(iranID, foreignID, name, protocol string, fields
 		m["PROTOCOL"] = protocol
 		m["ROLE"] = role
 		m["REMOTE_IP"] = remote
+		// LOCAL_IP is every driver's "this server's IP", so it is the one field that
+		// CANNOT be shared: copied from a single form to both halves, one end is
+		// handed the other end's address and builds a tunnel out of two remote
+		// addresses and none of its own. GRE then refuses it outright ("local and
+		// remote IP are identical", or a local address this host does not hold), and
+		// the relays bind nothing — a tunnel configured on both servers that never
+		// comes up. The panel already knows each end's address, so it fills this
+		// per side and ignores whatever the form carried.
+		m["LOCAL_IP"] = self
 		return m
 	}
 	return &TunnelPair{
 		IranID:     endID(iranID),
-		IranFields: side("iran", foreignAddr),
+		IranFields: side("iran", iranAddr, foreignAddr),
 
 		ForeignID:     endID(foreignID),
-		ForeignFields: side("foreign", iranAddr),
+		ForeignFields: side("foreign", foreignAddr, iranAddr),
 	}, nil
 }
 

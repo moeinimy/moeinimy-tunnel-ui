@@ -72,7 +72,22 @@ gre_wizard() {
     fi
     ask_valid TUN[MTU]       "Tunnel MTU (path MTU minus 24 for the GRE header)" is_mtu "$def_mtu"
 
-    local idx; idx="$(ipam_alloc "${TUN[NAME]}")"
+    # Inner addressing is derived from an index, and that index MUST be the same
+    # on both hosts: ipam_alloc hands out the lowest free one HERE, so two servers
+    # that already run different tunnels give the same tunnel name two different
+    # indexes — two unrelated /30s. The GRE link then comes up and carries nothing,
+    # which is the hardest possible version of this failure to see.
+    #
+    # A pre-set IPAM_INDEX is therefore honoured (the panel pins it when it builds
+    # both halves) and recorded here so this host stops handing it out.
+    local idx="${TUN[IPAM_INDEX]:-}"
+    if [[ -n "$idx" ]]; then
+        mkdir -p "$TM_STATE_DIR"; touch "$TM_IPAM_DB"
+        [[ -n "$(ipam_index_for "${TUN[NAME]}")" ]] || printf '%s	%s
+' "${TUN[NAME]}" "$idx" >>"$TM_IPAM_DB"
+    else
+        idx="$(ipam_alloc "${TUN[NAME]}")"
+    fi
     TUN[IPAM_INDEX]="$idx"
     TUN[INNER_CIDR]=30
     TUN[TTL]=255

@@ -692,10 +692,25 @@ func (a *TunnelController) createPair(c *gin.Context) {
 		return
 	}
 
+	// A half of this name left on a host that is NOT an end of the pair shadows the
+	// real thing: the panel lists one row per name and prefers its own, so a leftover
+	// here — from an earlier attempt, or from a pair built before foreign nodes
+	// existed — is what the operator sees and edits, while the tunnel they actually
+	// built sits on two nodes, unseen. Worse, it holds the old addresses, so it reads
+	// as "the ends are swapped and nothing exists on the other side".
+	a.clearStrayHalves(req.Name, pair.IranID, pair.ForeignID)
+
 	// Iran side first: if that end can't be built there's nothing to clean up yet.
 	if out, err := a.createSide(pair.IranID, pair.IranFields); err != nil {
 		jsonMsg(c, strings.TrimSpace(out), err)
 		return
+	}
+
+	// Inner addressing is derived from an index each host allocates for itself, so
+	// the two ends only agree if the second is told what the first chose. Left to
+	// chance they land on unrelated /30s and the tunnel comes up carrying nothing.
+	if idx := a.ipamIndexOf(pair.IranID, req.Name); idx != "" {
+		pair.ForeignFields["IPAM_INDEX"] = idx
 	}
 
 	// Foreign side. On failure, remove the Iran half we just made.
@@ -725,6 +740,61 @@ func (a *TunnelController) createSide(nodeID string, fields map[string]string) (
 		args = append(args, k+"="+v)
 	}
 	return a.nodeService.Exec(nodeID, args)
+}
+
+// clearStrayHalves drops a tunnel of this name from every host that is not an end
+// of the pair being built. Best effort: a host that has no such tunnel simply
+// answers "No such tunnel", and an unreachable node must not block the build.
+func (a *TunnelController) clearStrayHalves(name, iranID, foreignID string) {
+	isEnd := func(id string) bool { return id == iranID || id == foreignID }
+	if !isEnd("") {
+		if err := a.tunnelService.Remove(name); err == nil {
+			logger.Info("pair ", name, ": removed a stray half left on this server")
+		}
+	}
+	for _, id := range a.nodeService.OnlineIDs() {
+		if isEnd(id) {
+			continue
+		}
+		if out, err := a.nodeService.Exec(id, []string{"remove", name}); err == nil &&
+			!strings.Contains(out, "No such tunnel") {
+			logger.Info("pair ", name, ": removed a stray half left on ", a.nodeService.NameOf(id))
+		}
+	}
+}
+
+// ipamIndexOf reads the inner-addressing index a host allocated for a tunnel, so
+// the other end can be pinned to the same one.
+func (a *TunnelController) ipamIndexOf(nodeID, name string) string {
+	var raw []byte
+	if nodeID == "" {
+		out, err := a.tunnelService.Tunnel(name)
+		if err != nil {
+			return ""
+		}
+		raw = out
+	} else {
+		out, err := a.nodeService.Exec(nodeID, []string{"json", "tunnel", name})
+		if err != nil {
+			return ""
+		}
+		raw = []byte(strings.TrimSpace(out))
+	}
+	var d map[string]any
+	if json.Unmarshal(raw, &d) != nil {
+		return ""
+	}
+	cfg, ok := d["config"].(map[string]any)
+	if !ok {
+		return ""
+	}
+	switch v := cfg["IPAM_INDEX"].(type) {
+	case string:
+		return v
+	case float64:
+		return strconv.Itoa(int(v))
+	}
+	return ""
 }
 
 // removeSide undoes createSide for the same endpoint.

@@ -161,6 +161,12 @@
             // a dialog of its own so the verdict stays on screen beside the field it is
             // about, and picking a suggestion is one click away from the form it fills.
             realityScan: { busy: false, result: null, candidates: [], error: "" },
+            // The foreign servers this inbound may be assigned to, loaded once by the
+            // inbounds page. A getter rather than a copy so a node coming online is
+            // reflected without reopening the form.
+            get foreignNodes() {
+                return window.foreignNodes || [];
+            },
             get inbound() {
                 return inModal.inbound;
             },

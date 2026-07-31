@@ -26,6 +26,12 @@ class DBInbound {
         // columns' own defaults so an Add form starts on the same values a fresh row gets.
         this.ipLimit = 0;
         this.ipLimitStrategy = "reject";
+        // The foreign server that serves this inbound: "" is the server the panel
+        // runs on, anything else is a foreign node's id. Same reason as above — a
+        // key not declared here would be dropped on every load and posted back
+        // undefined, which would silently move every edited inbound back to the
+        // panel's own server.
+        this.nodeId = "";
 
         this.listen = "";
         this.port = 0;

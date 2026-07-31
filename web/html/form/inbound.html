@@ -12,6 +12,28 @@
         <a-input v-model.trim="dbInbound.remark"></a-input>
     </a-form-item>
 
+    <!-- Which foreign server serves this inbound. Only shown once a foreign node
+         exists, so a single-server panel is exactly what it was.
+
+         Fixed after creation: moving an inbound means tearing it down on one
+         server and standing it up on another, and an edit that silently did that
+         would drop every live connection on it. Delete and recreate to move. -->
+    <a-form-item v-if="foreignNodes.length" label='{{ i18n "pages.inbounds.server" }}'>
+        <a-select
+            v-model="dbInbound.nodeId"
+            :disabled="isEdit"
+            :dropdown-class-name="themeSwitcher.currentTheme"
+        >
+            <a-select-option value="">{{ i18n "pages.inbounds.serverLocal" }}</a-select-option>
+            <a-select-option v-for="n in foreignNodes" :key="n.id" :value="n.id" :disabled="!n.online && !isEdit"
+                >[[ n.name ]][[ n.online ? '' : ' — {{ i18n "pages.tunnel.node.offline" }}' ]]</a-select-option
+            >
+        </a-select>
+        <div v-if="dbInbound.nodeId" :style="{ opacity: .6, fontSize: '12px' }">
+            {{ i18n "pages.inbounds.serverNodeHint" }}
+        </div>
+    </a-form-item>
+
     <a-form-item label='{{ i18n "protocol" }}'>
         <a-select
             v-model="inbound.protocol"

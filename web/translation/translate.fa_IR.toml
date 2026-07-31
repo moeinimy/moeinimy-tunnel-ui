@@ -251,6 +251,9 @@
 "customGeoErrUpdateAllIncomplete" = "به‌روزرسانی یک یا چند منبع geo سفارشی ناموفق بود"
 
 [pages.inbounds]
+"server" = "سرور"
+"serverLocal" = "همین سرور پنل"
+"serverNodeHint" = "روی xray خودِ آن نود سرو می‌شود؛ پنل خودش آن را نصب و تنظیم می‌کند. پورتش فقط باید روی همان سرور آزاد باشد."
 "totalUsers" = "کل کاربران"
 "exportTxt" = "Export TXT"
 "exportPdf" = "Export PDF"

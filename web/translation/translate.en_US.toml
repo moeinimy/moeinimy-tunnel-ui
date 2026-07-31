@@ -363,6 +363,9 @@
 "getConfigError" = "An error occurred while retrieving the config file."
 
 [pages.inbounds]
+"server" = "Server"
+"serverLocal" = "This panel server"
+"serverNodeHint" = "Served by that node's own Xray, which this panel installs and configures for it. Its port only has to be free on that server."
 "totalUsers" = "Total Users"
 "exportTxt" = "Export TXT"
 "exportPdf" = "Export PDF"

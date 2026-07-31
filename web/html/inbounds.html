@@ -1345,6 +1345,19 @@
       loading(spinning = true) {
         this.loadingStates.spinning = spinning;
       },
+      // The foreign servers an inbound may be served by. Kept on the page rather
+      // than fetched by the modal so opening the form costs nothing, and exposed
+      // globally because form/inbound is rendered inside the modal's own Vue app.
+      // A panel with no foreign node gets an empty list and no server field at all.
+      async getForeignNodes() {
+        try {
+          const msg = await HttpUtil.get('/panel/tunnel/nodes');
+          const nodes = (msg && msg.success && msg.obj) ? msg.obj : [];
+          window.foreignNodes = nodes.filter(n => n.role === 'foreign');
+        } catch (e) {
+          window.foreignNodes = [];
+        }
+      },
       async getDBInbounds() {
         this.refreshing = true;
         const msg = await HttpUtil.get('/panel/api/inbounds/list');
@@ -2969,7 +2982,8 @@
       }
       this.loading();
       this.getDefaultSettings();
-      
+      this.getForeignNodes();
+
       // Initial data fetch
       this.getDBInbounds().then(() => {
         this.loading(false);

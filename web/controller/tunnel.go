@@ -8,6 +8,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/mhsanaei/3x-ui/v2/logger"
 	"github.com/mhsanaei/3x-ui/v2/web/service"
@@ -126,7 +127,107 @@ func (a *TunnelController) list(c *gin.Context) {
 		jsonMsg(c, I18nWeb(c, "pages.tunnel.toasts.loadFailed"), err)
 		return
 	}
-	jsonObj(c, mergeNodeTunnels(raw, a.nodeService.ListTunnelsEverywhere()), nil)
+	nodeLists := a.nodeService.ListTunnelsEverywhere()
+	go a.repairSwappedLocalIP(raw, nodeLists, panelPeerIP(c))
+	jsonObj(c, mergeNodeTunnels(raw, nodeLists), nil)
+}
+
+// repaired remembers the halves already corrected, so this costs one comparison
+// per refresh rather than a repeated write.
+var repaired = struct {
+	sync.Mutex
+	seen map[string]bool
+}{seen: map[string]bool{}}
+
+// repairSwappedLocalIP fixes tunnels built before the panel filled LOCAL_IP per
+// side.
+//
+// LOCAL_IP is every driver's "this server's IP". The pair builder used to ask for
+// it once and copy that answer to both halves, which left one end holding the
+// OTHER end's address — and since that address is also its REMOTE_IP, the two
+// fields came out identical. GRE refuses exactly that ("local and remote IP are
+// identical") and the relays bind nothing, so the tunnel existed on both servers
+// and never came up.
+//
+// LOCAL_IP == REMOTE_IP is that bug's signature and nothing else's: no working
+// tunnel has one. So the repair keys on it rather than on "LOCAL_IP is not the
+// address I expected", which would rewrite the legitimately different value a
+// server behind NAT holds.
+// It walks EVERY half — this server's and each node's — not the merged list the
+// UI gets: that list carries one row per tunnel name, and the half it drops is
+// usually the broken one. The pair's local end was often written correctly by
+// luck (the operator typed this server's address), while the node's end got the
+// same value and became unusable.
+func (a *TunnelController) repairSwappedLocalIP(localRaw json.RawMessage, nodeLists []service.NodeTunnels, panelIP string) {
+	type half struct {
+		nodeID string
+		own    string
+		raw    json.RawMessage
+	}
+	halves := []half{{nodeID: "", own: panelIP, raw: localRaw}}
+	for _, nl := range nodeLists {
+		halves = append(halves, half{nodeID: nl.ID, own: nl.Address, raw: nl.Raw})
+	}
+
+	for _, h := range halves {
+		var items []map[string]any
+		if h.own == "" || json.Unmarshal(h.raw, &items) != nil {
+			continue
+		}
+		for _, item := range items {
+			a.repairOneHalf(item, h.nodeID, h.own)
+		}
+	}
+}
+
+// repairOneHalf rewrites one tunnel half's LOCAL_IP when it is holding the peer's
+// address. own is the address of the machine that half runs on.
+func (a *TunnelController) repairOneHalf(item map[string]any, nodeID, own string) {
+	{
+		name, _ := item["name"].(string)
+		cfg, ok := item["config"].(map[string]any)
+		if name == "" || !ok {
+			return
+		}
+		local, _ := cfg["LOCAL_IP"].(string)
+		remote, _ := cfg["REMOTE_IP"].(string)
+		if local == "" || local != remote {
+			return // not the swapped-address bug
+		}
+		if own == remote {
+			return // nothing better to write than what is already there
+		}
+
+		key := nodeID + "/" + name
+		repaired.Lock()
+		done := repaired.seen[key]
+		repaired.seen[key] = true
+		repaired.Unlock()
+		if done {
+			return
+		}
+
+		var err error
+		if nodeID == "" {
+			err = a.tunnelService.SetField(name, "LOCAL_IP", own)
+			if err == nil {
+				err = a.tunnelService.Restart(name)
+			}
+		} else {
+			if _, err = a.nodeService.Exec(nodeID, []string{"set", name, "LOCAL_IP", own}); err == nil {
+				_, err = a.nodeService.Exec(nodeID, []string{"restart", name})
+			}
+		}
+		if err != nil {
+			logger.Warning("tunnel ", name, ": could not repair its LOCAL_IP: ", err)
+			repaired.Lock()
+			delete(repaired.seen, key) // let the next refresh try again
+			repaired.Unlock()
+			return
+		}
+		logger.Info("tunnel ", name, ": LOCAL_IP repaired to ", own,
+			" — it was holding the peer's address, so this end could never come up")
+	}
 }
 
 // mergeNodeTunnels appends the tunnels that live only on nodes, each tagged with

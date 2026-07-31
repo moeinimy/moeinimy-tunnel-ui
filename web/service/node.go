@@ -928,7 +928,10 @@ type NodeTunnels struct {
 	ID   string
 	Name string
 	Role string
-	Raw  json.RawMessage
+	// Address is the node's own public address — the one the other end of a
+	// tunnel dials, and the one this node's halves must carry as LOCAL_IP.
+	Address string
+	Raw     json.RawMessage
 }
 
 // ListTunnelsEverywhere reads the tunnel list from every online node.
@@ -965,12 +968,12 @@ func (s *NodeService) ListTunnelsEverywhere() []NodeTunnels {
 			}
 			nodeReg.mu.Lock()
 			n := nodeReg.nodes[id]
-			name, role := id, NodeRoleIran
+			name, role, addr := id, NodeRoleIran, ""
 			if n != nil {
-				name, role = n.Name, n.role()
+				name, role, addr = n.Name, n.role(), n.remoteIP
 			}
 			nodeReg.mu.Unlock()
-			out[i] = NodeTunnels{ID: id, Name: name, Role: role, Raw: trimmed}
+			out[i] = NodeTunnels{ID: id, Name: name, Role: role, Address: addr, Raw: trimmed}
 		}(i, id)
 	}
 	wg.Wait()

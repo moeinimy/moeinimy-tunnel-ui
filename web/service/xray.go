@@ -106,8 +106,26 @@ func RemoveIndex(s []any, index int) []any {
 	return append(s[:index], s[index+1:]...)
 }
 
-// GetXrayConfig retrieves and builds the Xray configuration from settings and inbounds.
+// GetXrayConfig retrieves and builds the Xray configuration THIS server runs.
+//
+// Inbounds assigned to a foreign node are deliberately absent: they are compiled
+// into that node's own config instead (GetNodeXrayConfig) and pushed to it. Both
+// come from this one generator so a node can never be handed a config built by
+// different rules from the panel's own.
 func (s *XrayService) GetXrayConfig() (*xray.Config, error) {
+	return s.getXrayConfigFor("")
+}
+
+// GetNodeXrayConfig builds the config for one foreign node: the same generator,
+// carrying only the inbounds assigned to that node.
+func (s *XrayService) GetNodeXrayConfig(nodeId string) (*xray.Config, error) {
+	if nodeId == "" {
+		return nil, errors.New("no node given")
+	}
+	return s.getXrayConfigFor(nodeId)
+}
+
+func (s *XrayService) getXrayConfigFor(nodeId string) (*xray.Config, error) {
 	templateConfig, err := s.settingService.GetXrayConfigTemplate()
 	if err != nil {
 		return nil, err
@@ -126,6 +144,12 @@ func (s *XrayService) GetXrayConfig() (*xray.Config, error) {
 		return nil, err
 	}
 	for _, inbound := range inbounds {
+		// Each inbound belongs to exactly one server's core. Without this every
+		// node would be handed the whole panel's inbounds and would fight the
+		// panel for the same ports.
+		if inbound.NodeId != nodeId {
+			continue
+		}
 		if !inbound.Enable {
 			continue
 		}
@@ -551,6 +575,12 @@ func (s *XrayService) RestartXray(isForce bool) error {
 	if err != nil {
 		return err
 	}
+
+	// Whatever changed here may equally belong to a foreign node's inbounds, so the
+	// nodes are brought along. In the background: a first push downloads the core
+	// to that node before it answers, and no inbound edit may wait on that.
+	var nodeXrayService NodeXrayService
+	nodeXrayService.Sync()
 
 	return nil
 }

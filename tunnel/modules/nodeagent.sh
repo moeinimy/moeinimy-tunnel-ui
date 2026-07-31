@@ -131,6 +131,28 @@ node_xray_stop() {
     echo "node xray: stopped"
 }
 
+# node_xray_stats — hand the panel this node's traffic counters, and reset them.
+#
+# The panel cannot reach this core's API itself: the node dials out and accepts
+# nothing inbound. So the counters are read here and shipped back over the same
+# channel, in the CLI's own JSON, which the panel feeds into the one accounting
+# path it uses for its own core. Without this, accounts served by this node would
+# use traffic that no quota ever saw.
+#
+# The API port is read from the config the panel pushed, so the two can never
+# disagree about it.
+node_xray_stats() {
+    local port
+    port="$(jq -r '.inbounds[]?|select(.tag=="api")|.port' "$TM_XRAY_CONF" 2>/dev/null | head -n1)"
+    if [[ -z "$port" || "$port" == null ]]; then
+        echo '{"stat":[]}'; return 0
+    fi
+    # -reset: the panel BILLS what it receives, so the counters must not be
+    # counted twice on the next tick.
+    "$TM_XRAY_BIN" api statsquery --server="127.0.0.1:$port" -reset 2>/dev/null \
+        || echo '{"stat":[]}'
+}
+
 # node_xray_status — one line the panel can show.
 node_xray_status() {
     local state; state="$(systemctl is-active tm-xray 2>/dev/null || true)"
@@ -233,6 +255,8 @@ _node_poll_once() {
             out="$(node_xray_stop 2>&1)"; ok=true
         elif [[ "${args[0]}" == xray-status ]]; then
             out="$(node_xray_status 2>&1)"; ok=true
+        elif [[ "${args[0]}" == xray-stats ]]; then
+            out="$(node_xray_stats 2>&1)"; ok=true
         elif [[ "$_TM_NODE_ALLOW" != *" ${args[0]} "* ]]; then
             out="command not allowed on node: ${args[0]}"; ok=false
         elif [[ "${args[0]}" == update ]]; then

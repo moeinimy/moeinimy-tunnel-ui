@@ -268,6 +268,19 @@ type Inbound struct {
 	// empty string to reject anyway, so the default is belt-and-braces, not the contract).
 	IPLimitStrategy string `json:"ipLimitStrategy" form:"ipLimitStrategy" gorm:"default:reject"`
 
+	// NodeId is the foreign server that SERVES this inbound: "" (the default, and
+	// what every existing row reads back) means the server this panel runs on, and
+	// anything else is the id of a foreign node from the tunnel node registry.
+	//
+	// A column rather than a key in Settings for the same reason as the blocks
+	// above: Settings is handed VERBATIM to Xray for native protocols, so a
+	// top-level key here would leak into Xray's own config.
+	//
+	// It decides which Xray the inbound is compiled into — this server's, or the
+	// one the panel pushes to that node — and, with it, which server's port space
+	// the inbound occupies.
+	NodeId string `json:"nodeId" form:"nodeId" gorm:"default:''"`
+
 	// Xray configuration fields
 	Listen         string   `json:"listen" form:"listen"`
 	Port           int      `json:"port" form:"port"`
@@ -298,6 +311,27 @@ type InboundClientIps struct {
 type HistoryOfSeeders struct {
 	Id         int    `json:"id" gorm:"primaryKey;autoIncrement"`
 	SeederName string `json:"seederName"`
+}
+
+// InboundTag is the Xray tag for an inbound bound on one server.
+//
+// The server is part of it because the same port may now be bound on two of them:
+// derived from the port alone, an inbound on 8880 here and one on 8880 on a node
+// produced the SAME tag, so their traffic counters merged into whichever row was
+// found first and any routing rule naming that tag matched both.
+//
+// An empty node id yields exactly the string this always produced, so every
+// existing inbound keeps the tag it has and nothing on this server is renamed.
+func InboundTag(nodeId, listen string, port int) string {
+	prefix := "inbound"
+	if nodeId != "" {
+		prefix = "inbound-" + nodeId
+	}
+	switch listen {
+	case "", "0.0.0.0", "::", "::0":
+		return fmt.Sprintf("%s-%v", prefix, port)
+	}
+	return fmt.Sprintf("%s-%v:%v", prefix, listen, port)
 }
 
 // GenXrayInboundConfig generates an Xray inbound configuration from the Inbound model.

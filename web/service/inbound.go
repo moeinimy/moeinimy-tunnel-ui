@@ -274,7 +274,22 @@ func (s *InboundService) GetInboundsByTrafficReset(period string) ([]*model.Inbo
 	return inbounds, nil
 }
 
-func (s *InboundService) checkPortExist(listen string, port int, ignoreId int) (bool, error) {
+// checkPortExist reports whether a port is already taken ON THE SAME SERVER.
+//
+// Ports are a property of the machine that binds them, so the question is asked
+// per server: two inbounds served by two different foreign nodes may both listen
+// on 8880, because each is bound by a different Xray on a different host. Scoping
+// this to one server is what makes a second foreign server useful at all — a
+// global check would have reserved every port across the whole fleet for whichever
+// server claimed it first.
+//
+// What the two CAN still collide over is the relay in front of them; that is a
+// different question with a different answer, and it is asked in
+// checkRelayPortConflict.
+func (s *InboundService) checkPortExist(nodeId string, listen string, port int, ignoreId int) (bool, error) {
+	// The node scope is applied at the end rather than here: the listen clause below
+	// builds a grouped OR from this same handle, and a condition added first would
+	// be carried into that group as well.
 	db := database.GetDB()
 	if listen == "" || listen == "0.0.0.0" || listen == "::" || listen == "::0" {
 		db = db.Model(model.Inbound{}).Where("port = ?", port)
@@ -293,6 +308,7 @@ func (s *InboundService) checkPortExist(listen string, port int, ignoreId int) (
 				).Or(
 					"listen = \"::0\""))
 	}
+	db = db.Where("node_id = ?", nodeId)
 	if ignoreId > 0 {
 		db = db.Where("id != ?", ignoreId)
 	}
@@ -302,6 +318,102 @@ func (s *InboundService) checkPortExist(listen string, port int, ignoreId int) (
 		return false, err
 	}
 	return count > 0, nil
+}
+
+// checkRelayPortConflict refuses a port that is already claimed on a relay this
+// inbound is ALSO reached through.
+//
+// Two inbounds on two different foreign servers may share a port — until the same
+// Iran node has to hand both of them out. That node can only listen on 8880 once,
+// so the second one silently never reaches its server: the relay forwards the port
+// to whichever tunnel claimed it, and the other inbound looks configured, saves
+// cleanly, and is simply unreachable.
+//
+// Which relay an inbound is reached through is exactly what its external proxy
+// says — the same field SyncRelayForwards already uses to decide which node to
+// program — so this needs no round trip to anything. Addresses are resolved to
+// node ids where they are known, so the same relay written as an IP in one inbound
+// and as its domain in another still counts as one relay.
+func (s *InboundService) checkRelayPortConflict(inbound *model.Inbound, ignoreId int) error {
+	if !inbound.Enable {
+		return nil
+	}
+	mine := relayKeys(inbound)
+	if len(mine) == 0 {
+		return nil
+	}
+	var others []*model.Inbound
+	db := database.GetDB().Model(model.Inbound{}).
+		Where("port = ?", inbound.Port).
+		Where("node_id != ?", inbound.NodeId).
+		Where("enable = ?", true)
+	if ignoreId > 0 {
+		db = db.Where("id != ?", ignoreId)
+	}
+	if err := db.Find(&others).Error; err != nil {
+		return err
+	}
+	for _, other := range others {
+		for key := range relayKeys(other) {
+			if mine[key] {
+				return common.NewError(
+					"port", inbound.Port, "is already reached through the same relay by inbound",
+					other.Remark, "— that relay can only hand out this port once, so give one of them another port")
+			}
+		}
+	}
+	return nil
+}
+
+// checkNodeAssignment refuses an inbound aimed at a server that cannot serve it.
+//
+// A node runs one thing this panel gives it: Xray. The VPN protocols are not Xray
+// inbounds at all — they are daemons (charon, xl2tpd, openvpn, the WireGuard
+// interface) that this panel installs and configures on the machine it runs on —
+// so assigning one to a node would save cleanly, generate nothing on that server,
+// and leave an inbound that exists in the panel and nowhere else.
+func checkNodeAssignment(inbound *model.Inbound) error {
+	if inbound.NodeId == "" {
+		return nil
+	}
+	var nodeService NodeService
+	var found *NodeInfo
+	for _, n := range nodeService.List() {
+		if n.ID == inbound.NodeId {
+			node := n
+			found = &node
+			break
+		}
+	}
+	if found == nil {
+		return common.NewError("no such server — the node it was assigned to is not registered")
+	}
+	if found.Role != NodeRoleForeign {
+		return common.NewError(found.Name, "is an Iran node; only a foreign node can serve inbounds")
+	}
+	switch inbound.Protocol {
+	case model.L2TP, model.PPTP, model.OPENVPN, model.OPENCONNECT, model.SSTP,
+		model.IKEV2, model.WireGuard, model.WGC, model.AWG, model.MTPROTO, model.SSH:
+		return common.NewError(string(inbound.Protocol),
+			"runs as its own daemon on this server, so it cannot be served by", found.Name)
+	}
+	return nil
+}
+
+// relayKeys identifies the relays an inbound is reached through, one key each.
+// A registered node is keyed by its id so an IP and a domain naming it agree;
+// anything else is keyed by the address the operator typed.
+func relayKeys(inbound *model.Inbound) map[string]bool {
+	var nodeService NodeService
+	out := map[string]bool{}
+	for _, dest := range externalProxyDests(inbound) {
+		if id := nodeService.idForAddress(dest); id != "" {
+			out["node:"+id] = true
+			continue
+		}
+		out["addr:"+strings.ToLower(strings.TrimSpace(dest))] = true
+	}
+	return out
 }
 
 func (s *InboundService) GetClients(inbound *model.Inbound) ([]model.Client, error) {
@@ -715,12 +827,18 @@ func (s *InboundService) AddInbound(inbound *model.Inbound) (*model.Inbound, boo
 	if err := CheckSharedDaemonConflicts(inbound, 0); err != nil {
 		return inbound, false, err
 	}
-	exist, err := s.checkPortExist(inbound.Listen, inbound.Port, 0)
+	if err := checkNodeAssignment(inbound); err != nil {
+		return inbound, false, err
+	}
+	exist, err := s.checkPortExist(inbound.NodeId, inbound.Listen, inbound.Port, 0)
 	if err != nil {
 		return inbound, false, err
 	}
 	if exist {
 		return inbound, false, common.NewError("Port already exists:", inbound.Port)
+	}
+	if err := s.checkRelayPortConflict(inbound, 0); err != nil {
+		return inbound, false, err
 	}
 
 	clients, err := s.GetClients(inbound)
@@ -919,12 +1037,15 @@ func (s *InboundService) UpdateInbound(inbound *model.Inbound) (*model.Inbound, 
 	if err := CheckSharedDaemonConflicts(inbound, inbound.Id); err != nil {
 		return inbound, false, err
 	}
-	exist, err := s.checkPortExist(inbound.Listen, inbound.Port, inbound.Id)
+	exist, err := s.checkPortExist(inbound.NodeId, inbound.Listen, inbound.Port, inbound.Id)
 	if err != nil {
 		return inbound, false, err
 	}
 	if exist {
 		return inbound, false, common.NewError("Port already exists:", inbound.Port)
+	}
+	if err := s.checkRelayPortConflict(inbound, inbound.Id); err != nil {
+		return inbound, false, err
 	}
 
 	// This edit REPLACES the client list, so the inbound's own persisted row is not a
@@ -1056,11 +1177,7 @@ func (s *InboundService) UpdateInbound(inbound *model.Inbound) (*model.Inbound, 
 	oldInbound.Settings = inbound.Settings
 	oldInbound.StreamSettings = inbound.StreamSettings
 	oldInbound.Sniffing = inbound.Sniffing
-	if inbound.Listen == "" || inbound.Listen == "0.0.0.0" || inbound.Listen == "::" || inbound.Listen == "::0" {
-		oldInbound.Tag = fmt.Sprintf("inbound-%v", inbound.Port)
-	} else {
-		oldInbound.Tag = fmt.Sprintf("inbound-%v:%v", inbound.Listen, inbound.Port)
-	}
+	oldInbound.Tag = model.InboundTag(oldInbound.NodeId, inbound.Listen, inbound.Port)
 
 	needRestart := false
 	if hasDerivedXrayInbound(oldInbound.Protocol) {

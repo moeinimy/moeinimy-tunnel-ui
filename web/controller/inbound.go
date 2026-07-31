@@ -561,11 +561,7 @@ func (a *InboundController) addInbound(c *gin.Context) {
 
 	user := session.GetLoginUser(c)
 	inbound.UserId = user.Id
-	if inbound.Listen == "" || inbound.Listen == "0.0.0.0" || inbound.Listen == "::" || inbound.Listen == "::0" {
-		inbound.Tag = fmt.Sprintf("inbound-%v", inbound.Port)
-	} else {
-		inbound.Tag = fmt.Sprintf("inbound-%v:%v", inbound.Listen, inbound.Port)
-	}
+	inbound.Tag = model.InboundTag(inbound.NodeId, inbound.Listen, inbound.Port)
 
 	// Assign/validate VPN client IP ranges (no-op for non-VPN protocols). A
 	// user-supplied range overlapping another inbound is rejected here.
@@ -1354,11 +1350,7 @@ func (a *InboundController) importInbound(c *gin.Context) {
 	user := session.GetLoginUser(c)
 	inbound.Id = 0
 	inbound.UserId = user.Id
-	if inbound.Listen == "" || inbound.Listen == "0.0.0.0" || inbound.Listen == "::" || inbound.Listen == "::0" {
-		inbound.Tag = fmt.Sprintf("inbound-%v", inbound.Port)
-	} else {
-		inbound.Tag = fmt.Sprintf("inbound-%v:%v", inbound.Listen, inbound.Port)
-	}
+	inbound.Tag = model.InboundTag(inbound.NodeId, inbound.Listen, inbound.Port)
 
 	for index := range inbound.ClientStats {
 		inbound.ClientStats[index].Id = 0

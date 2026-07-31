@@ -97,6 +97,10 @@
                   <div class="tunnel-kv-list">
                     <div class="tunnel-kv"><span>{{ i18n "pages.tunnel.protocol" }}</span><b>[[ (t.config.PROTOCOL || '').toUpperCase() ]]</b></div>
                     <div class="tunnel-kv"><span>{{ i18n "pages.tunnel.role" }}</span><b>[[ roleText(t.config.ROLE) ]]</b></div>
+                    <!-- Where this half runs. Only shown for tunnels with no half
+                         here (a pair between two nodes) — otherwise every row
+                         would carry a redundant "this server". -->
+                    <div class="tunnel-kv" v-if="t.node"><span>{{ i18n "pages.tunnel.locatedOn" }}</span><b>[[ t.nodeName || t.node ]]</b></div>
                     <div class="tunnel-kv"><span>{{ i18n "pages.tunnel.peer" }}</span><b>[[ t.config.REMOTE_IP || '—' ]]</b></div>
                     <div class="tunnel-kv"><span>{{ i18n "pages.tunnel.autostart" }}</span>
                       <a-switch size="small" :checked="t.enabled" @change="(v) => toggleAutostart(t, v)"></a-switch>
@@ -114,15 +118,20 @@
 
                   <div class="tunnel-actions">
                     <a-button-group>
-                      <a-button size="small" v-if="!t.active" type="primary" @click="control('start', t.name)"><a-icon type="caret-right"></a-icon>{{ i18n "pages.tunnel.start" }}</a-button>
-                      <a-button size="small" v-else @click="control('stop', t.name)"><a-icon type="pause"></a-icon>{{ i18n "pages.tunnel.stop" }}</a-button>
-                      <a-button size="small" @click="control('restart', t.name)"><a-icon type="reload"></a-icon>{{ i18n "pages.tunnel.restart" }}</a-button>
+                      <a-button size="small" v-if="!t.active" type="primary" @click="control('start', t)"><a-icon type="caret-right"></a-icon>{{ i18n "pages.tunnel.start" }}</a-button>
+                      <a-button size="small" v-else @click="control('stop', t)"><a-icon type="pause"></a-icon>{{ i18n "pages.tunnel.stop" }}</a-button>
+                      <a-button size="small" @click="control('restart', t)"><a-icon type="reload"></a-icon>{{ i18n "pages.tunnel.restart" }}</a-button>
                     </a-button-group>
-                    <a-button size="small" @click="openLogs(t.name)"><a-icon type="file-text"></a-icon>{{ i18n "pages.tunnel.logs" }}</a-button>
-                    <a-button size="small" @click="checkPorts(t.name)"><a-icon type="api"></a-icon>{{ i18n "pages.tunnel.checkPorts" }}</a-button>
-                    <a-button size="small" @click="openEdit(t.name)"><a-icon type="edit"></a-icon>{{ i18n "pages.tunnel.edit" }}</a-button>
+                    <a-button size="small" @click="openLogs(t)"><a-icon type="file-text"></a-icon>{{ i18n "pages.tunnel.logs" }}</a-button>
+                    <!-- Check ports probes THIS server for a listener, which says
+                         nothing about a tunnel whose halves are both elsewhere. -->
+                    <a-button size="small" v-if="!t.node" @click="checkPorts(t.name)"><a-icon type="api"></a-icon>{{ i18n "pages.tunnel.checkPorts" }}</a-button>
+                    <a-button size="small" @click="openEdit(t)"><a-icon type="edit"></a-icon>{{ i18n "pages.tunnel.edit" }}</a-button>
+                    <!-- Removal always goes through the local endpoint: it drops
+                         this half AND asks every node to drop its own, so no end of
+                         the pair is left running against one that is gone. -->
                     <a-popconfirm title="{{ i18n "pages.tunnel.removeConfirm" }}" placement="topRight"
-                      @confirm="control('remove', t.name)" ok-text="{{ i18n "pages.tunnel.remove" }}" cancel-text="{{ i18n "cancel" }}">
+                      @confirm="removeTunnel(t)" ok-text="{{ i18n "pages.tunnel.remove" }}" cancel-text="{{ i18n "cancel" }}">
                       <a-button size="small" type="danger"><a-icon type="delete"></a-icon></a-button>
                     </a-popconfirm>
                   </div>
@@ -537,12 +546,15 @@
       editVisible: false,
       editLoading: false,
       editName: '',
+      // The node a remotely-hosted tunnel is edited on ('' = this server).
+      editNode: '',
       editFields: [],
       editOriginal: {},
       // logs
       logsVisible: false,
       logsLoading: false,
       logsName: '',
+      logsNode: '',
       logsContent: '',
       // backend update
       updating: false,
@@ -688,14 +700,25 @@
         if (navigator.clipboard) navigator.clipboard.writeText(t);
         else { const el = document.createElement('textarea'); el.value = t; document.body.appendChild(el); el.select(); document.execCommand('copy'); document.body.removeChild(el); }
       },
-      async control(action, name) {
+      // A tunnel with no half on this server is driven on the node that holds it;
+      // the backend routes on the "node" field, so every action carries it.
+      async control(action, t) {
         this.spinning = true;
-        await HttpUtil.post('/panel/tunnel/' + action + '/' + encodeURIComponent(name));
+        await HttpUtil.post('/panel/tunnel/' + action + '/' + encodeURIComponent(t.name),
+          t.node ? { node: t.node } : undefined);
+        await this.loadAll(false);
+      },
+      // Removal is the exception: the local endpoint also asks every node to drop
+      // its own half, so a pair never survives half-deleted.
+      async removeTunnel(t) {
+        this.spinning = true;
+        await HttpUtil.post('/panel/tunnel/remove/' + encodeURIComponent(t.name));
         await this.loadAll(false);
       },
       async toggleAutostart(t, v) {
         this.spinning = true;
-        await HttpUtil.post('/panel/tunnel/' + (v ? 'enable' : 'disable') + '/' + encodeURIComponent(t.name));
+        await HttpUtil.post('/panel/tunnel/' + (v ? 'enable' : 'disable') + '/' + encodeURIComponent(t.name),
+          t.node ? { node: t.node } : undefined);
         await this.loadAll(false);
       },
       // Pull the latest tunnel backend from GitHub and reinstall it — no SSH.
@@ -881,12 +904,15 @@
         if (msg && msg.success) this.portsResult = msg.obj || [];
         this.portsLoading = false;
       },
-      async openEdit(name) {
+      async openEdit(t) {
+        const name = typeof t === 'string' ? t : t.name;
         this.editName = name;
+        this.editNode = (typeof t === 'object' && t.node) || '';
         this.editFields = [];
         this.editVisible = true;
         this.editLoading = true;
-        const msg = await HttpUtil.get('/panel/tunnel/fields/' + encodeURIComponent(name));
+        const msg = await HttpUtil.get('/panel/tunnel/fields/' + encodeURIComponent(name)
+          + (this.editNode ? '?node=' + encodeURIComponent(this.editNode) : ''));
         if (msg && msg.success) {
           this.editFields = (msg.obj || []).map(f => ({ key: f.key, value: f.value }));
           this.editOriginal = {};
@@ -906,7 +932,9 @@
           if (t) f.value = this.serializeRows('edit:' + f.key, t);
           if (this.editOriginal[f.key] !== f.value) {
             changed++;
-            await HttpUtil.post('/panel/tunnel/set/' + encodeURIComponent(this.editName), { key: f.key, value: f.value });
+            const body = { key: f.key, value: f.value };
+            if (this.editNode) body.node = this.editNode;
+            await HttpUtil.post('/panel/tunnel/set/' + encodeURIComponent(this.editName), body);
           }
         }
         this.editLoading = false;
@@ -914,15 +942,17 @@
         if (changed) await this.loadAll(true);
       },
       // ---- logs ----
-      async openLogs(name) {
-        this.logsName = name;
+      async openLogs(t) {
+        this.logsName = typeof t === 'string' ? t : t.name;
+        this.logsNode = (typeof t === 'object' && t.node) || '';
         this.logsContent = '';
         this.logsVisible = true;
-        await this.loadLogs(name);
+        await this.loadLogs(this.logsName);
       },
       async loadLogs(name) {
         this.logsLoading = true;
-        const msg = await HttpUtil.get('/panel/tunnel/logs/' + encodeURIComponent(name));
+        const msg = await HttpUtil.get('/panel/tunnel/logs/' + encodeURIComponent(name)
+          + (this.logsNode ? '?node=' + encodeURIComponent(this.logsNode) : ''));
         if (msg && msg.success) this.logsContent = msg.obj || '';
         this.logsLoading = false;
       },

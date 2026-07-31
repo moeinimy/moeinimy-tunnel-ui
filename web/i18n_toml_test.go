@@ -156,6 +156,7 @@ var knownMissing = keySet(
 	"pages.tunnel.node.viewTunnels", "pages.tunnel.node.remove", "pages.tunnel.node.removeConfirm",
 	"pages.tunnel.node.empty", "pages.tunnel.node.execFailed",
 	"pages.tunnel.node.setupTitle", "pages.tunnel.node.setupHint", "pages.tunnel.node.setupNone",
+	"pages.tunnel.locatedOn",
 	"pages.tunnel.foreignSide", "pages.tunnel.foreignSideLocal",
 	"pages.tunnel.foreignSideLocalHint", "pages.tunnel.foreignSideNodeHint",
 	"pages.tunnel.node.role", "pages.tunnel.node.roleIran", "pages.tunnel.node.roleForeign",

@@ -1390,6 +1390,7 @@
 "deployLocalHint" = "Builds one side here. You must create the matching side on the other server yourself."
 "deployPairHint" = "Builds BOTH sides at once. Nothing else to do."
 "noNodesWarn" = "No node is online. Add a node first and run its one-liner on that server."
+"locatedOn" = "Runs on"
 "foreignSide" = "Foreign side"
 "foreignSideLocal" = "This panel server"
 "foreignSideLocalHint" = "The foreign half is built here, on the server running this panel."

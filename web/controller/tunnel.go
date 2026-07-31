@@ -309,29 +309,40 @@ func (a *TunnelController) remove(c *gin.Context) {
 	jsonMsg(c, msg, err)
 }
 
+// controlTunnel runs one lifecycle action where the tunnel actually lives: on
+// this server, or on the node the request names.
+func (a *TunnelController) controlTunnel(c *gin.Context, action, msgKey string, local func(string) error) {
+	name := c.Param("name")
+	if node := nodeTarget(c); node != "" {
+		out, err := a.nodeService.Exec(node, []string{action, name})
+		if err != nil {
+			jsonMsg(c, strings.TrimSpace(out), err)
+			return
+		}
+		jsonMsg(c, I18nWeb(c, msgKey), nil)
+		return
+	}
+	jsonMsg(c, I18nWeb(c, msgKey), local(name))
+}
+
 func (a *TunnelController) start(c *gin.Context) {
-	err := a.tunnelService.Start(c.Param("name"))
-	jsonMsg(c, I18nWeb(c, "pages.tunnel.toasts.started"), err)
+	a.controlTunnel(c, "start", "pages.tunnel.toasts.started", a.tunnelService.Start)
 }
 
 func (a *TunnelController) stop(c *gin.Context) {
-	err := a.tunnelService.Stop(c.Param("name"))
-	jsonMsg(c, I18nWeb(c, "pages.tunnel.toasts.stopped"), err)
+	a.controlTunnel(c, "stop", "pages.tunnel.toasts.stopped", a.tunnelService.Stop)
 }
 
 func (a *TunnelController) restart(c *gin.Context) {
-	err := a.tunnelService.Restart(c.Param("name"))
-	jsonMsg(c, I18nWeb(c, "pages.tunnel.toasts.restarted"), err)
+	a.controlTunnel(c, "restart", "pages.tunnel.toasts.restarted", a.tunnelService.Restart)
 }
 
 func (a *TunnelController) enable(c *gin.Context) {
-	err := a.tunnelService.Enable(c.Param("name"))
-	jsonMsg(c, I18nWeb(c, "pages.tunnel.toasts.enabled"), err)
+	a.controlTunnel(c, "enable", "pages.tunnel.toasts.enabled", a.tunnelService.Enable)
 }
 
 func (a *TunnelController) disable(c *gin.Context) {
-	err := a.tunnelService.Disable(c.Param("name"))
-	jsonMsg(c, I18nWeb(c, "pages.tunnel.toasts.disabled"), err)
+	a.controlTunnel(c, "disable", "pages.tunnel.toasts.disabled", a.tunnelService.Disable)
 }
 
 // setFieldReq is the body for POST /set/:name. Tagged for both JSON and form
@@ -339,12 +350,25 @@ func (a *TunnelController) disable(c *gin.Context) {
 type setFieldReq struct {
 	Key   string `json:"key" form:"key"`
 	Value string `json:"value" form:"value"`
+	// Node targets a tunnel with no half on this server (a pair between two nodes).
+	Node string `json:"node" form:"node"`
 }
 
 func (a *TunnelController) set(c *gin.Context) {
 	var req setFieldReq
 	if err := c.ShouldBind(&req); err != nil {
 		jsonMsg(c, I18nWeb(c, "pages.tunnel.toasts.saveFailed"), err)
+		return
+	}
+	// A tunnel living entirely on nodes has nothing here to edit, so the edit goes
+	// straight to the node holding it.
+	if node := strings.TrimSpace(req.Node); node != "" {
+		out, err := a.nodeService.Exec(node, []string{"set", c.Param("name"), req.Key, req.Value})
+		if err != nil {
+			jsonMsg(c, strings.TrimSpace(out), err)
+			return
+		}
+		jsonMsg(c, I18nWeb(c, "pages.tunnel.toasts.saved"), nil)
 		return
 	}
 	// Everywhere, not just here: a tunnel is two profiles on two hosts and most of

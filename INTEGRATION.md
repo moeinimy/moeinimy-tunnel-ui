@@ -72,6 +72,13 @@ go test ./web/...             # includes the i18n TOML parity tests
       normal HTTPS traffic (DPI-resistant), and needs only bash+curl+jq — **no
       compiled agent** on the Iran box. Add a node in *Tunnels → Nodes*; the panel
       shows the ready-to-run one-liner (`scripts/install.sh --iran --panel … --token …`).
+- [x] **Foreign one-liner node**, same channel and same agent, registered with
+      role `foreign` (`scripts/install.sh --foreign-node --panel … --token …`).
+      It becomes the far end of a tunnel without running a panel of its own, so
+      *Add Tunnel* can pick an Iran node for one end and a foreign node for the
+      other — a pair this panel is not itself part of. Such a tunnel has no half
+      here, so the list merges what the nodes report (tagged with the node it runs
+      on) and routes start/stop/logs/edit to that node.
 
 ### Node control channel
 

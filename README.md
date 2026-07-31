@@ -15,9 +15,10 @@ instead of SSH**:
 ### What's added
 - A **Tunnels** section in the panel: list, live traffic stats, start/stop/restart,
   auto-start, create wizard, per-field edit, logs, one-click network optimization.
-- **Nodes**: add an Iran server from the panel, get a ready-to-run one-liner, and
-  drive it remotely — the node dials out over HTTPS (DPI-resistant, NAT-friendly)
-  and needs no extra binary.
+- **Nodes**: add an Iran **or foreign** server from the panel, get a ready-to-run
+  one-liner, and drive it remotely — the node dials out over HTTPS (DPI-resistant,
+  NAT-friendly) and needs no extra binary. With a foreign node registered, a tunnel
+  can be built between two remote servers, this panel only orchestrating it.
 - A **one-command installer** (`scripts/install.sh`) for both roles.
 - **Combined backup/restore** (`tunnelctl backup-full` / `restore-full`).
 

@@ -108,21 +108,12 @@ func RemoveIndex(s []any, index int) []any {
 
 // GetXrayConfig retrieves and builds the Xray configuration THIS server runs.
 //
-// Inbounds assigned to a foreign node are deliberately absent: they are compiled
-// into that node's own config instead (GetNodeXrayConfig) and pushed to it. Both
-// come from this one generator so a node can never be handed a config built by
-// different rules from the panel's own.
+// Inbounds assigned to a foreign node are deliberately absent: that node runs this
+// same panel and compiles them itself, from its own copy of the rows the master
+// hands it (see NodePanelService). Serving them here as well would bind their
+// ports on the wrong machine.
 func (s *XrayService) GetXrayConfig() (*xray.Config, error) {
 	return s.getXrayConfigFor("")
-}
-
-// GetNodeXrayConfig builds the config for one foreign node: the same generator,
-// carrying only the inbounds assigned to that node.
-func (s *XrayService) GetNodeXrayConfig(nodeId string) (*xray.Config, error) {
-	if nodeId == "" {
-		return nil, errors.New("no node given")
-	}
-	return s.getXrayConfigFor(nodeId)
 }
 
 func (s *XrayService) getXrayConfigFor(nodeId string) (*xray.Config, error) {
@@ -575,12 +566,6 @@ func (s *XrayService) RestartXray(isForce bool) error {
 	if err != nil {
 		return err
 	}
-
-	// Whatever changed here may equally belong to a foreign node's inbounds, so the
-	// nodes are brought along. In the background: a first push downloads the core
-	// to that node before it answers, and no inbound edit may wait on that.
-	var nodeXrayService NodeXrayService
-	nodeXrayService.Sync()
 
 	return nil
 }

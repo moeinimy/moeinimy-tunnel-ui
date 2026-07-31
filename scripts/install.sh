@@ -11,8 +11,7 @@
 #     bash <(curl -fsSL https://raw.githubusercontent.com/moeinimy/moeinimy-tunnel-ui/main/scripts/install.sh) \
 #          --iran --panel https://PANEL_HOST:PORT/PATH --token NODE_TOKEN
 #
-#   Foreign node (another foreign server, same idea — it becomes the far end of a
-#   tunnel without running a panel of its own):
+#   Foreign node (another foreign server, driven entirely from the first panel):
 #     bash <(curl -fsSL https://raw.githubusercontent.com/moeinimy/moeinimy-tunnel-ui/main/scripts/install.sh) \
 #          --foreign-node --panel https://PANEL_HOST:PORT/PATH --token NODE_TOKEN
 #
@@ -20,12 +19,18 @@
 #   foreign)      installs/updates the vpn-ui panel (deploy.sh) AND the tunnel
 #                 backend (tunnel/install.sh, which also applies the reversible
 #                 network tuning).
-#   iran /        installs the tunnel backend only, records the node role + panel
-#   foreign-node) coordinates, and enables the control agent so the panel can
+#   iran)         installs the tunnel backend only, records the node role + panel
+#                 coordinates, and enables the control agent so the panel can
 #                 drive this node. No further SSH is needed on that box.
+#   foreign-node) the same, PLUS the full panel. It is not a stripped-down worker:
+#                 it compiles its own Xray, holds its own certificates, speed
+#                 limits and accounting, and enforces quota and expiry itself — so
+#                 every feature works there because it is the same code. It simply
+#                 takes its inbounds from the first panel instead of an operator,
+#                 which is why one command here is all there is to do.
 #
-# Both node roles run the exact same agent; the role only says which END of a
-# tunnel the panel may put this server on.
+# All node roles run the same tunnel agent; the role says which END of a tunnel
+# the panel may put this server on, and whether it also serves inbounds.
 set -euo pipefail
 
 REPO="${VPNUI_REPO:-moeinimy/moeinimy-tunnel-ui}"
@@ -122,6 +127,20 @@ if [[ "$ROLE" == "iran" || "$ROLE" == "foreign-node" ]]; then
         echo "REGISTERED_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
     } > "$TM_CONFIG_DIR/node.conf"
     chmod 600 "$TM_CONFIG_DIR/node.conf"
+
+    # A foreign node runs the FULL panel, not a cut-down worker: it compiles its
+    # own Xray and owns its certificates, speed limits, accounting and quota
+    # enforcement, so every feature works there because it is the same code. It
+    # takes its inbounds from the master panel instead of from an operator, which
+    # is why this one command is all there is to do on this server. An Iran node
+    # relays and serves nothing, so it gets no panel.
+    #
+    # AFTER node.conf is written: the panel decides at startup whether it is a node
+    # and only then schedules the sync, so installing it first would leave it idle
+    # until something restarted it.
+    if [[ "$NODE_ROLE" == "foreign" ]]; then
+        install_panel
+    fi
 
     # jq is required by the node agent to parse the panel's command payloads.
     if ! command -v jq >/dev/null 2>&1; then

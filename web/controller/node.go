@@ -15,8 +15,9 @@ import (
 // with its own token. A bad token gets a 404 so the endpoints stay invisible to
 // unauthenticated scanners.
 type NodeController struct {
-	nodeService   service.NodeService
-	tunnelService service.TunnelService
+	nodeService      service.NodeService
+	tunnelService    service.TunnelService
+	nodePanelService service.NodePanelService
 }
 
 // NewNodeController registers the node channel endpoints under the base path.
@@ -25,7 +26,62 @@ func NewNodeController(g *gin.RouterGroup) *NodeController {
 	node := g.Group("/node")
 	node.POST("/poll", a.poll)
 	node.POST("/result", a.result)
+	// Panel-to-panel sync: a foreign node runs this same panel and asks for the
+	// inbounds it is to serve, then reports what they carried.
+	node.POST("/panel/pull", a.panelPull)
+	node.POST("/panel/usage", a.panelUsage)
 	return a
+}
+
+type nodePanelPullBody struct {
+	Token string `json:"token" form:"token"`
+}
+
+// panelPull hands a node the inbound set assigned to it.
+//
+// Token-authed and outside the login group, like the agent's own endpoints: the
+// node holds a token, not a session. A bad token gets a 404 so these stay
+// invisible to anything scanning.
+func (a *NodeController) panelPull(c *gin.Context) {
+	var b nodePanelPullBody
+	_ = c.ShouldBind(&b)
+	id := a.nodeService.ValidToken(b.Token)
+	if id == "" {
+		c.AbortWithStatus(http.StatusNotFound)
+		return
+	}
+	set, err := a.nodePanelService.InboundsFor(id)
+	if err != nil {
+		logger.Warning("node sync: could not read the inbounds for node ", id, ": ", err)
+		c.AbortWithStatus(http.StatusInternalServerError)
+		return
+	}
+	c.JSON(http.StatusOK, set)
+}
+
+type nodePanelUsageBody struct {
+	Token string             `json:"token"`
+	Usage *service.NodeUsage `json:"usage"`
+}
+
+// panelUsage records what a node's inbounds have carried, so the master shows the
+// real figures. Enforcement is the node's own — it sees all of that traffic — so
+// this is bookkeeping, not a second place where quota is decided.
+func (a *NodeController) panelUsage(c *gin.Context) {
+	var b nodePanelUsageBody
+	if err := c.ShouldBindJSON(&b); err != nil {
+		c.AbortWithStatus(http.StatusBadRequest)
+		return
+	}
+	id := a.nodeService.ValidToken(b.Token)
+	if id == "" {
+		c.AbortWithStatus(http.StatusNotFound)
+		return
+	}
+	if err := a.nodePanelService.ApplyUsage(id, b.Usage); err != nil {
+		logger.Warning("node sync: could not record usage from node ", id, ": ", err)
+	}
+	c.JSON(http.StatusOK, gin.H{"ok": true})
 }
 
 type nodePollBody struct {

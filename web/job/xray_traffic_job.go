@@ -96,17 +96,10 @@ func (j *XrayTrafficJob) Run() {
 		}
 	}
 
-	// Foreign nodes serving their own inbounds bill through this same tick. Their
-	// core is unreachable from here, so the counters come back over the node's
-	// control channel; they are appended rather than handled apart, because quota,
-	// expiry and disabling must happen once, in one place, for every account.
-	// Independent of the local core's state: a node keeps serving while this
-	// server's own Xray is down, and that traffic still has to be counted.
-	var nodeXrayService service.NodeXrayService
-	if nodeTraffics, nodeClientTraffics := nodeXrayService.CollectTraffic(); len(nodeTraffics) > 0 || len(nodeClientTraffics) > 0 {
-		traffics = append(traffics, nodeTraffics...)
-		clientTraffics = append(clientTraffics, nodeClientTraffics...)
-	}
+	// Inbounds served by a foreign node are NOT counted here. That node runs this
+	// same panel: it sees all of their traffic, accounts for it, and enforces quota
+	// and expiry itself, then reports the totals for display (NodePanelService).
+	// Adding its figures into this tick as well would bill the same bytes twice.
 
 	// Collect L2TP, PPTP, and OpenVPN per-client traffic from nftables counters (atomic read+reset)
 	// Session maps (IP→email) come from the embedded RADIUS server

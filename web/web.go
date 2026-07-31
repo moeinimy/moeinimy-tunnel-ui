@@ -398,6 +398,14 @@ func (s *Server) startTask() {
 		s.cron.AddJob("@every 10s", job.NewXrayTrafficJob(&s.radiusService))
 	}()
 
+	// A panel that is itself a foreign node of another one keeps in step with its
+	// master: it pulls the inbounds it is to serve and reports what they carried.
+	// Scheduled only on a node, so a normal panel runs nothing extra.
+	if job.IsNode() {
+		s.cron.AddJob("@every 10s", job.NewNodeSyncJob())
+		logger.Info("this panel is a foreign node — syncing inbounds from its master panel")
+	}
+
 	// Clean stale RADIUS sessions every 60 seconds
 	s.cron.AddFunc("@every 60s", func() {
 		s.radiusService.CleanStaleSessions()

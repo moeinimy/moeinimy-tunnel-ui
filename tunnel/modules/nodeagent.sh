@@ -20,6 +20,125 @@
 
 : "${TM_NODE_CONF:=$TM_CONFIG_DIR/node.conf}"
 
+# Where a node's own Xray runtime lives. Everything here is placed by the agent
+# on demand — the core binary, the geo files, the config and the unit — so a node
+# that was installed before any of this existed grows the ability after a normal
+# `tunnelctl update`, with nothing run on that server by hand.
+: "${TM_XRAY_DIR:=$TM_STATE_DIR/xray}"
+: "${TM_XRAY_BIN:=$TM_XRAY_DIR/xray}"
+: "${TM_XRAY_CONF:=$TM_XRAY_DIR/config.json}"
+: "${TM_XRAY_UNIT:=/etc/systemd/system/tm-xray.service}"
+
+# Fetched beside the core because routing rules reference them by name; a missing
+# geo file is not fatal (Xray only fails if a rule actually uses it), so these are
+# best effort while the core itself is not.
+_TM_XRAY_GEO="geoip.dat geosite.dat geoip_IR.dat geosite_IR.dat geoip_RU.dat geosite_RU.dat"
+
+# _node_asset_fetch BASE NAME DEST [MODE] — download one panel-served asset.
+#
+# The panel hands out the very core it runs itself, so a node can never drift onto
+# a different or unpatched build, and the operator never installs anything there.
+# The local file's hash is offered up front and an unchanged asset answers 304, so
+# a poll costs nothing once the node is current.
+_node_asset_fetch() {
+    local base="$1" name="$2" dest="$3" mode="${4:-0644}" have="" code tmp
+    [[ -f "$dest" ]] && have="$(sha256sum "$dest" 2>/dev/null | cut -d' ' -f1)"
+    tmp="$(mktemp)"
+    code="$(curl -sSk -m 600 -o "$tmp" -w '%{http_code}' \
+        -H "X-Node-Token: $NODE_TOKEN" -H "X-Have-Sha256: ${have:-none}" \
+        "$base/node/asset/$name" 2>/dev/null)" || code="000"
+    case "$code" in
+        304) rm -f "$tmp"; return 0 ;;
+        200)
+            # An empty body would install a broken core over a working one.
+            if [[ ! -s "$tmp" ]]; then rm -f "$tmp"; return 1; fi
+            install -m "$mode" "$tmp" "$dest" && rm -f "$tmp" && return 0
+            rm -f "$tmp"; return 1 ;;
+        *) rm -f "$tmp"; return 1 ;;
+    esac
+}
+
+# Write the unit that runs this node's core. Regenerated on every apply so a fix
+# to it ships with an agent update rather than needing a visit to the server.
+_node_xray_unit() {
+    cat >"$TM_XRAY_UNIT" <<EOF
+[Unit]
+Description=Xray for a moeinimy-tunnel-ui node
+After=network.target nss-lookup.target
+
+[Service]
+Type=simple
+WorkingDirectory=$TM_XRAY_DIR
+ExecStart=$TM_XRAY_BIN run -c $TM_XRAY_CONF
+Restart=on-failure
+RestartSec=3
+LimitNOFILE=1048576
+
+[Install]
+WantedBy=multi-user.target
+EOF
+    systemctl daemon-reload
+}
+
+# node_xray_apply BASE B64CONFIG — install/refresh the core and run this config.
+#
+# The previous config is kept until the new one is proven to run. Xray exits on a
+# config it cannot parse, so a bad push would otherwise leave the node with no core
+# at all and the panel reporting success — the failure would surface as every
+# account on that server going dark.
+node_xray_apply() {
+    local base="$1" b64="$2" prev=""
+    mkdir -p "$TM_XRAY_DIR"
+
+    if ! printf '%s' "$b64" | base64 -d > "$TM_XRAY_CONF.new" 2>/dev/null; then
+        rm -f "$TM_XRAY_CONF.new"
+        echo "node xray: the pushed config was not valid base64"; return 1
+    fi
+    [[ -s "$TM_XRAY_CONF.new" ]] || { rm -f "$TM_XRAY_CONF.new"; echo "node xray: empty config"; return 1; }
+
+    _node_asset_fetch "$base" xray "$TM_XRAY_BIN" 0755 \
+        || { rm -f "$TM_XRAY_CONF.new"; echo "node xray: could not fetch the core from the panel"; return 1; }
+    local g
+    for g in $_TM_XRAY_GEO; do _node_asset_fetch "$base" "$g" "$TM_XRAY_DIR/$g" || true; done
+
+    [[ -f "$TM_XRAY_CONF" ]] && prev="$(cat "$TM_XRAY_CONF")"
+    mv "$TM_XRAY_CONF.new" "$TM_XRAY_CONF"
+
+    _node_xray_unit
+    systemctl enable tm-xray >/dev/null 2>&1 || true
+    systemctl restart tm-xray >/dev/null 2>&1 || true
+
+    # Give it a moment to fail: an unparsable config makes Xray exit immediately.
+    sleep 1
+    if systemctl is-active --quiet tm-xray; then
+        echo "node xray: running ($("$TM_XRAY_BIN" version 2>/dev/null | head -n1))"
+        return 0
+    fi
+    if [[ -n "$prev" ]]; then
+        printf '%s' "$prev" > "$TM_XRAY_CONF"
+        systemctl restart tm-xray >/dev/null 2>&1 || true
+        echo "node xray: the new config did not start, so the previous one was restored"
+    else
+        echo "node xray: did not start"
+    fi
+    journalctl -u tm-xray -n 15 --no-pager 2>/dev/null | tail -n 15
+    return 1
+}
+
+# node_xray_stop — take this node out of service as a config host.
+node_xray_stop() {
+    systemctl disable --now tm-xray >/dev/null 2>&1 || true
+    echo "node xray: stopped"
+}
+
+# node_xray_status — one line the panel can show.
+node_xray_status() {
+    local state; state="$(systemctl is-active tm-xray 2>/dev/null || true)"
+    printf '{"active":%s,"version":"%s"}\n' \
+        "$([[ "$state" == active ]] && echo true || echo false)" \
+        "$("$TM_XRAY_BIN" version 2>/dev/null | head -n1 | tr -d '"')"
+}
+
 # Same allowlist the panel enforces — read + safe control only.
 # `update` is included so the panel's backend-update button can bring this node
 # up to the same version instead of leaving it silently behind; see the detached
@@ -104,7 +223,17 @@ _node_poll_once() {
         mapfile -t args < <(jq -r '.args[]?' <<<"$cmd")
         [[ ${#args[@]} -gt 0 ]] || continue
 
-        if [[ "$_TM_NODE_ALLOW" != *" ${args[0]} "* ]]; then
+        # Agent-native verbs first. These are NOT tunnelctl subcommands — they run
+        # this node's own Xray, which the panel drives so that an inbound assigned
+        # to this server needs nothing done on it by hand.
+        if [[ "${args[0]}" == xray-apply ]]; then
+            out="$(node_xray_apply "$base" "${args[1]:-}" 2>&1)"; rc=$?
+            ok=true; [[ $rc -eq 0 ]] || ok=false
+        elif [[ "${args[0]}" == xray-stop ]]; then
+            out="$(node_xray_stop 2>&1)"; ok=true
+        elif [[ "${args[0]}" == xray-status ]]; then
+            out="$(node_xray_status 2>&1)"; ok=true
+        elif [[ "$_TM_NODE_ALLOW" != *" ${args[0]} "* ]]; then
             out="command not allowed on node: ${args[0]}"; ok=false
         elif [[ "${args[0]}" == update ]]; then
             # `tunnelctl update` reinstalls the code and restarts tm-node-agent —

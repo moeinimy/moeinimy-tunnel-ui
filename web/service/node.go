@@ -72,6 +72,10 @@ const (
 	// not hold the tunnel list hostage for the full Exec timeout.
 	nodeListTimeout = 6 * time.Second
 
+	// A first Xray apply pulls the core and the geo files down the same channel
+	// before it answers, so this covers a slow link, not a slow command.
+	nodeXrayTimeout = 10 * time.Minute
+
 	// A node counts as online while its last poll is within this window. It MUST
 	// stay comfortably larger than nodePollHold: an agent sitting inside a held
 	// long-poll is *connected*, but it isn't issuing new requests, so a window
@@ -896,6 +900,47 @@ func (s *NodeService) Remove(id string) error {
 	delete(nodeReg.nodes, id)
 	nodeReg.save()
 	return nil
+}
+
+// ApplyXray makes a node run this Xray config.
+//
+// The node has no core of its own until this happens: the agent fetches the very
+// binary this panel runs (see the asset endpoint) and only then starts it, so an
+// operator never installs or configures anything on that server — the one-liner
+// remains the whole of what they do there.
+//
+// Generous deadline: the first apply on a fresh node downloads a ~40 MB core plus
+// the geo files over the same channel before it can answer.
+func (s *NodeService) ApplyXray(id string, config []byte) (string, error) {
+	return s.ExecTimeout(id, []string{"xray-apply", base64.StdEncoding.EncodeToString(config)},
+		nodeXrayTimeout)
+}
+
+// StopXray takes a node out of service as a config host — used when its last
+// inbound is unassigned, so it stops serving accounts the panel no longer sends it.
+func (s *NodeService) StopXray(id string) (string, error) {
+	return s.Exec(id, []string{"xray-stop"})
+}
+
+// XrayStatus reports whether a node's core is running, and which build.
+func (s *NodeService) XrayStatus(id string) (string, error) {
+	return s.Exec(id, []string{"xray-status"})
+}
+
+// ValidToken resolves a node id from a token WITHOUT touching its liveness. Asset
+// downloads must not count as "the agent checked in": a node stuck re-downloading
+// a core is not one that is polling for work.
+func (s *NodeService) ValidToken(token string) string {
+	if token == "" {
+		return ""
+	}
+	nodeReg.mu.Lock()
+	defer nodeReg.mu.Unlock()
+	nodeReg.load()
+	if n := s.byToken(token); n != nil {
+		return n.ID
+	}
+	return ""
 }
 
 // NodeTunnels is one node's `tunnelctl json list` payload.

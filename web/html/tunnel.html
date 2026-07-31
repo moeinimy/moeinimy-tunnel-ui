@@ -422,6 +422,15 @@
       <a-modal v-model="editVisible" :title="'{{ i18n "pages.tunnel.edit" }}: ' + editName" :confirm-loading="editLoading"
         @ok="saveEdit" ok-text="{{ i18n "pages.tunnel.save" }}" cancel-text="{{ i18n "cancel" }}" :width="560">
         <a-spin :spinning="editLoading">
+          <!-- A tunnel is TWO profiles on two servers, and these are one of them.
+               Without saying which, its LOCAL_IP reads as though the ends were
+               swapped: on the Iran half LOCAL_IP is the Iran server, which is
+               exactly right and looks exactly wrong. -->
+          <a-alert type="info" show-icon :style="{ marginBottom: '12px' }">
+            <span slot="message">
+              {{ i18n "pages.tunnel.editingHalf" }}: <b>[[ editHostName ]]</b>
+            </span>
+          </a-alert>
           <a-form-model layout="vertical">
             <a-form-model-item v-for="f in editFields" :key="f.key" :label="f.key">
               <!-- Port lists get the same row editor as the create form. Typed as
@@ -546,8 +555,10 @@
       editVisible: false,
       editLoading: false,
       editName: '',
-      // The node a remotely-hosted tunnel is edited on ('' = this server).
+      // The node a remotely-hosted tunnel is edited on ('' = this server), and the
+      // name to show for it.
       editNode: '',
+      editHostName: '',
       editFields: [],
       editOriginal: {},
       // logs
@@ -912,6 +923,9 @@
         const name = typeof t === 'string' ? t : t.name;
         this.editName = name;
         this.editNode = (typeof t === 'object' && t.node) || '';
+        this.editHostName = this.editNode
+          ? ((typeof t === 'object' && t.nodeName) || this.editNode)
+          : '{{ i18n "pages.tunnel.foreignSideLocal" }}';
         this.editFields = [];
         this.editVisible = true;
         this.editLoading = true;

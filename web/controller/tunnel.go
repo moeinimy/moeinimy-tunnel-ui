@@ -361,11 +361,20 @@ func (a *TunnelController) set(c *gin.Context) {
 		return
 	}
 	// A tunnel living entirely on nodes has nothing here to edit, so the edit goes
-	// straight to the node holding it.
+	// to the nodes — EVERY node carrying it, not just the one whose row was
+	// clicked. rathole and frp declare each port on BOTH ends (the server binds it,
+	// the client says where to deliver it), so writing one end leaves a relay that
+	// accepts the port and delivers it nowhere: the exact half-applied forward that
+	// has bitten this panel before.
 	if node := strings.TrimSpace(req.Node); node != "" {
-		out, err := a.nodeService.Exec(node, []string{"set", c.Param("name"), req.Key, req.Value})
-		if err != nil {
-			jsonMsg(c, strings.TrimSpace(out), err)
+		touched, err := a.nodeService.SetFieldOnTunnel(c.Param("name"), req.Key, req.Value)
+		if err != nil && touched == 0 {
+			jsonMsg(c, I18nWeb(c, "pages.tunnel.toasts.saveFailed"), err)
+			return
+		}
+		if touched == 0 {
+			jsonMsg(c, I18nWeb(c, "pages.tunnel.toasts.saveFailed"),
+				errors.New("no node carrying this tunnel could be reached, so nothing was changed"))
 			return
 		}
 		jsonMsg(c, I18nWeb(c, "pages.tunnel.toasts.saved"), nil)

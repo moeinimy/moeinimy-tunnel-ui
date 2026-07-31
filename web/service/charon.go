@@ -48,10 +48,33 @@ func charonNeeded() bool {
 	if ikev2Count > 0 {
 		return true
 	}
-	var l2tps []*model.Inbound
-	db.Model(&model.Inbound{}).Where("protocol = ? AND enable = ?", "l2tp", true).Find(&l2tps)
+	// Through GetL2tpInbounds, NOT a protocol = 'l2tp' query. An OpenVPN inbound can
+	// serve L2TP too (openvpnSettings.l2tpEnable), and asking the table for the
+	// protocol name skips exactly that inbound — so on a panel whose only L2TP comes
+	// from a shared inbound, this returned false and syncCharon STOPPED charon.
+	//
+	// Nothing said so. stopCharon on an already-stopped charon logs nothing, the L2TP
+	// stack reported "initializing L2TP services for 1 inbound(s)" as usual, xl2tpd
+	// was configured and running, and the only symptom was that nothing answered on
+	// UDP 500: the client's IKE packet arrived at the server and was met with silence.
+	//
+	// The same trap as GetL2tpInbounds and inboundServesProtocol before it, in the one
+	// place that still asked the database directly.
+	var l2tpService L2tpService
+	l2tps, err := l2tpService.GetL2tpInbounds()
+	if err != nil {
+		// Unknowable: keep charon as it is rather than tearing down a working IPsec
+		// service over a failed query.
+		logger.Warning("charon: cannot tell whether L2TP needs IPsec:", err)
+		return procMgr.IsRunning(ikev2ProcName)
+	}
 	for _, ib := range l2tps {
-		if l2tpInboundHasIpsec(ib) {
+		if !ib.Enable {
+			continue
+		}
+		// parseSettings, so an OpenVPN inbound is read through its projection — its
+		// own settings JSON carries no ipsecEnable key at all.
+		if st, perr := l2tpService.parseSettings(ib); perr == nil && st.IpsecEnable {
 			return true
 		}
 	}

@@ -67,6 +67,11 @@ const (
 	nodeExecTimeout = 20 * time.Second // how long Exec waits for a node result
 	nodePollHold    = 25 * time.Second // long-poll hold when the queue is empty
 
+	// Reads a page refresh waits on. A node parked in a long-poll answers in well
+	// under a second, so this only bounds a node that has just dropped — which must
+	// not hold the tunnel list hostage for the full Exec timeout.
+	nodeListTimeout = 6 * time.Second
+
 	// A node counts as online while its last poll is within this window. It MUST
 	// stay comfortably larger than nodePollHold: an agent sitting inside a held
 	// long-poll is *connected*, but it isn't issuing new requests, so a window
@@ -893,9 +898,81 @@ func (s *NodeService) Remove(id string) error {
 	return nil
 }
 
+// NodeTunnels is one node's `tunnelctl json list` payload.
+type NodeTunnels struct {
+	ID   string
+	Name string
+	Role string
+	Raw  json.RawMessage
+}
+
+// ListTunnelsEverywhere reads the tunnel list from every online node.
+//
+// The panel's own list only ever showed tunnels with a half on THIS server, which
+// is every pair the panel is an end of. A pair between two nodes has no such half,
+// so without this it would exist, run, and be invisible — created from the panel
+// and then unmanageable by it.
+//
+// Iran nodes come first so that when the same tunnel is found on both ends, the
+// caller keeps the Iran half: it is the one carrying the client port map and the
+// traffic counters worth showing.
+//
+// Queried in parallel with a short deadline: this runs on every list refresh, and
+// a node that has just dropped must not stall the page for the full Exec timeout.
+func (s *NodeService) ListTunnelsEverywhere() []NodeTunnels {
+	ids := s.OnlineIDs()
+	if len(ids) == 0 {
+		return nil
+	}
+	out := make([]NodeTunnels, len(ids))
+	var wg sync.WaitGroup
+	for i, id := range ids {
+		wg.Add(1)
+		go func(i int, id string) {
+			defer wg.Done()
+			raw, err := s.ExecTimeout(id, []string{"json", "list"}, nodeListTimeout)
+			if err != nil {
+				return
+			}
+			trimmed := json.RawMessage(strings.TrimSpace(raw))
+			if !json.Valid(trimmed) {
+				return
+			}
+			nodeReg.mu.Lock()
+			n := nodeReg.nodes[id]
+			name, role := id, NodeRoleIran
+			if n != nil {
+				name, role = n.Name, n.role()
+			}
+			nodeReg.mu.Unlock()
+			out[i] = NodeTunnels{ID: id, Name: name, Role: role, Raw: trimmed}
+		}(i, id)
+	}
+	wg.Wait()
+
+	var iran, foreign []NodeTunnels
+	for _, nt := range out {
+		if nt.ID == "" {
+			continue // that node did not answer in time
+		}
+		if nt.Role == NodeRoleIran {
+			iran = append(iran, nt)
+		} else {
+			foreign = append(foreign, nt)
+		}
+	}
+	return append(iran, foreign...)
+}
+
 // Exec queues an allowlisted tunnelctl command on a node and waits (bounded) for
 // its result. Returns the command output.
 func (s *NodeService) Exec(id string, args []string) (string, error) {
+	return s.ExecTimeout(id, args, nodeExecTimeout)
+}
+
+// ExecTimeout is Exec with an explicit deadline, for reads that a page refresh
+// waits on.
+func (s *NodeService) ExecTimeout(id string, args []string, timeout time.Duration) (string, error) {
 	nodeReg.mu.Lock()
 	nodeReg.load()
 	n := nodeReg.nodes[id]
@@ -907,7 +984,7 @@ func (s *NodeService) Exec(id string, args []string) (string, error) {
 	n.queue = append(n.queue, &nodeCommand{ID: cmdID, Args: args})
 	nodeReg.mu.Unlock()
 
-	deadline := time.Now().Add(nodeExecTimeout)
+	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
 		nodeReg.mu.Lock()
 		res := n.results[cmdID]

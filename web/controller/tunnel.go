@@ -126,7 +126,55 @@ func (a *TunnelController) list(c *gin.Context) {
 		jsonMsg(c, I18nWeb(c, "pages.tunnel.toasts.loadFailed"), err)
 		return
 	}
-	jsonObj(c, raw, nil)
+	jsonObj(c, mergeNodeTunnels(raw, a.nodeService.ListTunnelsEverywhere()), nil)
+}
+
+// mergeNodeTunnels appends the tunnels that live only on nodes, each tagged with
+// the node it is on, so the list shows every tunnel the panel manages — not just
+// the ones this server is an end of.
+//
+// A pair the panel is part of appears on both hosts under one name; the local
+// entry wins, exactly as it rendered before. A pair between two nodes appears on
+// both of them, and the first (Iran, by ListTunnelsEverywhere's ordering) wins —
+// one row per tunnel either way.
+//
+// Any decoding trouble falls back to the local payload untouched: an unreadable
+// node must not be able to blank the operator's own tunnel list.
+func mergeNodeTunnels(localRaw json.RawMessage, nodeLists []service.NodeTunnels) json.RawMessage {
+	if len(nodeLists) == 0 {
+		return localRaw
+	}
+	var items []map[string]any
+	if json.Unmarshal(localRaw, &items) != nil {
+		return localRaw
+	}
+	seen := map[string]bool{}
+	for _, it := range items {
+		if name, _ := it["name"].(string); name != "" {
+			seen[name] = true
+		}
+	}
+	for _, nl := range nodeLists {
+		var remote []map[string]any
+		if json.Unmarshal(nl.Raw, &remote) != nil {
+			continue
+		}
+		for _, it := range remote {
+			name, _ := it["name"].(string)
+			if name == "" || seen[name] {
+				continue
+			}
+			seen[name] = true
+			it["node"] = nl.ID
+			it["nodeName"] = nl.Name
+			items = append(items, it)
+		}
+	}
+	merged, err := json.Marshal(items)
+	if err != nil {
+		return localRaw
+	}
+	return merged
 }
 
 func (a *TunnelController) protocols(c *gin.Context) {
@@ -158,7 +206,32 @@ func (a *TunnelController) tunnel(c *gin.Context) {
 	jsonObj(c, raw, nil)
 }
 
+// nodeTarget is the node a request is aimed at, or "" for this server. A tunnel
+// with no half here — a pair built between two nodes — is read and controlled
+// through the node that holds it.
+func nodeTarget(c *gin.Context) string {
+	if id := strings.TrimSpace(c.Query("node")); id != "" {
+		return id
+	}
+	return strings.TrimSpace(c.PostForm("node"))
+}
+
 func (a *TunnelController) fields(c *gin.Context) {
+	if node := nodeTarget(c); node != "" {
+		out, err := a.nodeService.Exec(node, []string{"json", "fields", c.Param("name")})
+		if err != nil {
+			jsonMsg(c, I18nWeb(c, "pages.tunnel.toasts.loadFailed"), err)
+			return
+		}
+		raw := json.RawMessage(strings.TrimSpace(out))
+		if !json.Valid(raw) {
+			jsonMsg(c, I18nWeb(c, "pages.tunnel.toasts.loadFailed"),
+				errors.New("the node returned an unreadable field list"))
+			return
+		}
+		jsonObj(c, raw, nil)
+		return
+	}
 	raw, err := a.tunnelService.FieldsMerged(c.Param("name"))
 	if err != nil {
 		jsonMsg(c, I18nWeb(c, "pages.tunnel.toasts.loadFailed"), err)
@@ -180,6 +253,15 @@ func (a *TunnelController) checkPorts(c *gin.Context) {
 }
 
 func (a *TunnelController) logs(c *gin.Context) {
+	if node := nodeTarget(c); node != "" {
+		out, err := a.nodeService.Exec(node, []string{"logs", c.Param("name")})
+		if err != nil {
+			jsonMsg(c, I18nWeb(c, "pages.tunnel.toasts.loadFailed"), err)
+			return
+		}
+		jsonObj(c, out, nil)
+		return
+	}
 	out, err := a.tunnelService.Logs(c.Param("name"))
 	if err != nil {
 		jsonMsg(c, I18nWeb(c, "pages.tunnel.toasts.loadFailed"), err)

@@ -1,21 +1,31 @@
 #!/usr/bin/env bash
 # scripts/install.sh — one-command installer for moeinimy-tunnel-ui.
 #
-# The SAME command is used on both servers; a role flag decides what gets set up.
+# The SAME command is used on every server; a role flag decides what gets set up.
 #
-#   Foreign server (control panel + tunnel backend):
+#   Panel server (control panel + tunnel backend) — this is the foreign server
+#   you administer from:
 #     bash <(curl -fsSL https://raw.githubusercontent.com/moeinimy/moeinimy-tunnel-ui/main/scripts/install.sh)
 #
-#   Iran node (tunnel backend only, driven remotely from the foreign panel):
+#   Iran node (tunnel backend only, driven remotely from the panel):
 #     bash <(curl -fsSL https://raw.githubusercontent.com/moeinimy/moeinimy-tunnel-ui/main/scripts/install.sh) \
 #          --iran --panel https://PANEL_HOST:PORT/PATH --token NODE_TOKEN
 #
+#   Foreign node (another foreign server, same idea — it becomes the far end of a
+#   tunnel without running a panel of its own):
+#     bash <(curl -fsSL https://raw.githubusercontent.com/moeinimy/moeinimy-tunnel-ui/main/scripts/install.sh) \
+#          --foreign-node --panel https://PANEL_HOST:PORT/PATH --token NODE_TOKEN
+#
 # What it does:
-#   foreign) installs/updates the vpn-ui panel (deploy.sh) AND the tunnel backend
-#            (tunnel/install.sh, which also applies the reversible network tuning).
-#   iran)    installs the tunnel backend only, records the node role + panel
-#            coordinates, and enables the control agent so the foreign panel can
-#            drive this node. No further SSH is needed on the Iran box.
+#   foreign)      installs/updates the vpn-ui panel (deploy.sh) AND the tunnel
+#                 backend (tunnel/install.sh, which also applies the reversible
+#                 network tuning).
+#   iran /        installs the tunnel backend only, records the node role + panel
+#   foreign-node) coordinates, and enables the control agent so the panel can
+#                 drive this node. No further SSH is needed on that box.
+#
+# Both node roles run the exact same agent; the role only says which END of a
+# tunnel the panel may put this server on.
 set -euo pipefail
 
 REPO="${VPNUI_REPO:-moeinimy/moeinimy-tunnel-ui}"
@@ -31,6 +41,7 @@ NODE_TOKEN="${NODE_TOKEN:-}"
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --iran|--node)      ROLE="iran" ;;
+        --foreign-node|--foreign-agent) ROLE="foreign-node" ;;
         --foreign|--panel-server) ROLE="foreign" ;;
         --role)             shift; ROLE="${1:-foreign}" ;;
         --panel)            shift; PANEL_URL="${1:-}" ;;
@@ -85,21 +96,27 @@ if [[ "$ROLE" == "foreign" ]]; then
     mkdir -p "$TM_CONFIG_DIR"; echo "foreign" > "$TM_CONFIG_DIR/role"
     echo
     echo "==> Done. Open the panel, sign in, and use the 'Tunnels' menu."
-    echo "    Add the Iran node later with the one-liner printed in the panel."
+    echo "    Add your Iran and foreign nodes later with the one-liners the panel prints."
     exit 0
 fi
 
-# --- role: iran -------------------------------------------------------------
-if [[ "$ROLE" == "iran" ]]; then
+# --- role: iran | foreign-node ----------------------------------------------
+# Both are the same install — the tunnel backend plus the control agent. Only the
+# recorded role differs, and it exists so the panel knows which END of a tunnel
+# this server may be put on.
+if [[ "$ROLE" == "iran" || "$ROLE" == "foreign-node" ]]; then
+    NODE_ROLE="iran"
+    [[ "$ROLE" == "foreign-node" ]] && NODE_ROLE="foreign"
+
     fetch_source
     install_tunnel_backend
     mkdir -p "$TM_CONFIG_DIR"
-    echo "iran" > "$TM_CONFIG_DIR/role"
+    echo "$NODE_ROLE" > "$TM_CONFIG_DIR/role"
     # Record how to reach the controlling panel. The control agent (enabled by
-    # tunnel/install.sh) uses these to register this node with the foreign panel.
+    # tunnel/install.sh) uses these to register this node with the panel.
     {
         echo "# moeinimy-tunnel-ui node config — written by the installer."
-        echo "NODE_ROLE=iran"
+        echo "NODE_ROLE=$NODE_ROLE"
         [[ -n "$PANEL_URL"  ]] && echo "PANEL_URL=$PANEL_URL"
         [[ -n "$NODE_TOKEN" ]] && echo "NODE_TOKEN=$NODE_TOKEN"
         echo "REGISTERED_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
@@ -137,17 +154,17 @@ if [[ "$ROLE" == "iran" ]]; then
     fi
 
     echo
-    echo "==> Iran node installed."
+    echo "==> ${NODE_ROLE^} node installed."
     if [[ -n "$PANEL_URL" && -n "$NODE_TOKEN" ]]; then
         echo "    Panel:  $PANEL_URL"
         echo "    This node dials out to the panel — manage it from Tunnels > Nodes."
         echo "    Agent status:  systemctl status tm-node-agent"
     else
-        echo "    NOTE: no --panel/--token given. Add this node from the foreign"
-        echo "          panel (Tunnels > Nodes > Add) and run the one-liner it shows."
+        echo "    NOTE: no --panel/--token given. Add this node from the panel"
+        echo "          (Tunnels > Nodes > Add) and run the one-liner it shows."
     fi
     exit 0
 fi
 
-echo "error: unknown role '$ROLE' (use --foreign or --iran)." >&2
+echo "error: unknown role '$ROLE' (use --foreign, --iran or --foreign-node)." >&2
 exit 1

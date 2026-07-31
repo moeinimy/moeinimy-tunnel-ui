@@ -22,16 +22,37 @@ import (
 	"github.com/mhsanaei/3x-ui/v2/logger"
 )
 
-// NodeService implements the Iran-node control plane.
+// NodeService implements the node control plane.
 //
-// A node (typically the Iran server) runs a tiny bash+curl agent that DIALS OUT
-// to this panel and long-polls for commands. Because the node initiates the
-// connection over the panel's normal HTTPS port, it is DPI-resistant (looks like
-// ordinary web traffic), works behind NAT/CGNAT, and needs no inbound port on
-// the node. Commands are allowlisted `tunnelctl` subcommands; results come back
-// over the same channel. No node state touches the x-ui database — the node
-// registry is a small JSON file alongside the tunnel config.
+// A node runs a tiny bash+curl agent that DIALS OUT to this panel and long-polls
+// for commands. Because the node initiates the connection over the panel's normal
+// HTTPS port, it is DPI-resistant (looks like ordinary web traffic), works behind
+// NAT/CGNAT, and needs no inbound port on the node. Commands are allowlisted
+// `tunnelctl` subcommands; results come back over the same channel. No node state
+// touches the x-ui database — the node registry is a small JSON file alongside the
+// tunnel config.
+//
+// A node is registered for ONE side of a tunnel: an Iran node (the relay users
+// connect to) or a foreign node (the exit). The panel's own server is always
+// available as a foreign end, so a single Iran node still needs nothing else; a
+// foreign node simply lets a pair be built between two remote servers, with the
+// panel only orchestrating.
 type NodeService struct{}
+
+// The side of a tunnel a node is registered for. Empty means iran: nodes
+// registered before foreign nodes existed were all Iran relays.
+const (
+	NodeRoleIran    = "iran"
+	NodeRoleForeign = "foreign"
+)
+
+// NormalizeNodeRole maps operator input onto a role, defaulting to iran.
+func NormalizeNodeRole(role string) string {
+	if strings.EqualFold(strings.TrimSpace(role), NodeRoleForeign) {
+		return NodeRoleForeign
+	}
+	return NodeRoleIran
+}
 
 // nodesFile is where the persistent registry (id/name/token) lives. Runtime
 // state (last-seen, queued commands, results) is in-memory only.
@@ -95,9 +116,13 @@ type NodeSetup struct {
 // nodeEntry is one registered node. The exported fields are persisted; the
 // unexported ones are live runtime state.
 type nodeEntry struct {
-	ID          string     `json:"id"`
-	Name        string     `json:"name"`
-	Token       string     `json:"token"`
+	ID    string `json:"id"`
+	Name  string `json:"name"`
+	Token string `json:"token"`
+	// Role is the tunnel side this node serves ("iran" | "foreign"). Absent in
+	// registries written before foreign nodes existed, where every node was an
+	// Iran relay — hence role(), not a bare field read.
+	Role        string     `json:"role,omitempty"`
 	Created     string     `json:"created"`
 	Setup       *NodeSetup `json:"setup,omitempty"`
 	Provisioned bool       `json:"provisioned"`
@@ -106,6 +131,14 @@ type nodeEntry struct {
 	remoteIP string
 	queue    []*nodeCommand
 	results  map[string]*nodeResult
+}
+
+// role is the node's side, treating an unset value as iran (see Role).
+func (n *nodeEntry) role() string { return NormalizeNodeRole(n.Role) }
+
+// online reports whether the agent is currently polling.
+func (n *nodeEntry) online() bool {
+	return !n.lastSeen.IsZero() && time.Since(n.lastSeen) < nodeOnlineWindow
 }
 
 type nodeRegistry struct {
@@ -174,6 +207,7 @@ func randID() string {
 type NodeInfo struct {
 	ID       string `json:"id"`
 	Name     string `json:"name"`
+	Role     string `json:"role"`
 	Online   bool   `json:"online"`
 	RemoteIP string `json:"remoteIP"`
 	LastSeen string `json:"lastSeen"`
@@ -188,22 +222,21 @@ func (s *NodeService) List() []NodeInfo {
 	out := make([]NodeInfo, 0, len(nodeReg.nodes))
 	for _, n := range nodeReg.nodes {
 		last := ""
-		online := false
 		if !n.lastSeen.IsZero() {
 			last = n.lastSeen.UTC().Format(time.RFC3339)
-			online = time.Since(n.lastSeen) < nodeOnlineWindow
 		}
 		out = append(out, NodeInfo{
-			ID: n.ID, Name: n.Name, Online: online,
+			ID: n.ID, Name: n.Name, Role: n.role(), Online: n.online(),
 			RemoteIP: n.remoteIP, LastSeen: last, Created: n.Created,
 		})
 	}
 	return out
 }
 
-// Create registers a new node and returns its id + one-time token. An optional
-// setup (protocol + fields) is applied automatically on first connect.
-func (s *NodeService) Create(name string, setup *NodeSetup) (id, token string) {
+// Create registers a new node for one side of a tunnel ("iran" | "foreign") and
+// returns its id + one-time token. An optional setup (protocol + fields) is
+// applied automatically on first connect.
+func (s *NodeService) Create(name, role string, setup *NodeSetup) (id, token string) {
 	nodeReg.mu.Lock()
 	defer nodeReg.mu.Unlock()
 	nodeReg.load()
@@ -233,7 +266,7 @@ func (s *NodeService) Create(name string, setup *NodeSetup) (id, token string) {
 	id = randID()
 	token = randToken()
 	nodeReg.nodes[id] = &nodeEntry{
-		ID: id, Name: name, Token: token,
+		ID: id, Name: name, Token: token, Role: NormalizeNodeRole(role),
 		Created: time.Now().UTC().Format(time.RFC3339),
 		Setup:   setup,
 		results: map[string]*nodeResult{},
@@ -247,12 +280,16 @@ func (s *NodeService) Create(name string, setup *NodeSetup) (id, token string) {
 // (REMOTE_IP = the foreign panel host the node reached), and (2) returns the
 // foreign-side fields (REMOTE_IP = the node's just-learned public IP) for the
 // caller to create locally. Returns ok=false when there's nothing to provision.
+//
+// Iran nodes only: this pairs the connecting node with THIS server as the foreign
+// end, which a foreign node is not. A foreign node's tunnels are built from the
+// Tunnels page, where both ends are chosen explicitly.
 func (s *NodeService) Provision(token, iranIP, foreignHost string) (foreignFields map[string]string, ok bool) {
 	nodeReg.mu.Lock()
 	defer nodeReg.mu.Unlock()
 	nodeReg.load()
 	n := s.byToken(token)
-	if n == nil || n.Setup == nil || n.Provisioned || iranIP == "" {
+	if n == nil || n.Setup == nil || n.Provisioned || iranIP == "" || n.role() != NodeRoleIran {
 		return nil, false
 	}
 	setup := n.Setup
@@ -277,14 +314,6 @@ func (s *NodeService) Provision(token, iranIP, foreignHost string) (foreignField
 	return ff, true
 }
 
-// BuildPair prepares BOTH sides of a tunnel for a registered node: the foreign
-// side (created locally on the panel host) and the Iran side (pushed to the
-// node). They share one secret and each points at the other's public address.
-//
-// This is the whole product in one call: the operator configures the tunnel once
-// in the panel and both servers get a matching, working half. Creating a single
-// side from the panel — which is what the old "role" picker did — always produced
-// a tunnel with nothing on the other end.
 // schemaSides maps each field of a protocol to the side it belongs on
 // ("both" | "iran" | "foreign"), as declared by `tunnelctl json schema`. The
 // schema is the single source of truth for this: the CLI wizard only ever asks a
@@ -307,23 +336,51 @@ func schemaSides(schemaRaw json.RawMessage, protocol string) map[string]string {
 	return out
 }
 
-// BuildPair derives the two halves of a tunnel from one form.
+// LocalNodeID is the endpoint id standing for this panel's own server. The UI
+// sends it for "build this half here"; an empty id means the same thing.
+const LocalNodeID = "__local"
+
+// TunnelPair is one tunnel expressed as its two halves and where each is built.
+// An empty node id means "on this panel's own server".
+type TunnelPair struct {
+	IranID     string
+	IranFields map[string]string
+
+	ForeignID     string
+	ForeignFields map[string]string
+}
+
+// BuildPair prepares BOTH sides of a tunnel from one form: they share one secret
+// and each points at the other's public address.
+//
+// This is the whole product in one call: the operator configures the tunnel once
+// in the panel and both servers get a matching, working half. Creating a single
+// side from the panel — which is what the old "role" picker did — always produced
+// a tunnel with nothing on the other end.
+//
+// Either end may be a registered node or this panel's own server (LocalNodeID or
+// ""), so the panel can build a tunnel it is not itself an end of: Iran node ↔
+// foreign node, with this server only orchestrating. Both ends local is refused —
+// that is a tunnel from a server to itself.
 //
 // schemaRaw carries the per-field side declarations; pass nil only if the schema
 // is unavailable (fields then go to both sides, the old behaviour).
-func (s *NodeService) BuildPair(id, name, protocol string, fields map[string]string, foreignHost string, schemaRaw json.RawMessage) (foreign, iran map[string]string, online bool, err error) {
+func (s *NodeService) BuildPair(iranID, foreignID, name, protocol string, fields map[string]string, panelIP string, schemaRaw json.RawMessage) (*TunnelPair, error) {
 	nodeReg.mu.Lock()
 	defer nodeReg.mu.Unlock()
 	nodeReg.load()
 
-	n := nodeReg.nodes[id]
-	if n == nil {
-		return nil, nil, false, errors.New("node not found")
+	if isLocalEnd(iranID) && isLocalEnd(foreignID) {
+		return nil, errors.New("both ends are this server — pick a node for at least one side")
 	}
-	if n.remoteIP == "" {
-		return nil, nil, false, errors.New("this node has never connected — run its install one-liner first")
+	iranAddr, err := s.endpointAddr(iranID, NodeRoleIran, panelIP)
+	if err != nil {
+		return nil, err
 	}
-	online = time.Since(n.lastSeen) < nodeOnlineWindow
+	foreignAddr, err := s.endpointAddr(foreignID, NodeRoleForeign, panelIP)
+	if err != nil {
+		return nil, err
+	}
 
 	if fields == nil {
 		fields = map[string]string{}
@@ -342,7 +399,7 @@ func (s *NodeService) BuildPair(id, name, protocol string, fields map[string]str
 	// write and the two ends never complete a handshake: the tunnel comes up, stays
 	// down, and the reason is a key neither side ever agreed to.
 	if err := fillRatholeTransportFields(protocol, fields); err != nil {
-		return nil, nil, false, err
+		return nil, err
 	}
 
 	sides := schemaSides(schemaRaw, protocol)
@@ -370,7 +427,58 @@ func (s *NodeService) BuildPair(id, name, protocol string, fields map[string]str
 		m["REMOTE_IP"] = remote
 		return m
 	}
-	return side("foreign", n.remoteIP), side("iran", foreignHost), online, nil
+	return &TunnelPair{
+		IranID:     endID(iranID),
+		IranFields: side("iran", foreignAddr),
+
+		ForeignID:     endID(foreignID),
+		ForeignFields: side("foreign", iranAddr),
+	}, nil
+}
+
+// isLocalEnd reports whether an endpoint id means this panel's own server.
+func isLocalEnd(id string) bool { return id == "" || id == LocalNodeID }
+
+// endID normalizes an endpoint id so callers can test it with one rule: "" is
+// local, anything else is a node.
+func endID(id string) string {
+	if isLocalEnd(id) {
+		return ""
+	}
+	return id
+}
+
+// endpointAddr is the address the OTHER end must dial to reach this one, and the
+// checks that make that address meaningful. Must be called with the registry
+// mutex held.
+//
+// A node has to match the side it is being used for: the roles are not
+// interchangeable (per driver, "iran" is the end that listens for users on
+// backhaul/backpack/rathole/frp and the end that dials on gost/hysteria), so a
+// node put on the wrong side builds a tunnel that never connects, with nothing in
+// the panel saying why.
+func (s *NodeService) endpointAddr(id, role, panelIP string) (string, error) {
+	if isLocalEnd(id) {
+		if panelIP == "" {
+			return "", errors.New("could not determine this server's own address")
+		}
+		return panelIP, nil
+	}
+	n := nodeReg.nodes[id]
+	if n == nil {
+		return "", errors.New("node not found")
+	}
+	if n.role() != role {
+		return "", fmt.Errorf("node %q is registered as a %s node, so it cannot be the %s end of a tunnel",
+			n.Name, n.role(), role)
+	}
+	if n.remoteIP == "" {
+		return "", fmt.Errorf("node %q has never connected — run its install one-liner on that server first", n.Name)
+	}
+	if !n.online() {
+		return "", fmt.Errorf("node %q is offline, so its half of the tunnel cannot be created", n.Name)
+	}
+	return n.remoteIP, nil
 }
 
 // SetSetup stores/replaces a node's pending auto-provision setup, so a tunnel
@@ -396,7 +504,7 @@ func (s *NodeService) OnlineIDs() []string {
 	nodeReg.load()
 	var ids []string
 	for id, n := range nodeReg.nodes {
-		if !n.lastSeen.IsZero() && time.Since(n.lastSeen) < nodeOnlineWindow {
+		if n.online() {
 			ids = append(ids, id)
 		}
 	}
@@ -571,6 +679,11 @@ func (s *NodeService) EnsureForward(dest, proto string, port int, siblings []rel
 
 // idForAddress resolves a node by the address an operator typed into an external
 // proxy: its dialled-in IP, or a hostname that resolves to it.
+//
+// Iran nodes only. An external proxy names the relay CLIENTS connect to, which is
+// by definition the Iran end; a foreign node is the far end of a tunnel and serves
+// no client ports, so pointing an inbound at one is the operator's own routing,
+// not a forward for this panel to configure.
 func (s *NodeService) idForAddress(addr string) string {
 	addr = strings.TrimSpace(addr)
 	if addr = strings.Trim(addr, "[]"); addr == "" {
@@ -580,7 +693,7 @@ func (s *NodeService) idForAddress(addr string) string {
 	defer nodeReg.mu.Unlock()
 	nodeReg.load()
 	for id, n := range nodeReg.nodes {
-		if n.remoteIP != "" && strings.EqualFold(n.remoteIP, addr) {
+		if n.role() == NodeRoleIran && n.remoteIP != "" && strings.EqualFold(n.remoteIP, addr) {
 			return id
 		}
 	}
@@ -588,7 +701,7 @@ func (s *NodeService) idForAddress(addr string) string {
 	if ips, err := net.LookupHost(addr); err == nil {
 		for _, ip := range ips {
 			for id, n := range nodeReg.nodes {
-				if n.remoteIP != "" && n.remoteIP == ip {
+				if n.role() == NodeRoleIran && n.remoteIP != "" && n.remoteIP == ip {
 					return id
 				}
 			}

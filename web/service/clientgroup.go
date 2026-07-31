@@ -170,21 +170,48 @@ func (s *ClientGroupService) GetGroup(id int) (*model.ClientGroup, error) {
 // leaving alone any the operator switched off by hand — the same distinction
 // enforceGroups draws, for the same reason.
 func (s *ClientGroupService) MirrorToMembers(id int) error {
+	return s.mirrorToMembers(id, false)
+}
+
+// RenewMembers is MirrorToMembers plus the thing that makes a renewal a RENEWAL:
+// the members' counters go back to zero.
+//
+// Without it a renewed customer got their quota and their dates back and stayed cut
+// off, because the bytes they had already spent were still counted against the
+// fresh allowance — enforceGroups compared the same up+down to the same total and
+// disabled them again on its next tick. The operator sees a customer who paid,
+// a renewal that reported success, and an account that is still dead.
+//
+// Zeroing is what a renewal means everywhere else here: autoRenewClients does
+// exactly this to a single account's Up and Down when its own reset period comes
+// round (web/service/inbound.go).
+func (s *ClientGroupService) RenewMembers(id int) error {
+	return s.mirrorToMembers(id, true)
+}
+
+func (s *ClientGroupService) mirrorToMembers(id int, resetUsage bool) error {
 	g, err := s.GetGroup(id)
 	if err != nil {
 		return err
 	}
 	db := database.GetDB()
 	return db.Transaction(func(tx *gorm.DB) error {
+		updates := map[string]any{
+			"total":       g.Total,
+			"expiry_time": g.ExpiryTime,
+			// Members never carry the renewal period: the GROUP renews itself, and a
+			// member that renewed on its own would wipe the counters the shared usage
+			// is summed from.
+			"reset": 0,
+		}
+		if resetUsage {
+			// In the SAME statement as the new quota, so no tick can ever read a
+			// fresh allowance against the old spend.
+			updates["up"] = 0
+			updates["down"] = 0
+		}
 		if err := tx.Model(xray.ClientTraffic{}).Where("group_id = ?", id).
-			Updates(map[string]any{
-				"total":       g.Total,
-				"expiry_time": g.ExpiryTime,
-				// Members never carry the renewal period: the GROUP renews itself, and a
-				// member that renewed on its own would wipe the counters the shared usage
-				// is summed from.
-				"reset": 0,
-			}).Error; err != nil {
+			Updates(updates).Error; err != nil {
 			return err
 		}
 		if !g.Enable {

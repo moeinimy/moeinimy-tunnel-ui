@@ -2240,10 +2240,11 @@ func (a *InboundController) renewClientGroup(c *gin.Context) {
 		logger.Warning("renewed group ", id, " but could not record its plan: ", err)
 	}
 
-	// The members' rows still carry the spent quota and the past expiry; enforceGroups
-	// rewrites them on its next tick, but a customer watching their subscription page
-	// should not have to wait for it to see that they paid.
-	if err := a.clientGroupService.MirrorToMembers(id); err != nil {
+	// The members' rows still carry the SPENT BYTES, the old quota and the past
+	// expiry; enforceGroups rewrites the entitlement on its next tick but never the
+	// counters, so a renewal that left them would restore the allowance and cut the
+	// customer off again the moment it was compared to what they had already used.
+	if err := a.clientGroupService.RenewMembers(id); err != nil {
 		logger.Warning("renewed group ", id, " but could not refresh its members: ", err)
 	}
 

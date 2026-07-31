@@ -432,15 +432,20 @@ func nodePanelURL(c *gin.Context) string {
 }
 
 type pairReq struct {
-	NodeID   string            `json:"nodeId"`
-	Name     string            `json:"name"`
-	Protocol string            `json:"protocol"`
-	Fields   map[string]string `json:"fields"`
+	// NodeID is the Iran end, kept for older callers that only ever had one.
+	NodeID     string `json:"nodeId"`
+	IranNodeID string `json:"iranNodeId"`
+	// ForeignNodeID is the foreign end; empty (or "__local") means this panel's
+	// own server, which is where the foreign half has always been built.
+	ForeignNodeID string            `json:"foreignNodeId"`
+	Name          string            `json:"name"`
+	Protocol      string            `json:"protocol"`
+	Fields        map[string]string `json:"fields"`
 }
 
-// createPair builds a complete tunnel across both servers from one form: it
-// pushes the Iran side to the node and creates the foreign side here, sharing a
-// secret and pointing each end at the other. If either half fails the other is
+// createPair builds a complete tunnel across both servers from one form: each end
+// is created where it belongs — on a registered node, or on this server — sharing
+// a secret and pointing at the other's address. If either half fails the other is
 // rolled back, so the panel never leaves a tunnel with a missing end.
 func (a *TunnelController) createPair(c *gin.Context) {
 	var req pairReq
@@ -452,6 +457,10 @@ func (a *TunnelController) createPair(c *gin.Context) {
 		jsonMsg(c, I18nWeb(c, "pages.tunnel.toasts.createFailed"), errors.New("invalid tunnel name"))
 		return
 	}
+	iranID := req.IranNodeID
+	if iranID == "" {
+		iranID = req.NodeID
+	}
 
 	// The schema declares which side each field belongs on; without it a
 	// side-specific option would be applied to both hosts.
@@ -460,37 +469,55 @@ func (a *TunnelController) createPair(c *gin.Context) {
 		jsonMsg(c, I18nWeb(c, "pages.tunnel.toasts.createFailed"), schemaErr)
 		return
 	}
-	ff, inf, online, err := a.nodeService.BuildPair(req.NodeID, req.Name, req.Protocol, req.Fields, panelPeerIP(c), schemaRaw)
+	pair, err := a.nodeService.BuildPair(iranID, req.ForeignNodeID, req.Name, req.Protocol,
+		req.Fields, panelPeerIP(c), schemaRaw)
 	if err != nil {
 		jsonMsg(c, I18nWeb(c, "pages.tunnel.toasts.createFailed"), err)
 		return
 	}
-	if !online {
-		jsonMsg(c, I18nWeb(c, "pages.tunnel.toasts.createFailed"),
-			errors.New(I18nWeb(c, "pages.tunnel.node.execFailed")))
-		return
-	}
 
-	// Iran side first: if the far end can't be built there's nothing to clean up
-	// here yet.
-	args := []string{"create"}
-	for k, v := range inf {
-		args = append(args, k+"="+v)
-	}
-	if out, err := a.nodeService.Exec(req.NodeID, args); err != nil {
+	// Iran side first: if that end can't be built there's nothing to clean up yet.
+	if out, err := a.createSide(pair.IranID, pair.IranFields); err != nil {
 		jsonMsg(c, strings.TrimSpace(out), err)
 		return
 	}
 
 	// Foreign side. On failure, remove the Iran half we just made.
-	if err := a.tunnelService.Create(ff); err != nil {
-		if _, rbErr := a.nodeService.Exec(req.NodeID, []string{"remove", req.Name}); rbErr != nil {
+	if out, err := a.createSide(pair.ForeignID, pair.ForeignFields); err != nil {
+		if rbErr := a.removeSide(pair.IranID, req.Name); rbErr != nil {
 			logger.Warning("pair rollback: could not remove Iran side of ", req.Name, ": ", rbErr)
 		}
-		jsonMsg(c, I18nWeb(c, "pages.tunnel.toasts.createFailed"), err)
+		msg := strings.TrimSpace(out)
+		if msg == "" {
+			msg = I18nWeb(c, "pages.tunnel.toasts.createFailed")
+		}
+		jsonMsg(c, msg, err)
 		return
 	}
 	jsonMsg(c, I18nWeb(c, "pages.tunnel.toasts.pairCreated"), nil)
+}
+
+// createSide builds one half of a tunnel where it belongs: on this server when
+// nodeID is empty, otherwise on that node over the control channel.
+func (a *TunnelController) createSide(nodeID string, fields map[string]string) (string, error) {
+	if nodeID == "" {
+		return "", a.tunnelService.Create(fields)
+	}
+	args := make([]string, 0, len(fields)+1)
+	args = append(args, "create")
+	for k, v := range fields {
+		args = append(args, k+"="+v)
+	}
+	return a.nodeService.Exec(nodeID, args)
+}
+
+// removeSide undoes createSide for the same endpoint.
+func (a *TunnelController) removeSide(nodeID, name string) error {
+	if nodeID == "" {
+		return a.tunnelService.Remove(name)
+	}
+	_, err := a.nodeService.Exec(nodeID, []string{"remove", name})
+	return err
 }
 
 // ---- Iran-node management --------------------------------------------------
@@ -501,37 +528,50 @@ func (a *TunnelController) nodesList(c *gin.Context) {
 
 type nodeCreateReq struct {
 	Name string `json:"name" form:"name"`
+	// Role is the tunnel side this server will serve: "iran" (default) or
+	// "foreign". It decides the installer flag in the one-liner and which end of a
+	// pair the node may later be used for.
+	Role string `json:"role" form:"role"`
 	// Optional tunnel to auto-provision on first connect.
 	Protocol string            `json:"protocol"`
 	Fields   map[string]string `json:"fields"`
 }
 
-// nodeCreate registers a node and returns the ready-to-run one-liner for the
-// Iran server, with the panel URL + one-time token baked in. If a protocol is
-// supplied, the tunnel is configured now and brought up automatically when the
-// node connects (foreign side here, Iran side pushed to the node).
+// nodeCreate registers a node and returns the ready-to-run one-liner for that
+// server, with the panel URL + one-time token baked in.
+//
+// For an Iran node a protocol may be supplied: the tunnel is configured now and
+// built on both sides automatically when the node connects (foreign side here,
+// Iran side pushed to the node). A foreign node has no such counterpart to pair
+// with on connect — this panel is itself a foreign end — so its tunnels are built
+// afterwards from the Tunnels page, where both ends are picked explicitly.
 func (a *TunnelController) nodeCreate(c *gin.Context) {
 	var req nodeCreateReq
 	_ = bindData(c, &req)
+	role := service.NormalizeNodeRole(req.Role)
 	name := strings.TrimSpace(req.Name)
 	if name == "" {
-		name = "iran-node"
+		name = role + "-node"
 	}
 	var setup *service.NodeSetup
-	if strings.TrimSpace(req.Protocol) != "" {
+	if role == service.NodeRoleIran && strings.TrimSpace(req.Protocol) != "" {
 		fields := req.Fields
 		if fields == nil {
 			fields = map[string]string{}
 		}
 		setup = &service.NodeSetup{Name: name, Protocol: req.Protocol, Fields: fields}
 	}
-	id, token := a.nodeService.Create(name, setup)
+	id, token := a.nodeService.Create(name, role, setup)
 
+	installFlag := "--iran"
+	if role == service.NodeRoleForeign {
+		installFlag = "--foreign-node"
+	}
 	panelURL := nodePanelURL(c)
 	oneliner := "bash <(curl -fsSL https://raw.githubusercontent.com/" + nodeRepo +
-		"/main/scripts/install.sh) --iran --panel " + panelURL + " --token " + token
+		"/main/scripts/install.sh) " + installFlag + " --panel " + panelURL + " --token " + token
 
-	jsonObj(c, gin.H{"id": id, "name": name, "token": token, "oneliner": oneliner}, nil)
+	jsonObj(c, gin.H{"id": id, "name": name, "role": role, "token": token, "oneliner": oneliner}, nil)
 }
 
 func (a *TunnelController) nodeRemove(c *gin.Context) {

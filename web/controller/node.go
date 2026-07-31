@@ -1,18 +1,11 @@
 package controller
 
 import (
-	"crypto/sha256"
-	"fmt"
 	"net"
 	"net/http"
-	"os"
-	"path/filepath"
-	"strings"
 
-	"github.com/mhsanaei/3x-ui/v2/config"
 	"github.com/mhsanaei/3x-ui/v2/logger"
 	"github.com/mhsanaei/3x-ui/v2/web/service"
-	"github.com/mhsanaei/3x-ui/v2/xray"
 
 	"github.com/gin-gonic/gin"
 )
@@ -32,64 +25,7 @@ func NewNodeController(g *gin.RouterGroup) *NodeController {
 	node := g.Group("/node")
 	node.POST("/poll", a.poll)
 	node.POST("/result", a.result)
-	node.GET("/asset/:name", a.asset)
 	return a
-}
-
-// nodeAssets are the files a node may download, mapped to where this panel keeps
-// its own copy. Strictly a fixed set: the name comes off the wire, and anything
-// that let it choose a path would serve this server's filesystem to whoever holds
-// a node token.
-func nodeAssetPath(name string) string {
-	switch name {
-	case "xray":
-		return xray.GetBinaryPath()
-	case "geoip.dat", "geosite.dat",
-		"geoip_IR.dat", "geosite_IR.dat",
-		"geoip_RU.dat", "geosite_RU.dat":
-		return filepath.Join(config.GetBinFolderPath(), name)
-	}
-	return ""
-}
-
-// asset serves the panel's own core and geo files to a node.
-//
-// This is what keeps the promise that a foreign server needs one command and
-// nothing else: the node never fetches a core from the internet, never picks a
-// version, and cannot end up on a build this panel did not test. It gets exactly
-// what this panel runs — including the fork's patches — over the same channel the
-// agent already uses.
-//
-// The node offers the hash it already has, so a node that is current pays for one
-// 304 rather than another download of a ~40 MB binary.
-func (a *NodeController) asset(c *gin.Context) {
-	token := c.GetHeader("X-Node-Token")
-	if token == "" {
-		token = c.Query("token")
-	}
-	if a.nodeService.ValidToken(token) == "" {
-		c.AbortWithStatus(http.StatusNotFound)
-		return
-	}
-	path := nodeAssetPath(c.Param("name"))
-	if path == "" {
-		c.AbortWithStatus(http.StatusNotFound)
-		return
-	}
-	data, err := os.ReadFile(path)
-	if err != nil {
-		// The geo files are optional on this server too; say "not here" rather than
-		// "server error", because the agent treats them as best effort.
-		c.AbortWithStatus(http.StatusNotFound)
-		return
-	}
-	sum := fmt.Sprintf("%x", sha256.Sum256(data))
-	if strings.EqualFold(c.GetHeader("X-Have-Sha256"), sum) {
-		c.Status(http.StatusNotModified)
-		return
-	}
-	c.Header("X-Asset-Sha256", sum)
-	c.Data(http.StatusOK, "application/octet-stream", data)
 }
 
 type nodePollBody struct {

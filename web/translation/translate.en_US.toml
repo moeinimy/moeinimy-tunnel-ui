@@ -222,6 +222,7 @@
 "invalidFormData" = "The Input data format is invalid."
 "emptyUsername" = "Username is required"
 "emptyPassword" = "Password is required"
+"tooManyAttempts" = "Too many failed attempts from this address. Try again later."
 "wrongUsernameOrPassword" = "Invalid username or password or two-factor code."
 "twoFactorRequired" = "Enter the code from your authenticator app to finish signing in."
 "successLogin" = " You have successfully logged into your account."

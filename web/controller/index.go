@@ -30,6 +30,7 @@ type IndexController struct {
 	settingService service.SettingService
 	userService    service.UserService
 	tgbot          service.Tgbot
+	loginGuard     service.LoginGuard
 }
 
 // NewIndexController creates a new IndexController and initializes its routes.
@@ -74,6 +75,18 @@ func (a *IndexController) login(c *gin.Context) {
 		return
 	}
 
+	// Rate first, before the password is even checked. Without this the panel will
+	// answer a wordlist as fast as the network allows, and the only sign is one
+	// Telegram notification per attempt — which is how a successful break-in
+	// arrives buried in the noise of the failures that preceded it.
+	ip := getRemoteIp(c)
+	if left := a.loginGuard.BlockedFor(ip); left > 0 {
+		logger.Warningf("login blocked for %s: too many failures, %s remaining", ip, left.Round(time.Second))
+		pureJsonMsg(c, http.StatusTooManyRequests, false,
+			I18nWeb(c, "pages.login.toasts.tooManyAttempts"))
+		return
+	}
+
 	user, checkErr := a.userService.CheckUser(form.Username, form.Password, form.TwoFactorCode)
 	timeStr := time.Now().Format("2006-01-02 15:04:05")
 	safeUser := template.HTMLEscapeString(form.Username)
@@ -107,13 +120,24 @@ func (a *IndexController) login(c *gin.Context) {
 			notifyPass = fmt.Sprintf("*** (%s)", translatedError)
 		}
 
-		a.tgbot.UserLoginNotify(safeUser, notifyPass, getRemoteIp(c), timeStr, 0)
+		a.tgbot.UserLoginNotify(safeUser, notifyPass, ip, timeStr, 0)
+
+		// Count it, and say so ONCE — on the attempt that earns the block rather
+		// than on every rejection after it.
+		if block := a.loginGuard.Fail(ip); block > 0 {
+			logger.Warningf("login blocked for %s: too many failures, locked out for %s",
+				ip, block.Round(time.Second))
+			a.tgbot.SendMsgToTgbotAdmins(fmt.Sprintf(
+				"🛑 Login blocked\n🌐 IP: %s\n⏰ %s\nToo many failed attempts — this address is locked out for %s.",
+				ip, timeStr, block.Round(time.Second)))
+		}
 		pureJsonMsg(c, http.StatusOK, false, I18nWeb(c, "pages.login.toasts.wrongUsernameOrPassword"))
 		return
 	}
 
-	logger.Infof("%s logged in successfully, Ip Address: %s\n", safeUser, getRemoteIp(c))
-	a.tgbot.UserLoginNotify(safeUser, ``, getRemoteIp(c), timeStr, 1)
+	a.loginGuard.Succeed(ip)
+	logger.Infof("%s logged in successfully, Ip Address: %s\n", safeUser, ip)
+	a.tgbot.UserLoginNotify(safeUser, ``, ip, timeStr, 1)
 
 	session.SetLoginUser(c, user)
 	if err := sessions.Default(c).Save(); err != nil {

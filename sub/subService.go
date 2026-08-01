@@ -38,6 +38,13 @@ type SubService struct {
 	wgcService     service.WgcService
 	awgService     service.AwgService
 	openvpnService service.OpenVpnService
+
+	// groupUsed is each shared-quota group's consumption, summed over ALL its
+	// members. A group mirrors ONE allowance onto every member row while each row
+	// accumulates only its own bytes, so a member's own "total minus used" is not
+	// the pool's remaining — it is what would be left if that protocol were the
+	// only one drawing on it. Filled once per subscription request.
+	groupUsed map[int]int64
 }
 
 // NewSubService creates a new subscription service with the given configuration.
@@ -74,6 +81,9 @@ func (s *SubService) GetSubs(subId string, host string) ([]string, []string, int
 	if err != nil {
 		s.datepicker = "gregorian"
 	}
+	// Before any link is generated: each config's name carries the remaining
+	// traffic, and for a grouped account that figure is the POOL's.
+	s.loadGroupUsage()
 	for _, inbound := range inbounds {
 		clients, err := s.inboundService.GetClients(inbound)
 		if err != nil {
@@ -188,6 +198,41 @@ func (s *SubService) getInboundsBySubId(subId string) ([]*model.Inbound, error) 
 		return nil, err
 	}
 	return inbounds, nil
+}
+
+// loadGroupUsage sums every shared-quota group's consumption across its members.
+//
+// One aggregate for all groups rather than a lookup per config: a subscription
+// renders many links and they commonly belong to the same group.
+func (s *SubService) loadGroupUsage() {
+	s.groupUsed = map[int]int64{}
+	var rows []struct {
+		GroupId int
+		Used    int64
+	}
+	err := database.GetDB().Model(xray.ClientTraffic{}).
+		Select("group_id as group_id, SUM(up + down) as used").
+		Where("group_id != 0").
+		Group("group_id").
+		Scan(&rows).Error
+	if err != nil {
+		logger.Warning("sub: could not read shared-quota usage, falling back to per-account figures: ", err)
+		return
+	}
+	for _, r := range rows {
+		s.groupUsed[r.GroupId] = r.Used
+	}
+}
+
+// usedFor is what has been drawn against an account's allowance: the whole
+// group's consumption when it shares one, its own otherwise.
+func (s *SubService) usedFor(stats xray.ClientTraffic) int64 {
+	if stats.GroupId != 0 {
+		if used, ok := s.groupUsed[stats.GroupId]; ok {
+			return used
+		}
+	}
+	return stats.Up + stats.Down
 }
 
 func (s *SubService) getClientTraffics(traffics []xray.ClientTraffic, email string) xray.ClientTraffic {
@@ -1269,7 +1314,10 @@ func (s *SubService) genRemark(inbound *model.Inbound, email string, extra strin
 			if !stats.Enable {
 				return fmt.Sprintf("⛔️N/A%s%s", separationChar, strings.Join(remark, separationChar))
 			}
-			if vol := stats.Total - (stats.Up + stats.Down); vol > 0 {
+			// The pool's remaining for a grouped account, so two configs sharing one
+			// 50 GB allowance report the same figure and it falls once — not twice
+			// from two different starting points.
+			if vol := stats.Total - s.usedFor(stats); vol > 0 {
 				remark = append(remark, fmt.Sprintf("%s%s", common.FormatTraffic(vol), "📊"))
 			}
 			now := time.Now().Unix()

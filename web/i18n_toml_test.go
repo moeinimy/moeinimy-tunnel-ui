@@ -158,7 +158,7 @@ var knownMissing = keySet(
 	"pages.tunnel.node.setupTitle", "pages.tunnel.node.setupHint", "pages.tunnel.node.setupNone",
 	"pages.inbounds.server", "pages.inbounds.serverLocal", "pages.inbounds.serverNodeHint",
 	"pages.tunnel.locatedOn", "pages.tunnel.editingHalf",
-	"pages.login.toasts.tooManyAttempts",
+	"pages.login.toasts.tooManyAttempts", "pages.tunnel.node.showCommand",
 	"pages.tunnel.foreignSide", "pages.tunnel.foreignSideLocal",
 	"pages.tunnel.foreignSideLocalHint", "pages.tunnel.foreignSideNodeHint",
 	"pages.tunnel.node.role", "pages.tunnel.node.roleIran", "pages.tunnel.node.roleForeign",

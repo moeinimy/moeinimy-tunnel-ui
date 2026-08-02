@@ -131,6 +131,11 @@ type nodeEntry struct {
 	Created     string     `json:"created"`
 	Setup       *NodeSetup `json:"setup,omitempty"`
 	Provisioned bool       `json:"provisioned"`
+	// Address is the node's public address as last seen. Persisted because the
+	// panel needs it to build a tunnel or a port forward, and a restart that
+	// forgot it left every node addressless until its next poll — which is also
+	// exactly when the operator is most likely to be looking.
+	Address string `json:"address,omitempty"`
 
 	lastSeen time.Time
 	remoteIP string
@@ -173,6 +178,9 @@ func (r *nodeRegistry) load() {
 	}
 	for _, n := range on.Nodes {
 		n.results = map[string]*nodeResult{}
+		// Its address survives a restart; its liveness does not, and must not —
+		// "online" means an agent is polling right now, which only a poll can say.
+		n.remoteIP = n.Address
 		r.nodes[n.ID] = n
 	}
 }
@@ -907,6 +915,20 @@ func (s *NodeService) Remove(id string) error {
 	return nil
 }
 
+// TokenOf returns a registered node's token, so the panel can print its install
+// command again. The token does not rotate: a node that has lost its way — the
+// panel moved to another port, the agent was wiped — is brought back by pasting
+// the SAME command, not by being registered afresh and losing its tunnels.
+func (s *NodeService) TokenOf(id string) (name, token, role string) {
+	nodeReg.mu.Lock()
+	defer nodeReg.mu.Unlock()
+	nodeReg.load()
+	if n := nodeReg.nodes[id]; n != nil {
+		return n.Name, n.Token, n.role()
+	}
+	return "", "", ""
+}
+
 // ValidToken resolves a node id from a token WITHOUT touching its liveness. Asset
 // downloads must not count as "the agent checked in": a node stuck re-downloading
 // a core is not one that is polling for work.
@@ -1043,8 +1065,12 @@ func (s *NodeService) authNode(token, remoteIP string) *nodeEntry {
 	for _, n := range nodeReg.nodes {
 		if n.Token == token {
 			n.lastSeen = time.Now()
-			if remoteIP != "" {
+			if remoteIP != "" && n.remoteIP != remoteIP {
 				n.remoteIP = remoteIP
+				// Only when it CHANGES: a poll every few seconds must not rewrite
+				// the registry file every few seconds.
+				n.Address = remoteIP
+				nodeReg.save()
 			}
 			return n
 		}

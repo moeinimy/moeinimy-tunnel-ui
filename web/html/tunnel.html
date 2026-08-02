@@ -173,6 +173,9 @@
                     </span>
                   </a-list-item-meta>
                   <a-button size="small" slot="actions" @click="nodeTunnels(n)"><a-icon type="unordered-list"></a-icon>{{ i18n "pages.tunnel.node.viewTunnels" }}</a-button>
+                  <!-- The way back for a node that cannot reach the panel any more:
+                       the SAME command, against wherever the panel lives now. -->
+                  <a-button size="small" slot="actions" @click="nodeCommand(n)"><a-icon type="code"></a-icon>{{ i18n "pages.tunnel.node.showCommand" }}</a-button>
                   <a-popconfirm slot="actions" title="{{ i18n "pages.tunnel.node.removeConfirm" }}" placement="topRight"
                     @confirm="removeNode(n)" ok-text="{{ i18n "pages.tunnel.node.remove" }}" cancel-text="{{ i18n "cancel" }}">
                     <a-button size="small" type="danger"><a-icon type="delete"></a-icon></a-button>
@@ -691,6 +694,16 @@
           this.nodeOneliner = msg.obj.oneliner || '';
           this.nodeOnelinerVisible = true;
           await this.loadAll(false);
+        }
+      },
+      // Re-print an existing node's install command, so a node that lost contact is
+      // brought back by one paste instead of being re-added (which would issue a new
+      // token and orphan its tunnels).
+      async nodeCommand(n) {
+        const msg = await HttpUtil.get('/panel/tunnel/nodes/' + encodeURIComponent(n.id) + '/command');
+        if (msg && msg.success && msg.obj) {
+          this.nodeOneliner = msg.obj.oneliner || '';
+          this.nodeOnelinerVisible = true;
         }
       },
       async removeNode(n) {

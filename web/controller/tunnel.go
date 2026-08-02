@@ -101,6 +101,7 @@ func (a *TunnelController) initRouter(g *gin.RouterGroup) {
 	// endpoints are token-authed and registered separately in web.go.
 	g.GET("/nodes", a.nodesList)
 	g.POST("/nodes", a.nodeCreate)
+	g.GET("/nodes/:id/command", a.nodeCommand)
 	g.POST("/nodes/:id/remove", a.nodeRemove)
 	g.POST("/nodes/:id/exec", a.nodeExec)
 }
@@ -858,6 +859,29 @@ func (a *TunnelController) nodeCreate(c *gin.Context) {
 		"/main/scripts/install.sh) " + installFlag + " --panel " + panelURL + " --token " + token
 
 	jsonObj(c, gin.H{"id": id, "name": name, "role": role, "token": token, "oneliner": oneliner}, nil)
+}
+
+// nodeCommand prints an existing node's install one-liner again, against the
+// panel's CURRENT address.
+//
+// A node that has lost its way — the panel moved to another port after an attack,
+// the agent was wiped, the box was rebuilt — cannot be told anything over a
+// channel it can no longer reach, so the fix has to start from here. Re-adding it
+// would issue a new token and orphan every tunnel it holds; this reissues the SAME
+// command, so one paste brings it back with its tunnels intact.
+func (a *TunnelController) nodeCommand(c *gin.Context) {
+	name, token, role := a.nodeService.TokenOf(c.Param("id"))
+	if token == "" {
+		jsonMsg(c, I18nWeb(c, "pages.tunnel.toasts.loadFailed"), errors.New("node not found"))
+		return
+	}
+	installFlag := "--iran"
+	if role == service.NodeRoleForeign {
+		installFlag = "--foreign-node"
+	}
+	oneliner := "bash <(curl -fsSL https://raw.githubusercontent.com/" + nodeRepo +
+		"/main/scripts/install.sh) " + installFlag + " --panel " + nodePanelURL(c) + " --token " + token
+	jsonObj(c, gin.H{"name": name, "role": role, "oneliner": oneliner}, nil)
 }
 
 func (a *TunnelController) nodeRemove(c *gin.Context) {

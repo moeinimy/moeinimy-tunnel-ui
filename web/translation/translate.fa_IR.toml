@@ -1265,6 +1265,7 @@
 "remoteIp" = "آی‌پی"
 "lastSeen" = "آخرین اتصال"
 "never" = "هرگز"
+"showCommand" = "دستور نصب"
 "viewTunnels" = "تانل‌ها"
 "remove" = "حذف"
 "removeConfirm" = "این نود حذف شود؟ دستور/توکنش از کار می‌افتد."

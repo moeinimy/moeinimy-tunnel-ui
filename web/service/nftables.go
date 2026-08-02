@@ -194,6 +194,41 @@ func defaultEgressIface() string {
 // Destinations inside VPN space are excluded so client-to-client and
 // cross-inbound traffic keeps its real source address — those verdicts are
 // decided in prerouting and must not be rewritten here.
+// writeMssClamp sizes a VPN client's TCP segments to the path they will actually
+// take.
+//
+// A client dialling in over a relay is inside two layers of encapsulation — the
+// VPN's own, and the tunnel carrying it — so the usable MTU is well under the
+// 1500 the client assumes. It sends full-size segments, which are too big to
+// cross the tunnel, and the ICMP "fragmentation needed" that should tell it so is
+// dropped somewhere on the Iran↔EU path. The result is the exact report this
+// exists for: the VPN connects, ping is perfect, and nothing loads. Ping fits;
+// a 1460-byte segment does not.
+//
+// It is per-user and intermittent because it depends on the path each client
+// takes, and it hits desktops hardest — a phone's carrier already hands out a
+// smaller MTU, which is why the same account works on mobile and stalls on a PC.
+//
+// Clamping to the route's own MTU on the way out means the client is told the
+// real ceiling during the handshake, so the stall never starts. This is the same
+// medicine the tunnel applies to its own carrier connection (tun_mss_apply); what
+// was missing is that a VPN client's traffic is a DIFFERENT connection, riding
+// inside it.
+func writeMssClamp(b *strings.Builder, nets []vpnNet) {
+	var all []string
+	for _, n := range nets {
+		all = append(all, n.subnets...)
+	}
+	for _, src := range all {
+		// Both directions of the handshake: the client's SYN on the way out, and
+		// the SYN-ACK coming back to it.
+		b.WriteString(fmt.Sprintf(
+			"add rule ip vpn postrouting ip saddr %s tcp flags syn tcp option maxseg size set rt mtu\n", src))
+		b.WriteString(fmt.Sprintf(
+			"add rule ip vpn postrouting ip daddr %s tcp flags syn tcp option maxseg size set rt mtu\n", src))
+	}
+}
+
 func writeEgressNatRules(b *strings.Builder, nets []vpnNet, wan string) {
 	if wan == "" {
 		return
@@ -396,6 +431,9 @@ func (s *NftService) ApplyNftRules() error {
 		allNets = append(allNets, vpnNet{subnets: awgCIDRs(inbound, st), c2c: st.ClientToClient, cross: st.CrossInbound})
 	}
 	writeCrossInboundRules(&b, allNets)
+	// Before the NAT rules: a client's segments have to fit the path before there
+	// is any point routing them out of it.
+	writeMssClamp(&b, allNets)
 	writeEgressNatRules(&b, allNets, defaultEgressIface())
 
 	// L2TP TPROXY rules

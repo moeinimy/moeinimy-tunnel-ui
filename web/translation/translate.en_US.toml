@@ -1436,6 +1436,7 @@
 "remoteIp" = "IP"
 "lastSeen" = "Last seen"
 "never" = "never"
+"showCommand" = "Install command"
 "viewTunnels" = "Tunnels"
 "remove" = "Remove"
 "removeConfirm" = "Remove this node? Its one-liner/token stops working."

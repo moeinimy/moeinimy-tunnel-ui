@@ -152,9 +152,13 @@ func (n *nodeEntry) online() bool {
 }
 
 type nodeRegistry struct {
-	mu     sync.Mutex
-	nodes  map[string]*nodeEntry // keyed by ID
-	loaded bool
+	mu    sync.Mutex
+	nodes map[string]*nodeEntry // keyed by ID
+	// loaded says the file has been consulted; unreadable says it could not be
+	// UNDERSTOOD. The two are different, and conflating them cost every node its
+	// registration: see save().
+	loaded     bool
+	unreadable bool
 }
 
 var nodeReg = &nodeRegistry{nodes: map[string]*nodeEntry{}}
@@ -168,12 +172,21 @@ func (r *nodeRegistry) load() {
 	r.loaded = true
 	data, err := os.ReadFile(nodesFile())
 	if err != nil {
-		return // no file yet ⇒ empty registry
+		// A missing file is an empty registry — the normal first run. Anything
+		// else (a permission problem, a directory not mounted yet at boot) means
+		// the nodes on disk are unknown, NOT absent.
+		r.unreadable = !os.IsNotExist(err)
+		if r.unreadable {
+			logger.Warning("node registry: could not be read, so it will not be overwritten: ", err)
+		}
+		return
 	}
 	var on struct {
 		Nodes []*nodeEntry `json:"nodes"`
 	}
-	if json.Unmarshal(data, &on) != nil {
+	if err := json.Unmarshal(data, &on); err != nil {
+		r.unreadable = true
+		logger.Warning("node registry: unreadable JSON, so it will not be overwritten: ", err)
 		return
 	}
 	for _, n := range on.Nodes {
@@ -185,7 +198,24 @@ func (r *nodeRegistry) load() {
 	}
 }
 
+// save writes the registry back, and refuses to when what is in memory cannot be
+// trusted to be the whole of it.
+//
+// This is the bug that unregistered every node at once. load() marked itself done
+// even when the file could not be read — at boot the panel can start before
+// /etc/tunnel-manager is there — leaving an EMPTY registry that believed itself
+// complete. The next write of any kind then persisted that emptiness over the real
+// file, and every node's token was rejected from then on: the agents kept dialling
+// in correctly, forever, to a panel that no longer knew them.
+//
+// A copy of the previous contents is kept beside it, because the first thing
+// wanted after a registry is lost is the registry.
 func (r *nodeRegistry) save() {
+	if r.unreadable {
+		logger.Warning("node registry: not saving — the file on disk could not be read, " +
+			"and writing what is in memory would erase nodes this panel simply failed to load")
+		return
+	}
 	var on struct {
 		Nodes []*nodeEntry `json:"nodes"`
 	}
@@ -195,6 +225,9 @@ func (r *nodeRegistry) save() {
 	data, err := json.MarshalIndent(&on, "", "  ")
 	if err != nil {
 		return
+	}
+	if prev, rerr := os.ReadFile(nodesFile()); rerr == nil && len(prev) > 0 {
+		_ = os.WriteFile(nodesFile()+".bak", prev, 0o600)
 	}
 	tmp := nodesFile() + ".tmp"
 	if os.WriteFile(tmp, data, 0o600) == nil {

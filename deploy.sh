@@ -449,6 +449,13 @@ if [[ "$MODE" == "install" ]]; then
         # The import brought its own admin login; randomizing now would throw it
         # away. Keep it and just install the unit (the port was preserved too).
         cred_mode="keep"
+    elif [[ "$MODE" == "update" ]]; then
+        # A panel is already here, so this is a re-run — an update, or a node being
+        # pointed at its master again. Randomizing would hand back a new port, user,
+        # password and path for a panel that was working, which is the opposite of
+        # what someone re-running an installer to RECOVER is asking for. Changing
+        # the login stays a deliberate act (`vpn-ui`, or the binary's own flags).
+        cred_mode="keep"
     elif [[ -r /dev/tty && -z "${VPNUI_NONINTERACTIVE:-}" ]]; then
         {
             printf '%s::%s %sPanel login / access%s\n' "$B$BLUE" "$R" "$WHITE" "$R"

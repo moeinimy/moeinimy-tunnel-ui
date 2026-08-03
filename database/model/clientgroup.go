@@ -25,6 +25,20 @@ type ClientGroup struct {
 	// matching xray.ClientTraffic.
 	ExpiryTime int64 `json:"expiryTime" form:"expiryTime" gorm:"default:0"`
 
+	// UsedCarry is traffic that a member accumulated and then took with it when the
+	// row was deleted, in BYTES.
+	//
+	// Consumption lives on each member's ClientTraffic row, so removing a protocol
+	// from a customer — or deleting the inbound it lived on — used to take that
+	// protocol's usage out of the group's total as well: the shared pool refilled
+	// itself by the amount of whatever was removed. The bytes were spent; changing
+	// what a subscription CONTAINS must not change what it has USED.
+	//
+	// The departing row's usage is added here before it goes, and every reading of
+	// the group's consumption adds this to the live rows. A traffic reset clears it
+	// with them.
+	UsedCarry int64 `json:"usedCarry" gorm:"default:0"`
+
 	// Reset is the traffic-reset period in days (0 = never), mirroring the per-client
 	// field so a group renews on the same schedule its members would have.
 	Reset int `json:"reset" form:"reset" gorm:"default:0"`

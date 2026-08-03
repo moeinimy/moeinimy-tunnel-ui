@@ -990,7 +990,9 @@ func (s *InboundService) DelInbound(id int) (bool, error) {
 		logger.Debug("No enabled inbound founded to removing by api", tag)
 	}
 
-	// Delete client traffics of inbounds
+	// Delete client traffics of inbounds. Their usage is preserved on any shared
+	// quota first: deleting an inbound must not refill the pool it was drawing on.
+	CarryUsage(db, func(q *gorm.DB) *gorm.DB { return q.Where("inbound_id = ?", id) })
 	err := db.Where("inbound_id = ?", id).Delete(xray.ClientTraffic{}).Error
 	if err != nil {
 		return false, err
@@ -3069,6 +3071,9 @@ func (s *InboundService) UpdateClientIPs(tx *gorm.DB, oldEmail string, newEmail 
 }
 
 func (s *InboundService) DelClientStat(tx *gorm.DB, email string) error {
+	// What this account used stays charged to its group. Removing a protocol from a
+	// customer changes what their subscription CONTAINS, not what it has USED.
+	CarryUsage(tx, func(q *gorm.DB) *gorm.DB { return q.Where("email = ?", email) })
 	return tx.Where("email = ?", email).Delete(xray.ClientTraffic{}).Error
 }
 

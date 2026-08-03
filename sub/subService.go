@@ -222,6 +222,19 @@ func (s *SubService) loadGroupUsage() {
 	for _, r := range rows {
 		s.groupUsed[r.GroupId] = r.Used
 	}
+	// Plus what left with members that have been deleted since. Removing a protocol
+	// from a subscription changes what it CONTAINS, not what it has USED — without
+	// this the reported figure jumps back up the moment one is taken out.
+	var carries []struct {
+		Id        int
+		UsedCarry int64
+	}
+	if err := database.GetDB().Model(model.ClientGroup{}).
+		Select("id, used_carry").Where("used_carry > 0").Scan(&carries).Error; err == nil {
+		for _, c := range carries {
+			s.groupUsed[c.Id] += c.UsedCarry
+		}
+	}
 }
 
 // usedFor is what has been drawn against an account's allowance: the whole

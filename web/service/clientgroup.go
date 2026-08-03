@@ -52,9 +52,42 @@ func (s *ClientGroupService) GetGroups() ([]*GroupUsage, error) {
 			Select("COALESCE(SUM(up),0) as up, COALESCE(SUM(down),0) as down, COUNT(*) as members").
 			Where("group_id = ?", g.Id).Scan(&agg)
 		u.Up, u.Down, u.Members = agg.Up, agg.Down, agg.Members
+		// Plus what left with deleted members: those bytes were spent, and a group
+		// whose total dropped when a protocol was removed would be handing the
+		// customer back traffic they had already used.
+		u.Down += g.UsedCarry
 		out = append(out, u)
 	}
 	return out, nil
+}
+
+// CarryUsage moves the usage of the client rows a delete is about to remove onto
+// their groups, so a shared pool's consumption survives the row.
+//
+// Called BEFORE the delete, with the same scope the delete will use — anything
+// else would be counting rows that are not the ones going away.
+func CarryUsage(tx *gorm.DB, scope func(*gorm.DB) *gorm.DB) {
+	var rows []struct {
+		GroupId int
+		Up      int64
+		Down    int64
+	}
+	if err := scope(tx.Model(xray.ClientTraffic{})).
+		Where("group_id != 0").
+		Select("group_id, up, down").Scan(&rows).Error; err != nil {
+		logger.Warning("group carry: could not read the usage of departing accounts: ", err)
+		return
+	}
+	for _, r := range rows {
+		spent := r.Up + r.Down
+		if spent <= 0 {
+			continue
+		}
+		if err := tx.Model(model.ClientGroup{}).Where("id = ?", r.GroupId).
+			UpdateColumn("used_carry", gorm.Expr("used_carry + ?", spent)).Error; err != nil {
+			logger.Warning("group carry: could not preserve usage for group ", r.GroupId, ": ", err)
+		}
+	}
 }
 
 func (s *ClientGroupService) AddGroup(g *model.ClientGroup) error {
@@ -209,6 +242,15 @@ func (s *ClientGroupService) mirrorToMembers(id int, resetUsage bool) error {
 			// fresh allowance against the old spend.
 			updates["up"] = 0
 			updates["down"] = 0
+		}
+		if resetUsage {
+			// What departed members had spent goes with them: a renewal that
+			// cleared only the live rows would start the new period already owing
+			// whatever the customer used before it.
+			if err := tx.Model(model.ClientGroup{}).Where("id = ?", id).
+				UpdateColumn("used_carry", 0).Error; err != nil {
+				return err
+			}
 		}
 		if err := tx.Model(xray.ClientTraffic{}).Where("group_id = ?", id).
 			Updates(updates).Error; err != nil {
@@ -461,6 +503,10 @@ func (s *ClientGroupService) enforceGroups(tx *gorm.DB) (bool, error) {
 			Where("group_id = ?", g.Id).Scan(&agg).Error; err != nil {
 			return needRestart, err
 		}
+		// Plus the usage of members that have since been deleted. Without it, a
+		// customer could keep their pool topped up by removing and re-adding a
+		// protocol — the bytes would leave with the row.
+		agg.Used += g.UsedCarry
 
 		// A delayed start (expiry stored NEGATIVE, as minus the duration) becomes a
 		// real date the moment the customer first sends traffic — and it is the
@@ -490,6 +536,10 @@ func (s *ClientGroupService) enforceGroups(tx *gorm.DB) (bool, error) {
 			}
 			if err := tx.Model(xray.ClientTraffic{}).Where("group_id = ?", g.Id).
 				Updates(map[string]any{"up": 0, "down": 0}).Error; err != nil {
+				return needRestart, err
+			}
+			if err := tx.Model(model.ClientGroup{}).Where("id = ?", g.Id).
+				UpdateColumn("used_carry", 0).Error; err != nil {
 				return needRestart, err
 			}
 			if err := tx.Model(model.ClientGroup{}).Where("id = ?", g.Id).

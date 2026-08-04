@@ -816,7 +816,9 @@ func (a *InboundController) addInboundClient(c *gin.Context) {
 	// Reserve first, create second, on purpose: a failure between the two loses the
 	// reseller balance an admin can hand back, where the other order would hand out a
 	// live account with nothing charged for it.
-	ticket, err := resellerService.PrepareClientCreate(session.GetLoginUser(c), data)
+	// Every client in the body, not just the first: the bulk form posts a batch,
+	// and each account is priced and reserved on its own.
+	tickets, err := resellerService.PrepareClientsCreate(session.GetLoginUser(c), data)
 	if err != nil {
 		jsonMsg(c, I18nWeb(c, "somethingWentWrong"), err)
 		return
@@ -824,9 +826,11 @@ func (a *InboundController) addInboundClient(c *gin.Context) {
 
 	needRestart, err := a.inboundService.AddInboundClient(data)
 	if err != nil {
-		// The reservation paid for an account that never landed. Give it back.
-		if rerr := resellerService.Rollback(ticket); rerr != nil {
-			logger.Warning("rolling back a reseller charge whose client write failed: ", rerr)
+		// The reservations paid for accounts that never landed. Give them back.
+		for _, ticket := range tickets {
+			if rerr := resellerService.Rollback(ticket); rerr != nil {
+				logger.Warning("rolling back a reseller charge whose client write failed: ", rerr)
+			}
 		}
 		jsonMsg(c, I18nWeb(c, "somethingWentWrong"), err)
 		return

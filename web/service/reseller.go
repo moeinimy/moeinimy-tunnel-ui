@@ -10,6 +10,7 @@ import (
 
 	"github.com/mhsanaei/3x-ui/v2/database"
 	"github.com/mhsanaei/3x-ui/v2/database/model"
+	"github.com/mhsanaei/3x-ui/v2/logger"
 	"github.com/mhsanaei/3x-ui/v2/util/common"
 	"github.com/mhsanaei/3x-ui/v2/util/crypto"
 	"github.com/mhsanaei/3x-ui/v2/xray"
@@ -414,22 +415,44 @@ type ChargeTicket struct {
 
 // postedClient pulls the single client out of a client-mutating request body.
 //
-// Exactly one, always: every one of those routes posts one, and more than one
-// would let a single reservation pay for several accounts.
+// Exactly one: an EDIT names one account by its id, so a body carrying several
+// would be ambiguous about which the reservation is for.
 func postedClient(data *model.Inbound) (map[string]any, map[string]any, []any, error) {
+	cms, settings, clients, err := postedClients(data)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	if len(cms) != 1 {
+		return nil, nil, nil, errors.New("expected exactly one client in the request")
+	}
+	return cms[0], settings, clients, nil
+}
+
+// postedClients pulls every client out of a client-mutating request body.
+//
+// Creation takes as many as were posted: the bulk form makes a batch of accounts
+// in one request, and a reseller was refused outright because the charge path
+// could only ever see one. Each is priced and reserved on its own — one
+// reservation must never pay for several accounts — so a batch is simply that
+// done N times, and rolled back the same way.
+func postedClients(data *model.Inbound) ([]map[string]any, map[string]any, []any, error) {
 	settings := map[string]any{}
 	if err := json.Unmarshal([]byte(data.Settings), &settings); err != nil {
 		return nil, nil, nil, err
 	}
 	clients, _ := settings["clients"].([]any)
-	if len(clients) != 1 {
-		return nil, nil, nil, errors.New("expected exactly one client in the request")
+	if len(clients) == 0 {
+		return nil, nil, nil, errors.New("no client in the request")
 	}
-	cm, ok := clients[0].(map[string]any)
-	if !ok {
-		return nil, nil, nil, errors.New("malformed client in the request")
+	out := make([]map[string]any, 0, len(clients))
+	for _, c := range clients {
+		cm, ok := c.(map[string]any)
+		if !ok {
+			return nil, nil, nil, errors.New("malformed client in the request")
+		}
+		out = append(out, cm)
 	}
-	return cm, settings, clients, nil
+	return out, settings, clients, nil
 }
 
 // applyToSettings writes the priced decisions back into the request body.
@@ -536,6 +559,108 @@ func (s *ResellerService) PrepareClientCreate(user *model.User, data *model.Inbo
 		return ChargeTicket{}, err
 	}
 	return ticket, nil
+}
+
+// PrepareClientsCreate prices and reserves EVERY account in the request.
+//
+// The bulk form posts a batch in one request, and a reseller could not use it at
+// all: the charge path insisted on exactly one client and refused the rest with
+// "expected exactly one client in the request". Each account is still priced and
+// reserved separately — one reservation paying for several accounts is the thing
+// that must not happen — so a batch is that same work N times.
+//
+// All-or-nothing: if any account cannot be priced or reserved, the ones already
+// reserved are released before returning. A half-charged batch would leave the
+// reseller paying for accounts that were never created.
+func (s *ResellerService) PrepareClientsCreate(user *model.User, data *model.Inbound) ([]ChargeTicket, error) {
+	if user == nil || !user.IsReseller {
+		return nil, nil
+	}
+	cms, _, _, err := postedClients(data)
+	if err != nil {
+		return nil, err
+	}
+
+	var tickets []ChargeTicket
+	release := func() {
+		for _, t := range tickets {
+			if rerr := s.Rollback(t); rerr != nil {
+				logger.Warning("releasing a reseller reservation from a batch that failed: ", rerr)
+			}
+		}
+	}
+
+	for i := range cms {
+		// One client at a time, through the very same path a single add takes, so
+		// the two can never price differently. The body is narrowed to this client
+		// and restored afterwards, because applyToSettings writes the priced
+		// decisions back into it.
+		one, err := narrowToClient(data, i)
+		if err != nil {
+			release()
+			return nil, err
+		}
+		ticket, err := s.PrepareClientCreate(user, one)
+		if err != nil {
+			release()
+			return nil, err
+		}
+		if err := mergeClientBack(data, one, i); err != nil {
+			release()
+			return nil, err
+		}
+		tickets = append(tickets, ticket)
+	}
+	return tickets, nil
+}
+
+// narrowToClient copies the request with only the i-th client in it.
+func narrowToClient(data *model.Inbound, i int) (*model.Inbound, error) {
+	settings := map[string]any{}
+	if err := json.Unmarshal([]byte(data.Settings), &settings); err != nil {
+		return nil, err
+	}
+	clients, _ := settings["clients"].([]any)
+	if i >= len(clients) {
+		return nil, errors.New("client index out of range")
+	}
+	settings["clients"] = []any{clients[i]}
+	raw, err := json.Marshal(settings)
+	if err != nil {
+		return nil, err
+	}
+	one := *data
+	one.Settings = string(raw)
+	return &one, nil
+}
+
+// mergeClientBack puts the priced client back where it came from, so the write
+// that follows carries every rewritten limit.
+func mergeClientBack(data *model.Inbound, one *model.Inbound, i int) error {
+	oneSettings := map[string]any{}
+	if err := json.Unmarshal([]byte(one.Settings), &oneSettings); err != nil {
+		return err
+	}
+	priced, _ := oneSettings["clients"].([]any)
+	if len(priced) != 1 {
+		return errors.New("the priced client went missing")
+	}
+	settings := map[string]any{}
+	if err := json.Unmarshal([]byte(data.Settings), &settings); err != nil {
+		return err
+	}
+	clients, _ := settings["clients"].([]any)
+	if i >= len(clients) {
+		return errors.New("client index out of range")
+	}
+	clients[i] = priced[0]
+	settings["clients"] = clients
+	raw, err := json.Marshal(settings)
+	if err != nil {
+		return err
+	}
+	data.Settings = string(raw)
+	return nil
 }
 
 // PrepareClientUpdate prices an edit of an existing account.

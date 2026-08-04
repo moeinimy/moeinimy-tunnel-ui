@@ -948,6 +948,17 @@ func (s *NodeService) Remove(id string) error {
 	return nil
 }
 
+// AddressOf is a node's last known public address, or "" if it never connected.
+func (s *NodeService) AddressOf(id string) string {
+	nodeReg.mu.Lock()
+	defer nodeReg.mu.Unlock()
+	nodeReg.load()
+	if n := nodeReg.nodes[id]; n != nil {
+		return n.remoteIP
+	}
+	return ""
+}
+
 // TokenOf returns a registered node's token, so the panel can print its install
 // command again. The token does not rotate: a node that has lost its way — the
 // panel moved to another port, the agent was wiped — is brought back by pasting

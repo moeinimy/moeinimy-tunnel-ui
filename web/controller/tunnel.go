@@ -3,6 +3,7 @@ package controller
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net"
 	"net/http"
 	"regexp"
@@ -701,6 +702,23 @@ func (a *TunnelController) createPair(c *gin.Context) {
 	// as "the ends are swapped and nothing exists on the other side".
 	a.clearStrayHalves(req.Name, pair.IranID, pair.ForeignID)
 
+	// A port already held on either end is the failure this catches. A tunnel whose
+	// peer server has died keeps running here — it is a service on THIS machine,
+	// and nothing tells it the far side is gone — so it goes on holding its
+	// driver's port. The next tunnel built with the replacement asks for that same
+	// port, because the default is per protocol rather than per tunnel, and cannot
+	// bind. What the operator sees is "the new node's tunnels just don't work",
+	// with the dead one nowhere in the story.
+	for _, end := range []struct {
+		id     string
+		fields map[string]string
+	}{{pair.IranID, pair.IranFields}, {pair.ForeignID, pair.ForeignFields}} {
+		if held := a.portHeldBy(end.id, req.Name, end.fields); held != "" {
+			jsonMsg(c, I18nWeb(c, "pages.tunnel.toasts.createFailed"), errors.New(held))
+			return
+		}
+	}
+
 	// Iran side first: if that end can't be built there's nothing to clean up yet.
 	if out, err := a.createSide(pair.IranID, pair.IranFields); err != nil {
 		jsonMsg(c, strings.TrimSpace(out), err)
@@ -727,6 +745,70 @@ func (a *TunnelController) createPair(c *gin.Context) {
 		return
 	}
 	jsonMsg(c, I18nWeb(c, "pages.tunnel.toasts.pairCreated"), nil)
+}
+
+// driverPortKey matches the field every driver names its own inter-server port
+// with (BH_PORT, RH_PORT, PAQET_PORT…). Anchored to a single-word prefix so a
+// longer, local-only listener such as PAQET_SOCKS_PORT is never mistaken for it.
+var driverPortKey = regexp.MustCompile(`^[A-Z0-9]+_PORT$`)
+
+// portHeldBy reports, in the operator's words, which existing tunnel already holds
+// the port this one wants on a given host — or "" when it is free.
+//
+// Best effort: a host that cannot be read is not a reason to refuse a build, since
+// the driver will still fail loudly if the port really is taken.
+func (a *TunnelController) portHeldBy(nodeID, name string, fields map[string]string) string {
+	want := ""
+	for k, v := range fields {
+		if driverPortKey.MatchString(k) && v != "" {
+			want = v
+			break
+		}
+	}
+	if want == "" {
+		return ""
+	}
+
+	var raw json.RawMessage
+	var host string
+	if nodeID == "" {
+		out, err := a.tunnelService.List()
+		if err != nil {
+			return ""
+		}
+		raw, host = out, "this server"
+	} else {
+		out, err := a.nodeService.Exec(nodeID, []string{"json", "list"})
+		if err != nil {
+			return ""
+		}
+		raw, host = json.RawMessage(strings.TrimSpace(out)), a.nodeService.NameOf(nodeID)
+	}
+
+	var items []map[string]any
+	if json.Unmarshal(raw, &items) != nil {
+		return ""
+	}
+	for _, item := range items {
+		other, _ := item["name"].(string)
+		if other == "" || other == name {
+			continue // replacing a tunnel by its own name is not a conflict
+		}
+		cfg, ok := item["config"].(map[string]any)
+		if !ok {
+			continue
+		}
+		for k, v := range cfg {
+			sv, _ := v.(string)
+			if driverPortKey.MatchString(k) && sv == want {
+				return fmt.Sprintf(
+					"port %s is already held on %s by the tunnel %q — remove it, or give this one another port. "+
+						"A tunnel whose peer server is gone keeps running and keeps its port.",
+					want, host, other)
+			}
+		}
+	}
+	return ""
 }
 
 // createSide builds one half of a tunnel where it belongs: on this server when
@@ -884,9 +966,81 @@ func (a *TunnelController) nodeCommand(c *gin.Context) {
 	jsonObj(c, gin.H{"name": name, "role": role, "oneliner": oneliner}, nil)
 }
 
+// nodeRemove deletes a node AND the halves of its tunnels left behind on the
+// servers that were paired with it.
+//
+// Those halves outlive the node: they are separate services on separate machines,
+// still running and still holding their driver's port. So a node whose server died
+// left this one listening on backhaul's 3080 (or rathole's 2333, or a GRE device)
+// for a peer that will never answer — and the next tunnel built with its
+// replacement could not bind, which reads as "the new node's tunnels just don't
+// work" with nothing pointing at the dead one as the cause.
+//
+// Peers are matched by the node's address, which is what a tunnel aimed at it
+// carries as REMOTE_IP.
 func (a *TunnelController) nodeRemove(c *gin.Context) {
-	err := a.nodeService.Remove(c.Param("id"))
-	jsonMsg(c, I18nWeb(c, "pages.tunnel.toasts.removed"), err)
+	id := c.Param("id")
+	addr := a.nodeService.AddressOf(id)
+	name := a.nodeService.NameOf(id)
+
+	err := a.nodeService.Remove(id)
+	msg := I18nWeb(c, "pages.tunnel.toasts.removed")
+	if dropped := a.dropTunnelsTo(addr, id); len(dropped) > 0 {
+		msg += " — " + I18nWeb(c, "pages.tunnel.toasts.removedOnNodes") + ": " + strings.Join(dropped, ", ")
+		logger.Info("node ", name, " removed along with the tunnels aimed at it: ", strings.Join(dropped, ", "))
+	}
+	jsonMsg(c, msg, err)
+}
+
+// dropTunnelsTo removes every tunnel half pointing at addr, on this server and on
+// every other online node, and reports what it removed.
+//
+// Best effort by design: an unreachable node must not block removing the rest, and
+// a host with no such tunnel simply has nothing to do.
+func (a *TunnelController) dropTunnelsTo(addr, exceptNode string) []string {
+	if addr == "" {
+		return nil
+	}
+	var dropped []string
+
+	namesAimedAt := func(raw json.RawMessage) []string {
+		var items []map[string]any
+		if json.Unmarshal(raw, &items) != nil {
+			return nil
+		}
+		var out []string
+		for _, item := range items {
+			cfg, ok := item["config"].(map[string]any)
+			if !ok {
+				continue
+			}
+			if remote, _ := cfg["REMOTE_IP"].(string); remote == addr {
+				if n, _ := item["name"].(string); n != "" {
+					out = append(out, n)
+				}
+			}
+		}
+		return out
+	}
+
+	if raw, err := a.tunnelService.List(); err == nil {
+		for _, n := range namesAimedAt(raw) {
+			if a.tunnelService.Remove(n) == nil {
+				dropped = append(dropped, n)
+			}
+		}
+	}
+	for _, nl := range a.nodeService.ListTunnelsEverywhere() {
+		if nl.ID == exceptNode {
+			continue
+		}
+		for _, n := range namesAimedAt(nl.Raw) {
+			if _, err := a.nodeService.Exec(nl.ID, []string{"remove", n}); err == nil {
+				dropped = append(dropped, n+" @ "+nl.Name)
+			}
+		}
+	}
+	return dropped
 }
 
 type nodeExecReq struct {

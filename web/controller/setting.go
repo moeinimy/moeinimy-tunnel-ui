@@ -39,10 +39,21 @@ func NewSettingController(g *gin.RouterGroup) *SettingController {
 // initRouter sets up the routes for settings management.
 func (a *SettingController) initRouter(g *gin.RouterGroup) {
 	g = g.Group("/setting")
+
+	// The defaults every client form and share link is built from — whether
+	// subscriptions are on, their URI and title, the remark model, the date
+	// picker. A reseller needs them to hand a customer anything at all, and
+	// without them the panel simply produced no subscription link: not a bug in
+	// the link builder, an empty answer it never got.
+	//
+	// Registered BEFORE the permission gate below, which only affects what follows
+	// it. The handler still withholds the panel-administration fields from anyone
+	// who cannot administer the panel.
+	g.POST("/defaultSettings", a.getDefaultSettings)
+
 	g.Use(requirePerm(model.PermPanelSettings))
 
 	g.POST("/all", a.getAllSetting)
-	g.POST("/defaultSettings", a.getDefaultSettings)
 	g.POST("/update", a.updateSetting)
 	g.POST("/updateUser", a.updateUser)
 	g.POST("/twoFactor", a.updateTwoFactor)
@@ -93,6 +104,16 @@ func (a *SettingController) getDefaultSettings(c *gin.Context) {
 	if err != nil {
 		jsonMsg(c, I18nWeb(c, "pages.settings.toasts.getSettings"), err)
 		return
+	}
+	// Reachable without the settings permission, so the parts that describe the
+	// panel's own installation rather than a customer's account are withheld from
+	// those who cannot administer it. The certificate paths are the whole of that:
+	// nothing here builds a client link from them.
+	if m, ok := result.(map[string]any); ok {
+		if user := session.GetLoginUser(c); user == nil || !user.Can(model.PermPanelSettings) {
+			delete(m, "defaultCert")
+			delete(m, "defaultKey")
+		}
 	}
 	jsonObj(c, result, nil)
 }

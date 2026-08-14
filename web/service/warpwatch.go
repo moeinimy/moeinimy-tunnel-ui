@@ -90,6 +90,15 @@ func (s *WarpWatchService) Run() {
 		}
 		return
 	}
+	// A licence that has been spent is the commonest reason WARP stops being worth
+	// having, and it cannot be reconnected out of — so before restarting anything,
+	// see whether the account has lapsed to the free tier and put a fresh key on it.
+	var keys WarpKeyService
+	if keys.AccountIsFree() {
+		s.say("relicensing", "warp: the account is back on the free tier; looking for a fresh WARP+ key")
+		keys.Scan(true, 25)
+	}
+
 	s.say("restarting", "warp: still not connected after several attempts; restarting the service")
 	s.restartDaemon()
 	warpWatch.Lock()

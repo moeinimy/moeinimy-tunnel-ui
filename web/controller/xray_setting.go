@@ -2,7 +2,9 @@ package controller
 
 import (
 	"encoding/json"
+	"errors"
 	"strconv"
+	"strings"
 
 	"github.com/mhsanaei/3x-ui/v2/database/model"
 	"github.com/mhsanaei/3x-ui/v2/util/common"
@@ -41,6 +43,7 @@ func (a *XraySettingController) initRouter(g *gin.RouterGroup) {
 	g.POST("/", a.getXraySetting)
 	g.POST("/warp/:action", a.warp)
 	g.POST("/warpsocks/:action", a.warpsocks)
+	g.POST("/warpkeys/:action", a.warpkeys)
 	g.POST("/sshoutbound/:action", a.sshoutbound)
 	g.POST("/nord/:action", a.nord)
 	g.POST("/update", a.updateSetting)
@@ -168,6 +171,35 @@ func (a *XraySettingController) warpsocks(c *gin.Context) {
 		jsonObj(c, gin.H{"installed": service.WarpSocksInstalled()}, nil)
 	default:
 		jsonObj(c, service.WarpSocksState(), nil)
+	}
+}
+
+// warpkeys finds a live WARP+ licence from the published list.
+//
+// A WARP+ key admits five devices and is passed around until it is spent, so the
+// one that worked last week is usually "Free" today — which is why WARP quietly
+// stops being worth anything a few days after it is set up. "scan" only reports,
+// for the first time an operator wants to see the list and choose; "renew"
+// applies the first live key it finds, and is what the watchdog calls by itself
+// once the account has lapsed.
+func (a *XraySettingController) warpkeys(c *gin.Context) {
+	var keys service.WarpKeyService
+	switch c.Param("action") {
+	case "scan":
+		keys.Scan(false, 40)
+		jsonObj(c, keys.ScanState(), nil)
+	case "renew":
+		keys.Scan(true, 40)
+		jsonObj(c, keys.ScanState(), nil)
+	case "apply":
+		key := strings.TrimSpace(c.PostForm("key"))
+		if key == "" {
+			jsonMsg(c, I18nWeb(c, "somethingWentWrong"), errors.New("no key given"))
+			return
+		}
+		jsonMsg(c, I18nWeb(c, "pages.settings.toasts.modifySettings"), keys.ApplyKey(key))
+	default: // "state"
+		jsonObj(c, keys.ScanState(), nil)
 	}
 }
 

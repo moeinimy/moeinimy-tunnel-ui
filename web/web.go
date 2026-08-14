@@ -406,6 +406,15 @@ func (s *Server) startTask() {
 		logger.Info("this panel is a foreign node — syncing inbounds from its master panel")
 	}
 
+	// Keep WARP connected. It is how this server reaches the services that refuse
+	// it directly, so when its daemon quietly drops the connection those services
+	// stop and nothing else does — which is why it reads as "Spotify broke", days
+	// after WARP was set up and working.
+	s.cron.AddFunc("@every 2m", func() {
+		var warpWatch service.WarpWatchService
+		warpWatch.Run()
+	})
+
 	// Clean stale RADIUS sessions every 60 seconds
 	s.cron.AddFunc("@every 60s", func() {
 		s.radiusService.CleanStaleSessions()

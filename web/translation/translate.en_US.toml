@@ -898,6 +898,16 @@
 "statsOutboundDownlink" = "Outbound Download Statistics"
 "statsOutboundDownlinkDesc" = "Enables the statistics collection for downstream traffic of all outbound proxies."
 
+[pages.xray.warpKeys]
+"title" = "WARP+ Keys"
+"desc" = "A WARP+ key admits five devices and is passed around until it is spent, so one that worked last week is usually free today. This checks a published list and shows the keys that are still WARP+. Each test uses a throwaway device that is deleted afterwards, so it does not burn the keys it finds."
+"scan" = "Find live keys"
+"renew" = "Find and apply"
+"live" = "Still WARP+"
+"none" = "No live key in the list right now. The list is republished hourly — try again later."
+"use" = "Use"
+"applied" = "Applied"
+
 [pages.xray.rules]
 "first" = "First"
 "last" = "Last"

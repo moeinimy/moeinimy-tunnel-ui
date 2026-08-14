@@ -1,0 +1,101 @@
+{{define "modals/warpKeysModal"}}
+<a-modal id="warp-keys-modal" v-model="warpKeysModal.visible" :closable="true" :mask-closable="true"
+    :class="themeSwitcher.currentTheme" width="720px" :footer="null"
+    title='{{ i18n "pages.xray.warpKeys.title" }}'>
+    <a-space direction="vertical" :style="{ width: '100%' }">
+        <a-alert type="info" show-icon>
+            <span slot="message">{{ i18n "pages.xray.warpKeys.desc" }}</span>
+        </a-alert>
+
+        <a-space>
+            <a-button type="primary" icon="search" :loading="warpKeysModal.state.running"
+                @click="warpKeysModal.scan()">{{ i18n "pages.xray.warpKeys.scan" }}</a-button>
+            <a-button icon="thunderbolt" :loading="warpKeysModal.state.running"
+                @click="warpKeysModal.renew()">{{ i18n "pages.xray.warpKeys.renew" }}</a-button>
+        </a-space>
+
+        <!-- Progress matters here: a scan takes minutes, because Cloudflare
+             rate-limits a burst of registrations and each key needs its own. -->
+        <div v-if="warpKeysModal.state.total">
+            [[ warpKeysModal.state.checked ]] / [[ warpKeysModal.state.total ]]
+            <a-progress :percent="Math.round(warpKeysModal.state.checked * 100 / warpKeysModal.state.total)"
+                :show-info="false"></a-progress>
+        </div>
+        <a-alert v-if="warpKeysModal.state.error" type="error" show-icon>
+            <span slot="message">[[ warpKeysModal.state.error ]]</span>
+        </a-alert>
+        <a-alert v-if="warpKeysModal.state.applied" type="success" show-icon>
+            <span slot="message">{{ i18n "pages.xray.warpKeys.applied" }}: [[ warpKeysModal.state.applied ]]</span>
+        </a-alert>
+
+        <a-list v-if="warpKeysModal.live.length" size="small" bordered :data-source="warpKeysModal.live"
+            :header="'{{ i18n "pages.xray.warpKeys.live" }} (' + warpKeysModal.live.length + ')'">
+            <a-list-item slot="renderItem" slot-scope="r">
+                <span :style="{ fontFamily: 'monospace' }">[[ r.key ]]</span>
+                <a-tag color="green" :style="{ marginLeft: '8px' }">[[ r.detail || 'unlimited' ]]</a-tag>
+                <a-button slot="actions" size="small" type="primary"
+                    @click="warpKeysModal.apply(r.key)">{{ i18n "pages.xray.warpKeys.use" }}</a-button>
+                <a-button slot="actions" size="small" @click="warpKeysModal.copy(r.key)">{{ i18n "copy" }}</a-button>
+            </a-list-item>
+        </a-list>
+        <a-empty v-else-if="warpKeysModal.state.done && !warpKeysModal.state.error"
+            description='{{ i18n "pages.xray.warpKeys.none" }}'></a-empty>
+    </a-space>
+</a-modal>
+<script>
+    const warpKeysModal = {
+        visible: false,
+        state: { running: false, done: false, checked: 0, total: 0, results: [], applied: '', error: '' },
+        timer: null,
+        // Only the keys worth having. A scan reports every verdict, but what the
+        // operator came for is the short list that is still WARP+.
+        get live() { return (this.state.results || []).filter(r => r.verdict === 'unlimited'); },
+        show() {
+            this.visible = true;
+            this.refresh();
+        },
+        close() {
+            this.visible = false;
+            this.stopPolling();
+        },
+        async post(action, body) {
+            const msg = await HttpUtil.post('/panel/xray/warpkeys/' + action, body);
+            return msg;
+        },
+        async refresh() {
+            const msg = await this.post('state');
+            if (msg && msg.success && msg.obj) this.state = msg.obj;
+            if (this.state.running) this.startPolling(); else this.stopPolling();
+        },
+        startPolling() {
+            if (this.timer) return;
+            // A scan is minutes long; poll rather than hold a request open.
+            this.timer = setInterval(() => this.refresh(), 3000);
+        },
+        stopPolling() {
+            if (this.timer) { clearInterval(this.timer); this.timer = null; }
+        },
+        async scan() {
+            this.state = { running: true, done: false, checked: 0, total: 0, results: [], applied: '', error: '' };
+            await this.post('scan');
+            this.startPolling();
+        },
+        async renew() {
+            this.state = { running: true, done: false, checked: 0, total: 0, results: [], applied: '', error: '' };
+            await this.post('renew');
+            this.startPolling();
+        },
+        async apply(key) {
+            const msg = await this.post('apply', { key: key });
+            if (msg && msg.success) this.state.applied = key;
+        },
+        copy(key) { ClipboardManager.copyText(key).then(ok => { if (ok) app.$message.success('{{ i18n "copied" }}'); }); },
+    };
+
+    const warpKeysModalApp = new Vue({
+        delimiters: ['[[', ']]'],
+        el: '#warp-keys-modal',
+        data: { warpKeysModal, themeSwitcher },
+    });
+</script>
+{{end}}

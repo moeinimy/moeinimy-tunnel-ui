@@ -162,6 +162,7 @@
 {{template "modals/fakednsModal"}}
 {{template "modals/warpModal"}}
 {{template "modals/warpSocksModal"}}
+{{template "modals/warpKeysModal"}}
 {{template "modals/sshOutboundModal"}}
 {{template "modals/nordModal"}}
 <script>
@@ -1084,6 +1085,12 @@
       showWarp() {
         // Present the two WARP methods (WireGuard vs official warp-cli SOCKS5).
         warpSocksModal.show();
+      },
+      showWarpKeys() {
+        // Its own button rather than a tab inside the WARP modal: finding a live
+        // key is what an operator comes to do when WARP has stopped being worth
+        // anything, which is not the same errand as installing it.
+        warpKeysModal.show();
       },
       showNord() {
         nordModal.show();

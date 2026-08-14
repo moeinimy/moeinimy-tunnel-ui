@@ -67,6 +67,15 @@ func (s *WarpWatchService) Run() {
 		return
 	}
 
+	// An operator who ran `warp-cli disconnect` meant it — most likely because they
+	// moved to a WireGuard outbound and no longer want this daemon in the path.
+	// Reconnecting it two minutes later would be the panel overruling them, which
+	// is exactly what a watchdog must not do.
+	if strings.Contains(status, "Manual Disconnection") {
+		s.say("manual", "warp: disconnected by hand; leaving it alone")
+		return
+	}
+
 	warpWatch.Lock()
 	warpWatch.reconnects++
 	attempts := warpWatch.reconnects

@@ -191,6 +191,102 @@ func (s *WarpKeyService) TestKey(key string) WarpKeyResult {
 	return WarpKeyResult{Key: key, Verdict: "free", Detail: kind}
 }
 
+// warpRegistration is the WireGuard WARP registration the panel owns: the device
+// id and access token it was given when it registered. The licence lives on the
+// REGISTRATION, so upgrading it changes nothing about the WireGuard config the
+// outbound uses — same private key, same endpoint, same addresses. Only
+// Cloudflare's treatment of that device changes, which is why a key can be
+// swapped underneath a running tunnel without dropping a single connection.
+func (s *WarpKeyService) warpRegistration() (id, token string, ok bool) {
+	var warpService WarpService
+	raw, err := warpService.GetWarpData()
+	if err != nil || strings.TrimSpace(raw) == "" {
+		return "", "", false
+	}
+	var data map[string]string
+	if json.Unmarshal([]byte(raw), &data) != nil {
+		return "", "", false
+	}
+	id, token = data["device_id"], data["access_token"]
+	return id, token, id != "" && token != ""
+}
+
+// WarpAccount is what Cloudflare says about the panel's own registration.
+type WarpAccount struct {
+	Managed bool   `json:"managed"` // the panel holds a registration at all
+	Type    string `json:"type"`    // "limited"/"free" or a premium tier
+	Plus    bool   `json:"plus"`
+	QuotaGB int64  `json:"quotaGB"`
+}
+
+// Account reads the panel's own WARP registration.
+func (s *WarpKeyService) Account() WarpAccount {
+	id, token, ok := s.warpRegistration()
+	if !ok {
+		return WarpAccount{}
+	}
+	acct, _, err := warpAPICall("GET", "/reg/"+id+"/account", token, nil)
+	if err != nil {
+		return WarpAccount{Managed: true}
+	}
+	kind, _ := acct["account_type"].(string)
+	kind = strings.ToLower(kind)
+	out := WarpAccount{Managed: true, Type: kind}
+	out.Plus = kind != "" && kind != "limited" && kind != "free"
+	if q, okq := acct["premium_data"].(float64); okq {
+		out.QuotaGB = int64(q) / (1024 * 1024 * 1024)
+	}
+	return out
+}
+
+// warpQuotaFloorGB is when a licence counts as spent rather than spendable. A key
+// that is nearly out is one that will lapse mid-evening, so it is replaced while
+// there is still something to replace it with.
+const warpQuotaFloorGB = 5
+
+// NeedsRenewal reports whether the panel's WARP has fallen back to free, or is
+// close enough to the end of its allowance to be worth replacing now.
+//
+// This is what keeps the scanner quiet: nothing runs while the licence is
+// healthy, however often the published list changes. A scan costs a registration
+// per key at Cloudflare, so scanning hourly for no reason would be rude to the
+// key pool everyone shares.
+func (s *WarpKeyService) NeedsRenewal() (bool, string) {
+	acct := s.Account()
+	if !acct.Managed {
+		return false, ""
+	}
+	if !acct.Plus {
+		return true, "the account is on the free tier"
+	}
+	if acct.QuotaGB > 0 && acct.QuotaGB < warpQuotaFloorGB {
+		return true, fmt.Sprintf("only %d GB left on the licence", acct.QuotaGB)
+	}
+	return false, ""
+}
+
+// ApplyKeyToRegistration licenses the panel's OWN WireGuard registration.
+//
+// Nothing about the outbound changes: the config is derived from the private key
+// and the peer, neither of which a licence touches. The tunnel keeps running and
+// simply stops being throttled.
+func (s *WarpKeyService) ApplyKeyToRegistration(key string) error {
+	id, token, ok := s.warpRegistration()
+	if !ok {
+		return fmt.Errorf("this panel holds no WARP registration of its own")
+	}
+	acct, _, err := warpAPICall("PUT", "/reg/"+id+"/account", token, map[string]any{"license": key})
+	if err != nil {
+		return fmt.Errorf("Cloudflare refused the licence: %w", err)
+	}
+	kind, _ := acct["account_type"].(string)
+	kind = strings.ToLower(kind)
+	if kind == "" || kind == "limited" || kind == "free" {
+		return fmt.Errorf("Cloudflare kept the account on the free tier — the key is spent")
+	}
+	return nil
+}
+
 // ApplyKey puts a licence on THIS server's warp-cli registration and reports what
 // Cloudflare then says the account is.
 func (s *WarpKeyService) ApplyKey(key string) error {
@@ -261,7 +357,14 @@ func (s *WarpKeyService) Scan(apply bool, limit int) bool {
 			warpKeys.Unlock()
 
 			if res.Verdict == "unlimited" && apply {
-				if aerr := s.ApplyKey(key); aerr != nil {
+				// Whichever WARP this server actually runs. The WireGuard
+				// registration is preferred where the panel owns one, because
+				// licensing it needs no daemon and drops no connection.
+				applyTo := s.ApplyKey
+				if _, _, owns := s.warpRegistration(); owns {
+					applyTo = s.ApplyKeyToRegistration
+				}
+				if aerr := applyTo(key); aerr != nil {
 					logger.Warning("warp keys: a live key would not apply: ", aerr)
 				} else {
 					warpKeys.Lock()

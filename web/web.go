@@ -415,6 +415,12 @@ func (s *Server) startTask() {
 		warpWatch.Run()
 	})
 
+	// WARP: watch the daemon, and keep the licence live. Both are cheap no-ops when
+	// WARP is not set up here, and the licence check does nothing at all while the
+	// licence is healthy — see WarpLicenseJob for why that restraint matters.
+	s.cron.AddJob("@every 2m", job.NewWarpWatchJob())
+	s.cron.AddJob("@every 15m", job.NewWarpLicenseJob())
+
 	// Clean stale RADIUS sessions every 60 seconds
 	s.cron.AddFunc("@every 60s", func() {
 		s.radiusService.CleanStaleSessions()

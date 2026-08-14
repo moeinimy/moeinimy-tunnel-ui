@@ -907,6 +907,17 @@
 "none" = "No live key in the list right now. The list is republished hourly — try again later."
 "use" = "Use"
 "applied" = "Applied"
+"tier" = "Current tier"
+"free" = "Free"
+"unmanaged" = "Not managed here"
+"unmanagedHint" = "This panel holds no WARP registration of its own, so it cannot license anything: the WireGuard config was created elsewhere. Let the panel register once from the WARP button and use the config it gives you, and the licence will be kept live automatically."
+"auto" = "Kept live automatically"
+"autoOn" = "On"
+"autoOff" = "Off"
+"scans" = "Scans"
+"tested" = "keys tested"
+"found" = "Live keys found"
+"lastApplied" = "Last applied"
 
 [pages.xray.rules]
 "first" = "First"

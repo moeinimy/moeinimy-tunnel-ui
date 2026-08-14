@@ -7,6 +7,40 @@
             <span slot="message">{{ i18n "pages.xray.warpKeys.desc" }}</span>
         </a-alert>
 
+        <!-- The three questions an operator actually has: which tier am I on,
+             is anything looking after it, and has it ever done anything. -->
+        <a-descriptions bordered size="small" :column="2">
+            <a-descriptions-item label='{{ i18n "pages.xray.warpKeys.tier" }}'>
+                <a-tag v-if="warpKeysModal.status.account.plus" color="green">
+                    WARP+ [[ warpKeysModal.status.account.quotaGB ? '· ' + warpKeysModal.status.account.quotaGB + ' GB' : '' ]]
+                </a-tag>
+                <a-tag v-else-if="warpKeysModal.status.account.managed" color="orange">{{ i18n "pages.xray.warpKeys.free" }}</a-tag>
+                <a-tag v-else>{{ i18n "pages.xray.warpKeys.unmanaged" }}</a-tag>
+            </a-descriptions-item>
+            <a-descriptions-item label='{{ i18n "pages.xray.warpKeys.auto" }}'>
+                <a-tag :color="warpKeysModal.status.auto ? 'green' : 'red'">
+                    [[ warpKeysModal.status.auto ? '{{ i18n "pages.xray.warpKeys.autoOn" }}' : '{{ i18n "pages.xray.warpKeys.autoOff" }}' ]]
+                </a-tag>
+            </a-descriptions-item>
+            <a-descriptions-item label='{{ i18n "pages.xray.warpKeys.scans" }}'>
+                [[ warpKeysModal.status.history.scans || 0 ]]
+                <span :style="{ opacity: .6 }">([[ warpKeysModal.status.history.tested || 0 ]] {{ i18n "pages.xray.warpKeys.tested" }})</span>
+            </a-descriptions-item>
+            <a-descriptions-item label='{{ i18n "pages.xray.warpKeys.found" }}'>
+                [[ warpKeysModal.status.history.liveFound || 0 ]]
+            </a-descriptions-item>
+            <a-descriptions-item label='{{ i18n "pages.xray.warpKeys.lastApplied" }}' :span="2">
+                <span v-if="warpKeysModal.status.history.lastKey" :style="{ fontFamily: 'monospace' }">
+                    [[ warpKeysModal.status.history.lastKey ]] · [[ warpKeysModal.status.history.lastAt ]]
+                </span>
+                <span v-else :style="{ opacity: .6 }">—</span>
+            </a-descriptions-item>
+        </a-descriptions>
+
+        <a-alert v-if="warpKeysModal.status.account.managed === false" type="warning" show-icon>
+            <span slot="message">{{ i18n "pages.xray.warpKeys.unmanagedHint" }}</span>
+        </a-alert>
+
         <a-space>
             <a-button type="primary" icon="search" :loading="warpKeysModal.state.running"
                 @click="warpKeysModal.scan()">{{ i18n "pages.xray.warpKeys.scan" }}</a-button>
@@ -46,6 +80,7 @@
     const warpKeysModal = {
         visible: false,
         state: { running: false, done: false, checked: 0, total: 0, results: [], applied: '', error: '' },
+        status: { account: {}, history: {}, auto: false },
         timer: null,
         // Only the keys worth having. A scan reports every verdict, but what the
         // operator came for is the short list that is still WARP+.
@@ -63,6 +98,13 @@
             return msg;
         },
         async refresh() {
+            const st = await this.post('status');
+            if (st && st.success && st.obj) {
+                this.status = st.obj;
+                // The scan lives inside the status answer, so one call keeps both
+                // the tier and the progress current.
+                if (st.obj.scan) this.state = st.obj.scan;
+            }
             const msg = await this.post('state');
             if (msg && msg.success && msg.obj) this.state = msg.obj;
             if (this.state.running) this.startPolling(); else this.stopPolling();

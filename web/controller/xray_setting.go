@@ -198,6 +198,8 @@ func (a *XraySettingController) warpkeys(c *gin.Context) {
 			return
 		}
 		jsonMsg(c, I18nWeb(c, "pages.settings.toasts.modifySettings"), keys.ApplyKey(key))
+	case "status":
+		jsonObj(c, keys.Status(), nil)
 	default: // "state"
 		jsonObj(c, keys.ScanState(), nil)
 	}

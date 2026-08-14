@@ -65,7 +65,42 @@ type WarpKeyScan struct {
 var warpKeys = struct {
 	sync.Mutex
 	scan WarpKeyScan
+	hist WarpKeyHistory
 }{}
+
+// WarpKeyHistory is what the panel has done about licences since it started, so
+// an operator can see the thing working rather than take it on trust.
+type WarpKeyHistory struct {
+	Scans     int    `json:"scans"`
+	Tested    int    `json:"tested"`
+	LiveFound int    `json:"liveFound"`
+	LastKey   string `json:"lastKey"`
+	LastAt    string `json:"lastAt"`
+	LastScan  string `json:"lastScan"`
+}
+
+// WarpStatus is the whole picture in one answer: what tier this server is on,
+// and what the licence keeper has been doing.
+type WarpStatus struct {
+	Account WarpAccount    `json:"account"`
+	Scan    WarpKeyScan    `json:"scan"`
+	History WarpKeyHistory `json:"history"`
+	// Auto says whether the keeper can act at all. False means the panel holds no
+	// registration of its own — the WireGuard config came from somewhere else — so
+	// there is nothing here it is allowed to license.
+	Auto bool `json:"auto"`
+}
+
+// Status answers "am I on WARP+ or free, and is anything looking after it".
+func (s *WarpKeyService) Status() WarpStatus {
+	acct := s.Account()
+	warpKeys.Lock()
+	out := WarpStatus{Account: acct, Scan: warpKeys.scan, History: warpKeys.hist}
+	warpKeys.Unlock()
+	_, _, owns := s.warpRegistration()
+	out.Auto = owns || WarpSocksInstalled()
+	return out
+}
 
 var warpHTTP = &http.Client{Timeout: 30 * time.Second}
 
@@ -346,6 +381,8 @@ func (s *WarpKeyService) Scan(apply bool, limit int) bool {
 		}
 		warpKeys.Lock()
 		warpKeys.scan.Total = len(keys)
+		warpKeys.hist.Scans++
+		warpKeys.hist.LastScan = time.Now().Format("2006-01-02 15:04")
 		warpKeys.Unlock()
 
 		for i, key := range keys {
@@ -354,6 +391,10 @@ func (s *WarpKeyService) Scan(apply bool, limit int) bool {
 			warpKeys.Lock()
 			warpKeys.scan.Results = append(warpKeys.scan.Results, res)
 			warpKeys.scan.Checked = i + 1
+			warpKeys.hist.Tested++
+			if res.Verdict == "unlimited" {
+				warpKeys.hist.LiveFound++
+			}
 			warpKeys.Unlock()
 
 			if res.Verdict == "unlimited" && apply {
@@ -369,6 +410,8 @@ func (s *WarpKeyService) Scan(apply bool, limit int) bool {
 				} else {
 					warpKeys.Lock()
 					warpKeys.scan.Applied = key
+					warpKeys.hist.LastKey = key
+					warpKeys.hist.LastAt = time.Now().Format("2006-01-02 15:04")
 					warpKeys.Unlock()
 					logger.Info("warp keys: applied a fresh WARP+ licence")
 					return

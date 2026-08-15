@@ -49,9 +49,96 @@ func (s *NodePanelService) InboundsFor(nodeId string) (*NodeInboundSet, error) {
 		Find(&inbounds).Error; err != nil {
 		return nil, err
 	}
+	// A node enforces from what it can see, and what it can see is its own half of
+	// a shared allowance. So the master withholds the accounts that must not be
+	// served at all.
+	withholdSpentAccounts(inbounds)
+
 	set := &NodeInboundSet{Inbounds: inbounds}
 	set.Version = versionOfInbounds(inbounds)
 	return set, nil
+}
+
+// withholdSpentAccounts strips from the pushed set every client that has no
+// business being served: disabled accounts, and members of a shared quota that
+// the customer has already spent.
+//
+// This is the one thing a node cannot decide for itself. Enforcement lives on the
+// node because one account lives on one server, so that server sees all of its
+// traffic — true for a plain account, and NOT true for a shared allowance. A
+// customer with VLESS here and VLESS on a node draws both halves from one pool;
+// each server sees only its own half, finds room left in what it can see, and
+// keeps serving. The account pings, works, and has nothing left — which is
+// exactly the report this comes from.
+//
+// The master is the only place that can add the halves up, so it decides, and the
+// node simply never receives the client. Within one pull the account stops
+// working there, with no new enforcement path to disagree with the existing one.
+func withholdSpentAccounts(inbounds []*model.Inbound) {
+	spent := spentGroups()
+
+	for _, inbound := range inbounds {
+		// Which of this inbound's accounts are already switched off, by email.
+		off := map[string]bool{}
+		for _, ct := range inbound.ClientStats {
+			if !ct.Enable || (ct.GroupId != 0 && spent[ct.GroupId]) {
+				off[ct.Email] = true
+			}
+		}
+		if len(off) == 0 {
+			continue
+		}
+		settings := map[string]any{}
+		if json.Unmarshal([]byte(inbound.Settings), &settings) != nil {
+			continue
+		}
+		clients, ok := settings["clients"].([]any)
+		if !ok {
+			continue
+		}
+		kept := make([]any, 0, len(clients))
+		for _, c := range clients {
+			cm, ok := c.(map[string]any)
+			if !ok {
+				continue
+			}
+			if email, _ := cm["email"].(string); off[email] {
+				continue
+			}
+			kept = append(kept, c)
+		}
+		if len(kept) == len(clients) {
+			continue
+		}
+		settings["clients"] = kept
+		if raw, err := json.Marshal(settings); err == nil {
+			inbound.Settings = string(raw)
+		}
+	}
+}
+
+// spentGroups is the set of shared allowances with nothing left, counting every
+// member wherever it is served plus what departed members already used.
+func spentGroups() map[int]bool {
+	db := database.GetDB()
+	var groups []*model.ClientGroup
+	if err := db.Model(model.ClientGroup{}).Where("total > 0").Find(&groups).Error; err != nil {
+		logger.Warning("node sync: could not read the shared allowances: ", err)
+		return nil
+	}
+	out := map[int]bool{}
+	for _, g := range groups {
+		var agg struct{ Used int64 }
+		if err := db.Model(xray.ClientTraffic{}).
+			Select("COALESCE(SUM(up),0) + COALESCE(SUM(down),0) as used").
+			Where("group_id = ?", g.Id).Scan(&agg).Error; err != nil {
+			continue
+		}
+		if agg.Used+g.UsedCarry >= g.Total {
+			out[g.Id] = true
+		}
+	}
+	return out
 }
 
 // versionOfInbounds hashes everything a node would act on.

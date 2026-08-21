@@ -14,6 +14,7 @@ import (
 	"github.com/mhsanaei/3x-ui/v2/database/model"
 	"github.com/mhsanaei/3x-ui/v2/logger"
 	"github.com/mhsanaei/3x-ui/v2/web/service"
+	"github.com/mhsanaei/3x-ui/v2/xray"
 )
 
 // NodeSyncJob is the node half of panel-to-panel sync: this panel is a foreign
@@ -114,6 +115,12 @@ func (j *NodeSyncJob) Run() {
 			logger.Info("node sync: serving ", len(set.Inbounds), " inbound(s) from the master panel")
 		}
 	}
+	// Every tick, NOT only when the set changed: the version deliberately ignores
+	// traffic counters — otherwise a busy inbound would have this node reapplying
+	// and restarting Xray continuously — so a reset moves no version at all. Checked
+	// here, it is seen on the next tick whether anything else changed or not.
+	j.adoptResets(set)
+
 	if err := j.report(panelURL, token); err != nil {
 		logger.Debug("node sync: could not report usage: ", err)
 	}
@@ -180,6 +187,45 @@ func (j *NodeSyncJob) apply(set *service.NodeInboundSet) error {
 
 	j.xrayService.SetToNeedRestart()
 	return nil
+}
+
+// adoptResets takes the master's counters whenever they are LOWER than this
+// node's.
+//
+// Usage flows the other way — this node counts, the master mirrors — so in normal
+// running the master can only be behind or equal. Lower means something zeroed it
+// there, which is what a traffic reset is. Adopting it propagates the reset with
+// no second protocol for it, and without this node ever inventing traffic: a
+// figure can only be lowered here, never raised.
+//
+// Without it a reset was undone within ten seconds. The master zeroed its row,
+// this node reported its own untouched total, and that total was written back over
+// the zero — so one half of a customer's shared allowance came back from the dead
+// every time.
+func (j *NodeSyncJob) adoptResets(set *service.NodeInboundSet) {
+	db := database.GetDB()
+	for _, remote := range set.Inbounds {
+		for _, ct := range remote.ClientStats {
+			if ct.Email == "" {
+				continue
+			}
+			var local xray.ClientTraffic
+			if err := db.Model(xray.ClientTraffic{}).
+				Where("email = ?", ct.Email).First(&local).Error; err != nil {
+				continue
+			}
+			if ct.Up+ct.Down >= local.Up+local.Down {
+				continue // the master is not behind; nothing was reset
+			}
+			if err := db.Model(xray.ClientTraffic{}).
+				Where("email = ?", ct.Email).
+				Updates(map[string]any{"up": ct.Up, "down": ct.Down}).Error; err != nil {
+				logger.Warning("node sync: could not adopt the master's reset for ", ct.Email, ": ", err)
+				continue
+			}
+			logger.Info("node sync: adopted a traffic reset for ", ct.Email)
+		}
+	}
 }
 
 // managedTagPrefix derives "inbound-<nodeid>-" from what the master sent, so this

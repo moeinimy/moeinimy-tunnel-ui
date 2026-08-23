@@ -351,6 +351,9 @@ func (s *Server) startTask() {
 	// self-update re-execs in place (same PID), leaving the old Xray alive and holding
 	// its ports; without this the fresh Xray fails to bind and loops in the error
 	// state. Mirrors the daemon reap the Init* calls above already do via procmgr.
+	// Stale PANELS first, then their Xrays. The other way round is a fight: the
+	// surviving panel notices its core is gone within a second and starts another.
+	service.ReapStalePanels()
 	s.xrayService.ReapOrphanXray()
 	err := s.xrayService.RestartXray(true)
 	if err != nil {

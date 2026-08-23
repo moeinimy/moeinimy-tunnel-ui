@@ -560,6 +560,19 @@ func (s *XrayService) RestartXray(isForce bool) error {
 		p.Stop()
 	}
 
+	// Anything of ours still holding a port, now that our own process is stopped.
+	//
+	// The reaper used to run only at startup, and only when the panel held no
+	// process of its own — so a stray that appeared while the panel was up was
+	// never cleared. The next start then bound the ports the stray had left free
+	// and silently skipped the rest: two Xrays, each serving part of the config,
+	// with the panel reporting one healthy core. Every account on a port the stray
+	// held simply failed, and nothing anywhere said why.
+	//
+	// Here it is safe and exact: our process is down, so every remaining Xray from
+	// this directory is by definition a leftover.
+	s.ReapOrphanXray()
+
 	p = xray.NewProcess(xrayConfig)
 	result = ""
 	err = p.Start()

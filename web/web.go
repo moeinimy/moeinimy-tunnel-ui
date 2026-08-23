@@ -421,6 +421,11 @@ func (s *Server) startTask() {
 	s.cron.AddJob("@every 2m", job.NewWarpWatchJob())
 	s.cron.AddJob("@every 15m", job.NewWarpLicenseJob())
 
+	// Every relayed port, asked the question that a healthy-looking tunnel hides:
+	// is anything actually serving it here. Two minutes is often enough to hear
+	// about it before a customer does, and cheap — it is a local dial per port.
+	s.cron.AddJob("@every 2m", job.NewTunnelHealthJob())
+
 	// Clean stale RADIUS sessions every 60 seconds
 	s.cron.AddFunc("@every 60s", func() {
 		s.radiusService.CleanStaleSessions()

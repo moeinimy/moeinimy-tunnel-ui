@@ -7,6 +7,10 @@
 # revert: restore everything from the saved backups and remove managed files.
 
 TM_SYSCTL_FILE="/etc/sysctl.d/99-tunnel-manager.conf"
+
+# Ceiling for TCP socket-buffer autotuning. See the sysctl block below for what
+# an oversized one costs; override in settings.conf, sized from the path's BDP.
+: "${TM_TCP_BUF_MAX:=4194304}"        # 4 MiB
 TM_MODULES_FILE="/etc/modules-load.d/tunnel-manager.conf"
 TM_OPT_BACKUP="$TM_STATE_DIR/optimize.sysctl.bak"
 TM_OPT_NIC_BACKUP="$TM_STATE_DIR/optimize.nic.bak"
@@ -294,14 +298,35 @@ net.ipv6.conf.all.forwarding = 1
 net.core.default_qdisc = $qdisc
 net.ipv4.tcp_congestion_control = $cc
 
-# --- Socket buffers (64 MiB ceilings) for high-BDP tunnels ---
+# --- Socket buffers ---
+# The core.*_max ceilings stay high: they only cap an explicit setsockopt, which
+# nothing in the forwarding path asks for, and a daemon that does ask has a
+# reason.
+#
+# The tcp_* ceilings are the ones that bite, because autotuning WILL climb to
+# them and a tunnel's connections live for days. Measured on a 85 ms path with
+# the old 64 MiB ceiling: receive buffers had grown to 67 MB and send buffers to
+# 37 MB, minrtt stayed at 73-91 ms while rcv_rtt reached 514 ms, and BBR's
+# bandwidth estimate had collapsed from tens of Mbit to 250-700 kbit per
+# connection. None of that delay was the network — it was queue standing in a
+# buffer sized thirty times the bandwidth-delay product. The inner streams then
+# retransmitted data that had merely arrived late (300-460 DSACK dups per
+# connection), which is the TCP-over-TCP failure in its textbook form.
+#
+# fq_codel on the NIC cannot reach this queue: it sits in the socket buffer, one
+# layer above the qdisc, which is why the AQM already applied here never helped.
+# Restarting the tunnel did, every time, because fresh sockets start small again.
+#
+# 4 MiB is about twice the BDP of a 200 Mbit, 85 ms path. Raise TM_TCP_BUF_MAX in
+# settings.conf for a genuinely fatter path — but size it from BDP, not from
+# whatever the box will allow.
 net.core.rmem_max = 67108864
 net.core.wmem_max = 67108864
 net.core.rmem_default = 1048576
 net.core.wmem_default = 1048576
 net.core.optmem_max = 65536
-net.ipv4.tcp_rmem = 4096 1048576 67108864
-net.ipv4.tcp_wmem = 4096 1048576 67108864
+net.ipv4.tcp_rmem = 4096 1048576 $TM_TCP_BUF_MAX
+net.ipv4.tcp_wmem = 4096 1048576 $TM_TCP_BUF_MAX
 net.ipv4.udp_rmem_min = 8192
 net.ipv4.udp_wmem_min = 8192
 

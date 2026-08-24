@@ -5,6 +5,72 @@ All notable changes to this project are documented here. The format is based on
 [Semantic Versioning](https://semver.org/).
 
 
+## [3.9.4] - 2026-08-24
+
+### Fixed
+- **Throughput decayed over days until something was restarted.** The managed
+  sysctl file set a 64 MiB ceiling on `tcp_rmem`/`tcp_wmem`. Autotuning climbs to
+  whatever ceiling it is given, and a tunnel's connections live for days, so it
+  got there: measured on an 85 ms path, receive buffers had reached 67 MB and
+  send buffers 37 MB, `minrtt` held at 73-91 ms while `rcv_rtt` reached 514 ms,
+  and BBR's bandwidth estimate had fallen from tens of Mbit to 250-700 kbit per
+  connection. The inner streams then retransmitted data that had merely arrived
+  late — 300-460 DSACK dups per connection — which is TCP-over-TCP collapse in
+  its textbook form.
+
+  The delay was not on the wire. It was queue standing in a buffer sized about
+  thirty times the path's bandwidth-delay product, and `fq_codel` could not touch
+  it: the queue is in the socket buffer, a layer above the qdisc. That is why AQM
+  on these boxes never helped, and why restarting the tunnel always did — fresh
+  sockets start small again.
+
+  The ceiling is now 4 MiB, roughly twice the BDP of a 200 Mbit, 85 ms path, and
+  overridable as `TM_TCP_BUF_MAX` in settings.conf for a genuinely fatter path.
+  The `net.core.*_max` ceilings are deliberately unchanged: they cap only an
+  explicit `setsockopt`, which nothing in the forwarding path issues.
+
+  Run `tunnelctl optimize apply` after updating to rewrite the sysctl file, then
+  restart the tunnel so its existing connections are rebuilt at the new ceiling.
+
+
+## [3.6.1] - 2026-07-26
+
+### Fixed
+- **Traffic volume in the bot read about double the real figure.** The counters
+  introduced in 3.5.2 were live, but a relay touches every byte twice — it reads
+  a byte off one socket and writes it to the other — so cgroup accounting logged
+  each upload byte once as ingress and once as egress, and each download byte
+  the same way. Both counters therefore sat at upload+download. The reported
+  total is now exact. The per-direction split remains an estimate, because
+  cgroup accounting cannot distinguish a user socket from a peer socket. GRE is
+  unaffected: it reads netdev counters, which see each packet once.
+
+
+## [3.6.0] - 2026-07-26
+
+### Fixed
+- **Large transfers stalled on userspace tunnels while the tunnel looked healthy.**
+  Symptoms: ping and Telegram fine, most sites never load, video buffers a few
+  seconds then waits, and phones are unaffected while PCs are not. The cause is a
+  path-MTU black hole: the inter-server TCP connection carries full-size segments
+  that the path silently drops, and the ICMP "fragmentation needed" replies that
+  would normally shrink them are filtered. Small packets keep flowing, so health
+  checks pass. Phones escape it because carriers hand out a smaller MTU already.
+- Only GRE was protected — it clamps MSS per-device in its own driver. Every
+  userspace protocol (BackPack, Backhaul, GOST, rathole, frp, Paqet, Hysteria)
+  had no MTU handling at all. They now clamp the MSS on the tunnel's own
+  connection, applied centrally from `driver_up`/`driver_down` so it is one
+  implementation rather than seven. `net.ipv4.tcp_mtu_probing` was already on,
+  but it only recovers *after* a connection has stalled — which is exactly the
+  "loads a little, then waits" behaviour; clamping avoids the stall instead.
+- The rule is scoped to the tunnel's own port, so nothing else on the server is
+  affected, and it is added and removed symmetrically with the tunnel. The port
+  is discovered generically but anchored so a local-only listener
+  (`PAQET_SOCKS_PORT`) can never be clamped by mistake.
+- Clamp value is configurable via `TM_TUNNEL_MSS` in `settings.conf`
+  (default 1360).
+
+
 ## [3.5.2] - 2026-07-26
 
 ### Fixed

@@ -395,6 +395,11 @@ func (s *Server) startTask() {
 	// silent bind failure on restart, so L2TP/PPTP/OpenVPN internet self-heals)
 	s.cron.AddJob("@every 20s", job.NewCheckVpnDokodemoJob())
 
+	// And the ports accounts connect to. Deliberately off the 20s beat above so the
+	// two checks do not land on the same tick and ask for two restarts for what a
+	// single one would have fixed.
+	s.cron.AddJob("@every 30s", job.NewCheckInboundPortsJob())
+
 	go func() {
 		time.Sleep(time.Second * 5)
 		// Statistics every 10 seconds, start the delay for 5 seconds for the first time, and staggered with the time to restart xray

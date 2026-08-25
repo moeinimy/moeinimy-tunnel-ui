@@ -1,6 +1,7 @@
 package service
 
 import (
+	"encoding/json"
 	"fmt"
 	"net"
 	"os"
@@ -13,6 +14,7 @@ import (
 	"github.com/mhsanaei/3x-ui/v2/backend"
 	"github.com/mhsanaei/3x-ui/v2/config"
 	"github.com/mhsanaei/3x-ui/v2/logger"
+	"github.com/mhsanaei/3x-ui/v2/xray"
 )
 
 // vpnKernelModules are the REQUIRED kernel modules the L2TP/PPTP/OpenVPN backends
@@ -310,6 +312,94 @@ func (s *CoreService) MissingDokodemoPorts() []int {
 			if port := s.ikev2Service.GetTproxyPort(in); in.Enable && !dokodemoPortBound(port) {
 				missing = append(missing, port)
 			}
+		}
+	}
+	return missing
+}
+
+// tcpStreamNetworks are the Xray stream transports that listen on TCP.
+//
+// An ALLOWLIST on purpose. A transport not named here is skipped rather than
+// guessed at, because the two errors are not equal: failing to cover a transport
+// only means this check does not watch it, while wrongly calling a UDP listener
+// missing would restart Xray on every pass, forever.
+var tcpStreamNetworks = map[string]bool{
+	"":            true, // absent means Xray's default, which is tcp
+	"tcp":         true,
+	"raw":         true,
+	"ws":          true,
+	"websocket":   true,
+	"http":        true,
+	"h2":          true,
+	"grpc":        true,
+	"gun":         true,
+	"httpupgrade": true,
+	"splithttp":   true,
+	"xhttp":       true,
+}
+
+// MissingInboundPorts returns the TCP ports the running Xray was told to bind but
+// which nothing is listening on.
+//
+// The general case of MissingDokodemoPorts, and it exists because this failure has
+// now cost two outages. Xray binds the ports it can, skips the rest without an
+// error, and goes on reporting one healthy core — so the panel says up, the tunnel
+// says up, and every account on the skipped port simply fails. Last time the only
+// trace anywhere was a line in the relay's journal that nobody reads:
+//
+//	local dialer: dial tcp -> 127.0.0.1:8080: connect: connection refused
+//
+// Read from config.json on disk rather than rebuilt from the inbounds table: that
+// file IS what the running process was handed, so a disabled inbound or one a
+// foreign node serves cannot be mistaken for a missing port here — they were never
+// written to it. It is also a file read instead of a config rebuild, which matters
+// for something on a timer.
+//
+// A port some OTHER process holds reads as bound, not missing, because net.Listen
+// fails either way. That is the wanted answer: a restart cannot win a port another
+// owner already has, and this must never become a loop trying to.
+func (s *CoreService) MissingInboundPorts() []int {
+	if !s.xrayService.IsXrayRunning() {
+		return nil
+	}
+	data, err := os.ReadFile(xray.GetConfigPath())
+	if err != nil {
+		return nil
+	}
+	var cfg struct {
+		Inbounds []struct {
+			// Raw because Xray accepts a port RANGE as a string here. A range is
+			// not a single bindable port, so it fails the parse below and is
+			// skipped, which is the right outcome rather than a failed decode
+			// taking the whole check down with it.
+			Port           json.RawMessage `json:"port"`
+			Protocol       string          `json:"protocol"`
+			StreamSettings struct {
+				Network string `json:"network"`
+			} `json:"streamSettings"`
+		} `json:"inbounds"`
+	}
+	if json.Unmarshal(data, &cfg) != nil {
+		return nil
+	}
+
+	seen := map[int]bool{}
+	var missing []int
+	for _, in := range cfg.Inbounds {
+		// dokodemo is watched by MissingDokodemoPorts, on its own restart budget.
+		if in.Protocol == "dokodemo-door" {
+			continue
+		}
+		if !tcpStreamNetworks[in.StreamSettings.Network] {
+			continue
+		}
+		var port int
+		if json.Unmarshal(in.Port, &port) != nil || port <= 0 || seen[port] {
+			continue
+		}
+		seen[port] = true
+		if !dokodemoPortBound(port) {
+			missing = append(missing, port)
 		}
 	}
 	return missing

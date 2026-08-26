@@ -1454,7 +1454,11 @@ func (s *ServerService) UpdateGeofile(fileName string) error {
 			}
 		}
 
-		client := &http.Client{}
+		// Generous, but bounded. These are multi-megabyte files from GitHub over a
+		// link that is frequently filtered, and the zero-value client this used to
+		// build has no timeout at all — a stalled download would hold the request
+		// goroutine for the life of the process.
+		client := &http.Client{Timeout: 10 * time.Minute}
 		resp, err := client.Do(req)
 		if err != nil {
 			return common.NewErrorf("Failed to download Geofile from %s: %v", url, err)

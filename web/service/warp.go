@@ -12,6 +12,16 @@ import (
 	"github.com/mhsanaei/3x-ui/v2/util/common"
 )
 
+// warpAPIClient talks to the Cloudflare WARP API.
+//
+// Shared and with a deadline, because the zero-value http.Client these calls used
+// to build has NO timeout: a connection that is accepted and then never answered
+// — the normal failure for this endpoint from a filtered network — hangs forever,
+// holding a goroutine and a socket that nothing will ever release. WarpWatchJob
+// reaches this code every two minutes, so "forever" compounds into the kind of
+// slow, restart-only-clears-it decay this panel keeps being bitten by.
+var warpAPIClient = &http.Client{Timeout: 30 * time.Second}
+
 // WarpService provides business logic for Cloudflare WARP integration.
 // It manages WARP configuration and connectivity settings.
 type WarpService struct {
@@ -53,8 +63,7 @@ func (s *WarpService) GetWarpConfig() (string, error) {
 	}
 	req.Header.Set("Authorization", "Bearer "+warpData["access_token"])
 
-	client := &http.Client{}
-	resp, err := client.Do(req)
+	resp, err := warpAPIClient.Do(req)
 	if err != nil {
 		return "", err
 	}
@@ -83,8 +92,7 @@ func (s *WarpService) RegWarp(secretKey string, publicKey string) (string, error
 	req.Header.Add("CF-Client-Version", "a-7.21-0721")
 	req.Header.Add("Content-Type", "application/json")
 
-	client := &http.Client{}
-	resp, err := client.Do(req)
+	resp, err := warpAPIClient.Do(req)
 	if err != nil {
 		return "", err
 	}
@@ -139,8 +147,7 @@ func (s *WarpService) SetWarpLicense(license string) (string, error) {
 	}
 	req.Header.Set("Authorization", "Bearer "+warpData["access_token"])
 
-	client := &http.Client{}
-	resp, err := client.Do(req)
+	resp, err := warpAPIClient.Do(req)
 	if err != nil {
 		return "", err
 	}

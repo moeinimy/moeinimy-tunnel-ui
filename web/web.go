@@ -540,7 +540,23 @@ func (s *Server) Start() (err error) {
 	if err != nil {
 		return err
 	}
-	s.cron = cron.New(cron.WithLocation(loc), cron.WithSeconds())
+	// SkipIfStillRunning, because cron/v3 otherwise starts every tick in a fresh
+	// goroutine and waits for nothing. Three jobs here run @every 1s and several
+	// more do network or shell work, so a tick that outlives its interval leaves a
+	// goroutine behind — and the ones most likely to run long are exactly the ones
+	// that run long when the box is already struggling. That is a pile-up that
+	// feeds itself, and it clears only on restart, which is the shape of every
+	// "it degrades until something is restarted" fault this panel has had.
+	//
+	// The wrapper is per job, not global: a slow node sync never delays the Xray
+	// health check. A skipped tick is always the right answer here, because every
+	// one of these jobs reads current state rather than accumulating deltas — the
+	// next tick sees the same thing a moment later.
+	s.cron = cron.New(
+		cron.WithLocation(loc),
+		cron.WithSeconds(),
+		cron.WithChain(cron.SkipIfStillRunning(cron.DiscardLogger)),
+	)
 	s.cron.Start()
 
 	s.customGeoService = service.NewCustomGeoService()

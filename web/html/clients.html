@@ -301,6 +301,19 @@
                     </a-tooltip>
                   </template>
 
+                  <!-- Online now is a state; last seen is a fact with a date on it.
+                       Both are shown, because an offline tag on its own never
+                       distinguishes a customer who stopped last night from one who
+                       never connected at all — here the first carries a date and the
+                       second does not, and the column sorts on the number either way. -->
+                  <template slot="lastOnline" slot-scope="text, row">
+                    <a-tag v-if="row.online" color="green">{{ i18n "online" }}</a-tag>
+                    <span v-else-if="row.lastOnline" style="white-space: nowrap;">
+                      [[ formatLastOnline(row.lastOnline) ]]
+                    </span>
+                    <a-tag v-else>{{ i18n "offline" }}</a-tag>
+                  </template>
+
                   <template slot="enable" slot-scope="text, row">
                     <a-switch :checked="row.clientEnable"
                       @change="state => switchEnableClient(row, state)"></a-switch>
@@ -711,6 +724,10 @@
       // row carries only its own bytes, so the shared figure exists nowhere else.
       clientGroups: {},
       onlineClients: [],
+      // email -> epoch ms of the last tick that carried traffic for it. Kept
+      // separate from onlineClients because "not online now" and "never seen" are
+      // different answers, and the ledger has to be able to tell them apart.
+      lastOnlineMap: {},
       search: '',
       protocolFilter: '',
       stateFilter: '',
@@ -761,6 +778,8 @@
           sorter: (a, b) => a.used - b.used },
         { title: '{{ i18n "pages.inbounds.expireDate" }}', scopedSlots: { customRender: 'expiry' },
           sorter: (a, b) => (a.expiryTime || Infinity) - (b.expiryTime || Infinity) },
+        { title: '{{ i18n "lastOnline" }}', scopedSlots: { customRender: 'lastOnline' },
+          sorter: (a, b) => (a.lastOnline || 0) - (b.lastOnline || 0) },
         { title: '{{ i18n "enable" }}', scopedSlots: { customRender: 'enable' } },
         { title: '{{ i18n "pages.clients.colActions" }}', scopedSlots: { customRender: 'actions' } },
       ],
@@ -893,6 +912,7 @@
               clientEnable,
               frozen: !clientEnable && Number(c.expiryTime) < 0,
               online: this.onlineClients.includes(c.email),
+              lastOnline: this.lastOnlineOf(c.email),
               depleted: (total > 0 && used >= total) ||
                 (expiryTime > 0 && expiryTime <= this.now),
               expiryTime,
@@ -1110,6 +1130,24 @@
         } catch (e) {
           console.warn('online clients refresh failed', e);
         }
+        try {
+          const resp = await axios.post('/panel/api/inbounds/lastOnline');
+          const body = resp && resp.data ? resp.data : null;
+          this.lastOnlineMap = body && body.obj && typeof body.obj === 'object' ? body.obj : {};
+        } catch (e) {
+          console.warn('last online refresh failed', e);
+        }
+      },
+      // Sorts and renders off the same number, so the column orders by when a
+      // client was really last seen rather than by the text shown for it.
+      lastOnlineOf(email) {
+        const ts = this.lastOnlineMap ? this.lastOnlineMap[email] : 0;
+        return typeof ts === 'number' && ts > 0 ? ts : 0;
+      },
+      formatLastOnline(ts) {
+        if (!ts) return '-';
+        if (typeof IntlUtil !== 'undefined' && IntlUtil.formatDate) return IntlUtil.formatDate(ts);
+        return new Date(ts).toLocaleString();
       },
       // The panel-wide settings the shared modals read off `app`: without them the
       // client form renders without its subscription/telegram/IP-limit sections and

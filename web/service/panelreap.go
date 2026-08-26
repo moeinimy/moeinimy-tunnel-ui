@@ -84,3 +84,67 @@ func ReapStalePanels() {
 		_ = proc.Signal(syscall.SIGTERM)
 	}
 }
+
+// otherPanelNames are the executables of panels that manage an Xray of their own.
+// Kept small and explicit: this list only ever produces a log line, so a name
+// missing from it costs nothing, while a name wrongly on it would accuse an
+// unrelated process.
+var otherPanelNames = map[string]bool{
+	"x-ui":         true,
+	"3x-ui":        true,
+	"vpn-ui":       true,
+	"vpn-ui-amd64": true,
+}
+
+// ReportCoexistingPanels says once, at startup, that another panel is running
+// here — and does nothing else about it.
+//
+// ReapStalePanels deliberately will not touch an installation in another
+// directory, and that is right: on this fork's own foreign server an old x-ui in
+// /usr/local/x-ui serves 443 and 2086 while vpn-ui in /opt/vpn-ui serves 2052,
+// 2095, 8080 and 12308. The ports are disjoint, both are wanted, and reaping the
+// other would drop every client on it.
+//
+// But it stayed invisible until someone read `ss -lntp` by hand during an
+// outage, and it changes what the evidence means: two Xrays on the box is normal
+// HERE and alarming elsewhere, and a port this panel cannot bind may simply
+// belong to the other one. So it is worth one line in the log, and no more —
+// this is information, not a fault.
+func ReportCoexistingPanels() {
+	self := os.Getpid()
+
+	exe, err := os.Executable()
+	if err != nil {
+		return
+	}
+	if resolved, rerr := filepath.EvalSymlinks(exe); rerr == nil {
+		exe = resolved
+	}
+	ourDir := filepath.Dir(exe)
+
+	entries, err := os.ReadDir("/proc")
+	if err != nil {
+		return
+	}
+	for _, e := range entries {
+		pid, cerr := strconv.Atoi(e.Name())
+		if cerr != nil || pid == self {
+			continue
+		}
+		link, lerr := os.Readlink("/proc/" + e.Name() + "/exe")
+		if lerr != nil {
+			continue
+		}
+		link = strings.TrimSuffix(link, " (deleted)")
+		if !otherPanelNames[filepath.Base(link)] {
+			continue
+		}
+		// Our own directory is ReapStalePanels' business, not this one's.
+		if filepath.Dir(link) == ourDir {
+			continue
+		}
+		logger.Info("another panel is running on this host: pid ", pid, " at ", link,
+			" — left alone deliberately, since it is a separate installation with its own Xray and its own ports;",
+			" expect two Xray processes here, and a port this panel cannot bind may belong to that one")
+	}
+}

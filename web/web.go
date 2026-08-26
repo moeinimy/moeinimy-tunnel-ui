@@ -354,6 +354,8 @@ func (s *Server) startTask() {
 	// Stale PANELS first, then their Xrays. The other way round is a fight: the
 	// surviving panel notices its core is gone within a second and starts another.
 	service.ReapStalePanels()
+	// Not a fault, but it changes how everything else on this box reads.
+	service.ReportCoexistingPanels()
 	s.xrayService.ReapOrphanXray()
 	err := s.xrayService.RestartXray(true)
 	if err != nil {

@@ -22,14 +22,26 @@
 # These matter far more than they look. smux gives every multiplexed stream a
 # receive window (mux_streambuffer); a stream can never exceed window / RTT. The
 # upstream default of 64 KiB caps ONE stream at 64K/0.09s ~= 5.8 Mbit on a 90 ms
-# Iran<->EU path, no matter how much bandwidth exists. Size the window from the
-# bandwidth-delay product instead: 2 MiB / 0.09 s ~= 186 Mbit per stream.
+# Iran<->EU path, no matter how much bandwidth exists. So the window has to come
+# off the bandwidth-delay product — but of ONE stream, which is the correction
+# below: sizing it for the whole link is what turned the window into a queue.
 # A bigger connection_pool also helps on a lossy path — each TCP connection backs
 # off independently, so spreading traffic over more of them keeps the aggregate
 # up (measured here: 5 Mbit on one stream vs 32 Mbit over eight).
 : "${TM_BP_POOL:=16}"                  # parallel tunnel connections
-: "${TM_BP_STREAM_BUF:=2097152}"       # 2 MiB per-stream window
-: "${TM_BP_RECV_BUF:=8388608}"         # 8 MiB per-connection window
+# Sized DOWN from 2 MiB / 8 MiB after the same buffer fault the kernel ceilings
+# had (see modules/optimize.sh): a window is a queue, and a per-stream window is a
+# queue multiplied by however many streams are live. The original figures came
+# from asking how fast ONE stream could go, which is the wrong question when a
+# busy relay carries hundreds at once — 2 MiB each is hundreds of megabytes of
+# standing queue on both ends, none of it visible to any qdisc.
+#
+# 256 KiB still allows ~24 Mbit for a single stream on a 90 ms path, which is far
+# more than one user connection ever asks for, and four times the ~5.8 Mbit the
+# upstream 64 KiB default was raised to fix. Raise them for a path that genuinely
+# needs it, but size from the BDP of ONE stream, not from the link.
+: "${TM_BP_STREAM_BUF:=262144}"        # 256 KiB per-stream window
+: "${TM_BP_RECV_BUF:=2097152}"         # 2 MiB per-connection window
 
 : "${BACKPACK_REPO:=AminMGMT/BackPack}"
 : "${BACKPACK_DEFAULT_VERSION:=v1.3.0}"

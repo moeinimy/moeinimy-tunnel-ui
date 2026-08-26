@@ -6,7 +6,15 @@
 #         sysctl.d file, enable BBR+fq, raise buffers/queues, tune the WAN NIC.
 # revert: restore everything from the saved backups and remove managed files.
 
-TM_SYSCTL_FILE="/etc/sysctl.d/99-tunnel-manager.conf"
+# Named to sort LAST in /etc/sysctl.d. systemd-sysctl reads that directory in
+# lexicographic order and each file overwrites the one before it, so the old
+# "99-tunnel-manager.conf" lost at every boot to any 99-* file sorting after it —
+# measured on a live box, where the buffer ceiling below read back as another
+# tool's value after a reboot while `optimize apply` had reported success. The
+# apply path never saw it, because `sysctl -p <file>` sets values immediately and
+# ignores ordering entirely; only boot goes through the directory.
+TM_SYSCTL_FILE="/etc/sysctl.d/99-zz-tunnel-manager.conf"
+TM_SYSCTL_FILE_LEGACY="/etc/sysctl.d/99-tunnel-manager.conf"
 
 # Ceiling for TCP socket-buffer autotuning. See the sysctl block below for what
 # an oversized one costs; override in settings.conf, sized from the path's BDP.
@@ -14,6 +22,7 @@ TM_SYSCTL_FILE="/etc/sysctl.d/99-tunnel-manager.conf"
 TM_MODULES_FILE="/etc/modules-load.d/tunnel-manager.conf"
 TM_OPT_BACKUP="$TM_STATE_DIR/optimize.sysctl.bak"
 TM_OPT_NIC_BACKUP="$TM_STATE_DIR/optimize.nic.bak"
+TM_OPT_CONFLICT_BACKUP="$TM_STATE_DIR/optimize.conflicts.bak"
 TM_OPT_MARKER="$TM_STATE_DIR/optimize.applied"
 
 # Keys we manage (kept in one place so backup/restore stay in sync).
@@ -265,6 +274,113 @@ tm_aqm_ensure() {
     optimize_nic_apply "$(_opt_best_qdisc)"
 }
 
+
+# ---------------------------------------------------------------------------
+# Losing to another file
+# ---------------------------------------------------------------------------
+# Sorting last in /etc/sysctl.d is not enough on its own: `sysctl --system` reads
+# /etc/sysctl.conf AFTER the whole directory, so a key set there beats every
+# managed file no matter what it is called. On a live box that is exactly what
+# happened — the tuned ceiling was written, reported applied, and then quietly
+# replaced at the next boot by a line in sysctl.conf that nobody remembered
+# adding.
+#
+# So a key we manage is commented out wherever else it is set, with the original
+# file kept beside it so revert puts everything back untouched.
+
+# _opt_conflicting_files — admin-owned files, other than ours, that set a key we
+# manage. /usr/lib and /run are deliberately left alone: they are the distro's,
+# they sort before us, and they lose on their own.
+_opt_conflicting_files() {
+    local f keys
+    keys="$(_opt_keys | tr '
+' '|')"
+    for f in /etc/sysctl.conf /etc/sysctl.d/*.conf; do
+        [[ -f "$f" ]] || continue
+        [[ "$f" == "$TM_SYSCTL_FILE" || "$f" == "$TM_SYSCTL_FILE_LEGACY" ]] && continue
+        awk -v keys="$keys" '
+            BEGIN { n = split(keys, K, "|") }
+            /^[[:space:]]*[#;]/ { next }
+            index($0, "=") == 0 { next }
+            {
+                k = $0; sub(/=.*/, "", k); gsub(/[[:space:]]/, "", k)
+                # A flag, not `exit 0`: an exit here still runs END, whose own
+                # exit would overwrite the status and report every file clean.
+                for (i = 1; i <= n; i++) if (K[i] != "" && k == K[i]) { hit = 1; exit }
+            }
+            END { exit(hit ? 0 : 1) }
+        ' "$f" && printf '%s
+' "$f"
+    done
+}
+
+# _opt_neutralise_conflicts — comment out our keys elsewhere, keeping originals.
+_opt_neutralise_conflicts() {
+    local f keys tmp
+    keys="$(_opt_keys | tr '
+' '|')"
+    : >"$TM_OPT_CONFLICT_BACKUP"
+    while IFS= read -r f; do
+        [[ -n "$f" ]] || continue
+        # -n so a re-apply never overwrites the pristine copy with an edited one.
+        cp -n "$f" "$f.tm-orig" 2>/dev/null || true
+        tmp="$(mktemp)"
+        awk -v keys="$keys" '
+            BEGIN { n = split(keys, K, "|") }
+            /^[[:space:]]*[#;]/ { print; next }
+            index($0, "=") == 0 { print; next }
+            {
+                k = $0; sub(/=.*/, "", k); gsub(/[[:space:]]/, "", k)
+                for (i = 1; i <= n; i++)
+                    if (K[i] != "" && k == K[i]) {
+                        print "# superseded by Tunnel Manager (tunnelctl optimize revert restores this): " $0
+                        next
+                    }
+                print
+            }
+        ' "$f" >"$tmp" && cat "$tmp" >"$f"
+        rm -f "$tmp"
+        printf '%s
+' "$f" >>"$TM_OPT_CONFLICT_BACKUP"
+        log_info "  took over sysctl keys previously set in $f (original kept at $f.tm-orig)"
+    done < <(_opt_conflicting_files)
+}
+
+# _opt_restore_conflicts — put those files back exactly as they were.
+_opt_restore_conflicts() {
+    local f
+    [[ -f "$TM_OPT_CONFLICT_BACKUP" ]] || return 0
+    while IFS= read -r f; do
+        [[ -n "$f" && -f "$f.tm-orig" ]] || continue
+        mv -f "$f.tm-orig" "$f"
+        log_info "  restored $f"
+    done <"$TM_OPT_CONFLICT_BACKUP"
+    rm -f "$TM_OPT_CONFLICT_BACKUP"
+}
+
+# _opt_verify — did the values we asked for actually take? Reports rather than
+# assumes, because "applied successfully" while the kernel holds someone else's
+# number is the failure this whole section exists for.
+_opt_verify() {
+    local k want got bad=0
+    while IFS= read -r k; do
+        [[ -n "$k" ]] || continue
+        want="$(awk -F= -v key="$k" '
+            /^[[:space:]]*[#;]/ { next }
+            { n = $1; gsub(/[[:space:]]/, "", n); if (n == key) { sub(/^[^=]*=/, "", $0); print; } }
+        ' "$TM_SYSCTL_FILE" | tail -1)"
+        [[ -n "$want" ]] || continue
+        got="$(sysctl -n "$k" 2>/dev/null)" || continue
+        # Unquoted on purpose: tcp_rmem is three fields, tab-separated from the
+        # kernel and space-separated in the file.
+        if [[ "$(echo $want)" != "$(echo $got)" ]]; then
+            log_warn "  $k is $(echo $got), asked for $(echo $want)"
+            bad=1
+        fi
+    done < <(_opt_keys)
+    return "$bad"
+}
+
 optimize_apply() {
     require_root
     ui_title "Network optimization"
@@ -366,10 +482,29 @@ vm.swappiness = 10
 net.netfilter.nf_conntrack_max = 1048576
 EOF
 
+    # The old file name, from before this one was made to sort last. Left behind it
+    # would keep setting the previous values at every boot.
+    rm -f "$TM_SYSCTL_FILE_LEGACY"
+    _opt_neutralise_conflicts
+
     if sysctl -p "$TM_SYSCTL_FILE" >/dev/null 2>&1; then
         log_ok "Applied sysctl tuning (congestion=$cc, qdisc=$qdisc)."
     else
         log_warn "Some sysctl keys were rejected by this kernel (applied the rest)."
+    fi
+
+    # Re-read the whole set the way BOOT does, then check what the kernel actually
+    # holds. `sysctl -p <file>` above cannot fail this way — it ignores ordering —
+    # so without this pass a key that will be overwritten at the next reboot looks
+    # perfectly applied right now. That gap cost days of chasing a slowdown that
+    # came back after every restart.
+    sysctl --system >/dev/null 2>&1 || true
+    if _opt_verify; then
+        log_ok "Verified: the kernel holds these values after a full reload."
+    else
+        log_warn "The values above did NOT survive a full sysctl reload — something"
+        log_warn "  else on this host is still setting them. They will revert at the"
+        log_warn "  next boot. Check the files listed above and /etc/sysctl.conf."
     fi
 
     # Shaping is a HARD CEILING on throughput — worth saying out loud, because it
@@ -396,12 +531,13 @@ optimize_revert() {
     require_root
     optimize_rps_revert
     optimize_nic_revert
+    _opt_restore_conflicts
     if [[ ! -f "$TM_OPT_BACKUP" ]]; then
         log_warn "No optimization backup found; nothing to revert."
-        rm -f "$TM_SYSCTL_FILE" "$TM_MODULES_FILE" "$TM_OPT_MARKER"
+        rm -f "$TM_SYSCTL_FILE" "$TM_SYSCTL_FILE_LEGACY" "$TM_MODULES_FILE" "$TM_OPT_MARKER"
         return 0
     fi
-    rm -f "$TM_SYSCTL_FILE" "$TM_MODULES_FILE"
+    rm -f "$TM_SYSCTL_FILE" "$TM_SYSCTL_FILE_LEGACY" "$TM_MODULES_FILE"
     local k v
     while IFS=$'\t' read -r k v; do
         [[ -n "$k" ]] || continue
@@ -424,6 +560,8 @@ optimize_status() {
     ui_kv "Qdisc (default)" "$(sysctl -n net.core.default_qdisc 2>/dev/null)"
     ui_kv "ip_forward" "$(sysctl -n net.ipv4.ip_forward 2>/dev/null)"
     ui_kv "rmem_max"   "$(sysctl -n net.core.rmem_max 2>/dev/null)"
+    ui_kv "tcp_rmem"   "$(sysctl -n net.ipv4.tcp_rmem 2>/dev/null | tr '	' ' ')"
+    ui_kv "tcp_wmem"   "$(sysctl -n net.ipv4.tcp_wmem 2>/dev/null | tr '	' ' ')"
     ui_kv "backlog"    "$(sysctl -n net.core.netdev_max_backlog 2>/dev/null)"
     ui_kv "conntrack"  "$(sysctl -n net.netfilter.nf_conntrack_max 2>/dev/null || echo n/a)"
     [[ -n "${TM_SHAPE_MBIT:-}" ]]        && ui_kv "Shaping (WAN)"    "${TM_SHAPE_MBIT} mbit  ⚠ CAPS THROUGHPUT"

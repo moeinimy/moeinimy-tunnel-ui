@@ -5,6 +5,35 @@ All notable changes to this project are documented here. The format is based on
 [Semantic Versioning](https://semver.org/).
 
 
+## [3.9.5] - 2026-08-26
+
+### Fixed
+- **The buffer ceiling from 3.9.4 did not survive a reboot.** `optimize apply`
+  reported success and the kernel really did hold the new values — because
+  `sysctl -p <file>` sets them immediately and ignores ordering. Boot does not:
+  `systemd-sysctl` reads `/etc/sysctl.d/*` in lexicographic order, each file
+  overwriting the last, and then `/etc/sysctl.conf` after all of them. On both
+  live servers the managed file lost — to a `99-*` name sorting later on one, and
+  to a forgotten line in `sysctl.conf` on the other — so every reboot restored the
+  64 MiB ceiling and the slowdown came back with it.
+
+  Three changes, because any one alone still loses. The managed file is now
+  `99-zz-tunnel-manager.conf` so it sorts last in the directory; a key set in
+  another admin-owned file is commented out with the original kept beside it as
+  `<file>.tm-orig`, which `optimize revert` restores untouched; and apply now runs
+  a full `sysctl --system` and reads the values back, reporting exactly which keys
+  another file is still winning instead of claiming success. `optimize status`
+  shows `tcp_rmem`/`tcp_wmem`, since that is the number this turns on.
+
+- **smux windows were sized for one stream and paid for by all of them.** The
+  2 MiB per-stream and 8 MiB per-connection windows came from asking how fast a
+  single stream could go on a 90 ms path. A busy relay carries hundreds at once,
+  so the answer was hundreds of megabytes of standing queue on each end — the same
+  fault as the kernel ceiling, one layer up, and just as invisible to any qdisc.
+  Now 256 KiB and 2 MiB, which still allows ~24 Mbit for a single stream: four
+  times what raising the upstream 64 KiB default was meant to buy.
+
+
 ## [3.9.4] - 2026-08-24
 
 ### Fixed

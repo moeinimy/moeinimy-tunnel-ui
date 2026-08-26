@@ -14,12 +14,23 @@
 # TUN keys: BH_ROLE(server|client) BH_TRANSPORT BH_PORT BH_TOKEN REMOTE_IP
 #           LOCAL_IP BH_PORTS(server; ';'-separated "listen=dest") BH_MUX
 
-# Same bandwidth-delay-product sizing as the BackPack driver: smux caps a stream
-# at window/RTT, and the upstream 64 KiB default means ~5.8 Mbit per stream on a
+# Same per-stream sizing as the BackPack driver: smux caps a stream at
+# window/RTT, and the upstream 64 KiB default means ~5.8 Mbit per stream on a
 # 90 ms path no matter how much bandwidth exists. Override in settings.conf.
 : "${TM_BH_POOL:=16}"
-: "${TM_BH_STREAM_BUF:=2097152}"       # 2 MiB per-stream window
-: "${TM_BH_RECV_BUF:=8388608}"         # 8 MiB per-connection window
+# Sized DOWN from 2 MiB / 8 MiB after the same buffer fault the kernel ceilings
+# had (see modules/optimize.sh): a window is a queue, and a per-stream window is a
+# queue multiplied by however many streams are live. The original figures came
+# from asking how fast ONE stream could go, which is the wrong question when a
+# busy relay carries hundreds at once — 2 MiB each is hundreds of megabytes of
+# standing queue on both ends, none of it visible to any qdisc.
+#
+# 256 KiB still allows ~24 Mbit for a single stream on a 90 ms path, which is far
+# more than one user connection ever asks for, and four times the ~5.8 Mbit the
+# upstream 64 KiB default was raised to fix. Raise them for a path that genuinely
+# needs it, but size from the BDP of ONE stream, not from the link.
+: "${TM_BH_STREAM_BUF:=262144}"        # 256 KiB per-stream window
+: "${TM_BH_RECV_BUF:=2097152}"         # 2 MiB per-connection window
 
 : "${BACKHAUL_REPO:=Musixal/Backhaul}"
 : "${BACKHAUL_DEFAULT_VERSION:=v0.7.2}"

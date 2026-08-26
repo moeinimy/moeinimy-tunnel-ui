@@ -106,6 +106,7 @@ func (a *InboundController) initRouter(g *gin.RouterGroup) {
 	g.POST("/import", requirePerm(model.PermCreateInbound), a.importInbound)
 	g.POST("/onlines", read, a.onlines)
 	g.POST("/lastOnline", read, a.lastOnline)
+	g.POST("/clientMemberships/:email", read, ownsClient, a.clientMemberships)
 	g.POST("/updateClientTraffic/:email", requirePerm(model.PermEditClient), ownsClient, a.updateClientTraffic)
 	g.POST("/:id/delClientByEmail/:email", requirePerm(model.PermDeleteClient), owns, a.delInboundClientByEmail)
 	g.GET("/:id/ovpn/:proto", read, owns, a.downloadOvpn)
@@ -1435,6 +1436,17 @@ func (a *InboundController) onlines(c *gin.Context) {
 	// per-admin data. Scoping only the websocket broadcast would have been
 	// cosmetic: the same two datasets are one unfiltered POST away.
 	jsonObj(c, a.scopeEmails(c, a.inboundService.GetOnlineClients()), nil)
+}
+
+// clientMemberships lists the inbounds carrying one account.
+//
+// Behind requireClientAccess, the same gate the per-client traffic edit uses, so a
+// reseller is answered only about accounts that are theirs — this reveals which
+// inbounds exist on the panel, which is not everyone's to see.
+func (a *InboundController) clientMemberships(c *gin.Context) {
+	email := c.Param("email")
+	data, err := a.inboundService.GetClientMemberships(email)
+	jsonObj(c, data, err)
 }
 
 // lastOnline retrieves the last online timestamps for clients.

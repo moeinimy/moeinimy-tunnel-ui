@@ -4338,6 +4338,60 @@ func (s *InboundService) GetClientsLastOnline() (map[string]int64, error) {
 	return result, nil
 }
 
+// ClientMembership is one inbound an account is carried by.
+type ClientMembership struct {
+	InboundId int    `json:"inboundId"`
+	Remark    string `json:"remark"`
+	Protocol  string `json:"protocol"`
+	Port      int    `json:"port"`
+	Listen    string `json:"listen"`
+	NodeId    string `json:"nodeId"`
+	Enable    bool   `json:"enable"`
+	Tag       string `json:"tag"`
+}
+
+// GetClientMemberships lists every inbound that carries this account.
+//
+// On this fork an account is not a row in one inbound: a single customer can be
+// served by several at once, which is the whole point of the combined account, and
+// the identity that ties them together is the EMAIL rather than any id (sameEmail).
+// So "which inbound is this client on" has no answer visible from the row you are
+// looking at — and answering it by hand meant opening every inbound in turn.
+//
+// Folded on the same sameEmail rule the rest of the account code uses, so an
+// address that differs only in case or spacing is still one account here, exactly
+// as it is everywhere else.
+func (s *InboundService) GetClientMemberships(email string) ([]ClientMembership, error) {
+	inbounds, err := s.GetAllInbounds()
+	if err != nil {
+		return nil, err
+	}
+	out := []ClientMembership{}
+	for _, in := range inbounds {
+		clients, cerr := s.GetClients(in)
+		if cerr != nil {
+			continue
+		}
+		for _, c := range clients {
+			if !sameEmail(c.Email, email) {
+				continue
+			}
+			out = append(out, ClientMembership{
+				InboundId: in.Id,
+				Remark:    in.Remark,
+				Protocol:  string(in.Protocol),
+				Port:      in.Port,
+				Listen:    in.Listen,
+				NodeId:    in.NodeId,
+				Enable:    in.Enable,
+				Tag:       in.Tag,
+			})
+			break // one membership per inbound, however many rows match
+		}
+	}
+	return out, nil
+}
+
 func (s *InboundService) FilterAndSortClientEmails(emails []string) ([]string, []string, error) {
 	db := database.GetDB()
 

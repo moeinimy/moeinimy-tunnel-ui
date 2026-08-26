@@ -242,6 +242,22 @@
               infoModal.clientSettings.email : '') ]]</a-tag>
           </td>
         </tr>
+        <tr v-if="infoModal.memberships.length > 1">
+          <td>{{ i18n "menu.inbounds" }}</td>
+          <td>
+            <a-tooltip v-for="m in infoModal.memberships" :key="m.inboundId"
+              :overlay-class-name="themeSwitcher.currentTheme">
+              <template slot="title">
+                {{ i18n "protocol" }}: [[ m.protocol ]] &nbsp;
+                {{ i18n "pages.inbounds.port" }}: [[ m.port ]]
+                <template v-if="m.nodeId"> &nbsp; [[ m.nodeId ]]</template>
+              </template>
+              <a-tag :color="m.enable ? 'green' : ''" style="margin-bottom: 2px;">
+                [[ m.remark || m.protocol ]]
+              </a-tag>
+            </a-tooltip>
+          </td>
+        </tr>
         <tr v-if="infoModal.clientSettings.comment">
           <td>{{ i18n "comment" }}</td>
           <td>
@@ -630,6 +646,19 @@
     subJsonLink: '',
     clientIps: '',
     clientIpsArray: [],
+    memberships: [],
+    membershipsLoading: false,
+    async loadMemberships(email) {
+      this.membershipsLoading = true;
+      try {
+        const msg = await HttpUtil.post('/panel/api/inbounds/clientMemberships/' + encodeURIComponent(email));
+        this.memberships = msg && msg.success && Array.isArray(msg.obj) ? msg.obj : [];
+      } catch (e) {
+        this.memberships = [];
+      } finally {
+        this.membershipsLoading = false;
+      }
+    },
     show(dbInbound, index) {
       this.index = index;
       this.inbound = dbInbound.toInbound();
@@ -637,6 +666,15 @@
       this.clientSettings = this.inbound.clients ? this.inbound.clients[index] : null;
       this.isExpired = this.inbound.clients ? this.inbound.isExpiry(index) : this.dbInbound.isExpiry;
       this.clientStats = this.inbound.clients ? (this.dbInbound.clientStats.find(row => row.email === this.clientSettings.email) || null) : null;
+
+      // Which OTHER inbounds carry this same account. On a combined account the row
+      // being looked at is one membership of several, and the rest are invisible
+      // from here — so they are fetched rather than inferred from what this modal
+      // was handed.
+      this.memberships = [];
+      if (this.clientSettings && this.clientSettings.email) {
+        this.loadMemberships(this.clientSettings.email);
+      }
 
       if (
         [

@@ -339,6 +339,9 @@
                         <a-icon type="ellipsis" :style="{ fontSize: '20px', cursor: 'pointer' }"
                           @click="e => e.preventDefault()"></a-icon>
                         <a-menu slot="overlay" :class="themeSwitcher.currentTheme">
+                          <a-menu-item v-if="!row.isGroup" @click="showInfo(row)">
+                            <a-icon type="info-circle"></a-icon> {{ i18n "info" }}
+                          </a-menu-item>
                           <a-menu-item v-if="!row.isGroup && rowHasLink(row)" @click="showQrcode(row)">
                             <a-icon type="qrcode"></a-icon> {{ i18n "qrCode" }}
                           </a-menu-item>
@@ -688,6 +691,7 @@
 {{template "modals/combinedClientModal"}}
 {{template "modals/combinedEditModal"}}
 {{template "modals/clientCredentialsModal"}}
+{{template "modals/inboundInfoModal"}}
 {{template "modals/wgcConfigModal"}}
 {{template "modals/awgConfigModal"}}
 {{template "modals/sshConfigModal"}}
@@ -746,6 +750,7 @@
       datepicker: 'gregorian',
       tgBotEnable: false,
       trafficDiff: 0,
+      expireDiff: 0,
       ipLimitEnable: false,
       assign: { visible: false, loading: false, groupId: 0, newName: '', targets: [] },
       groupsManager: { visible: false, search: '', memberSearch: '' },
@@ -1144,7 +1149,11 @@
         const ts = this.lastOnlineMap ? this.lastOnlineMap[email] : 0;
         return typeof ts === 'number' && ts > 0 ? ts : 0;
       },
-      formatLastOnline(ts) {
+      // Takes either an email or a timestamp. The column here has the number
+      // already, while the shared info modal calls app.formatLastOnline(email) —
+      // one name, and the modal would otherwise render an email as a date.
+      formatLastOnline(v) {
+        const ts = typeof v === 'string' ? this.lastOnlineOf(v) : (v || 0);
         if (!ts) return '-';
         if (typeof IntlUtil !== 'undefined' && IntlUtil.formatDate) return IntlUtil.formatDate(ts);
         return new Date(ts).toLocaleString();
@@ -1167,6 +1176,10 @@
         this.datepicker = s.datepicker;
         this.tgBotEnable = s.tgBotEnable;
         this.trafficDiff = s.trafficDiff * 1073741824;
+        // Read here as well as on the inbounds page: the shared info modal colours
+        // its expiry against it, and an unset value would paint every account as
+        // about to expire.
+        this.expireDiff = s.expireDiff * 86400000;
         this.ipLimitEnable = s.ipLimitEnable;
         if (s.pageSize > 0) this.pageSize = s.pageSize;
       },
@@ -1187,6 +1200,39 @@
         if (!value) return 0;
         const t = typeof value === 'number' ? value : Date.parse(value);
         return Number.isFinite(t) ? t : 0;
+      },
+      // An inbound listening on an @-prefixed socket is reached through the TCP
+      // trojan/vless inbound that falls back to it, so the address and TLS the modal
+      // shows have to be the ROOT's. Same resolution the inbounds page does; without
+      // it a fallback client is shown an address nothing can connect to.
+      checkFallback(dbInbound) {
+        const copy = new DBInbound(dbInbound);
+        if (!copy.listen || !copy.listen.startsWith('@')) return copy;
+        const root = this.dbInbounds.map(db => db.toInbound()).find(i =>
+          i && i.isTcp && ['trojan', 'vless'].includes(i.protocol) &&
+          i.settings && i.settings.fallbacks &&
+          i.settings.fallbacks.find(f => f.dest === dbInbound.listen));
+        if (root) {
+          copy.listen = root.listen;
+          copy.port = root.port;
+          const ni = copy.toInbound();
+          ni.stream.security = root.stream.security;
+          ni.stream.tls = root.stream.tls;
+          ni.stream.externalProxy = root.stream.externalProxy;
+          copy.streamSettings = ni.stream.toString();
+        }
+        return copy;
+      },
+      showInfo(row) {
+        const dbInbound = this.dbInboundOf(row);
+        if (!dbInbound) return;
+        let index = 0;
+        const clients = this.getInboundClients(dbInbound);
+        if (Array.isArray(clients)) {
+          const i = clients.findIndex(c => c && c.email === row.email);
+          if (i >= 0) index = i;
+        }
+        infoModal.show(this.checkFallback(dbInbound), index);
       },
       dbInboundOf(row) {
         return this.dbInbounds.find(i => i.id === row.inboundId) || null;

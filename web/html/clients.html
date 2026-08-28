@@ -339,7 +339,7 @@
                         <a-icon type="ellipsis" :style="{ fontSize: '20px', cursor: 'pointer' }"
                           @click="e => e.preventDefault()"></a-icon>
                         <a-menu slot="overlay" :class="themeSwitcher.currentTheme">
-                          <a-menu-item v-if="!row.isGroup" @click="showInfo(row)">
+                          <a-menu-item v-if="!row.isGroup || row.members.length" @click="showInfo(row)">
                             <a-icon type="info-circle"></a-icon> {{ i18n "info" }}
                           </a-menu-item>
                           <a-menu-item v-if="!row.isGroup && rowHasLink(row)" @click="showQrcode(row)">
@@ -978,7 +978,7 @@
               enable: r.group.enable !== false,
               clientEnable: r.group.enable !== false,
               depleted: r.depleted,
-              online: false, frozen: false, ownUsed: 0, createdAt: 0,
+              online: false, frozen: false, ownUsed: 0, createdAt: 0, lastOnline: 0,
             };
             byGroup.set(r.group.id, g);
             folded.push(g);
@@ -989,6 +989,10 @@
           // newest account — which is what puts a just-created customer at the top.
           g.online = g.online || r.online;
           g.createdAt = Math.max(g.createdAt, r.createdAt);
+          // A customer was last seen when the most recent of their devices was.
+          // Without this a folded customer has no value at all, and the column
+          // renders every combined account as never-connected forever.
+          g.lastOnline = Math.max(g.lastOnline || 0, r.lastOnline || 0);
         }
         for (const g of folded) {
           if (!g.isGroup) continue;
@@ -1224,6 +1228,13 @@
         return copy;
       },
       showInfo(row) {
+        // A folded customer is not itself an inbound's client, so open one of its
+        // accounts. Any will do: the modal lists every inbound the account is carried
+        // by, so the whole customer is visible from whichever one it starts on.
+        if (row.isGroup) {
+          if (!row.members || !row.members.length) return;
+          row = row.members[0];
+        }
         const dbInbound = this.dbInboundOf(row);
         if (!dbInbound) return;
         let index = 0;

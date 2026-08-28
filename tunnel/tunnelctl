@@ -62,6 +62,7 @@ ${C_BOLD}Commands:${C_RESET}
   restore [file]         restore configuration from a backup
   report [daily|weekly|monthly] [--send]
   update                 update from GitHub (keeps config)
+  regen                  rewrite every tunnel config from current defaults
   uninstall              remove everything (reverts optimization)
   version                print version
   help                   this message
@@ -125,6 +126,7 @@ main() {
             local period="daily"; [[ "${1:-}" =~ ^(daily|weekly|monthly)$ ]] && { period="$1"; shift; }
             if [[ "${1:-}" == --send ]]; then report_send "$period"; else report_show "$period"; fi ;;
         update)         selfupdate_run ;;
+        regen)          require_root; tunnel_regen_all ;;
         uninstall)      require_root; bash "$TM_HOME/uninstall.sh" ;;
         version|-v|--version) version ;;
         help|-h|--help) usage ;;

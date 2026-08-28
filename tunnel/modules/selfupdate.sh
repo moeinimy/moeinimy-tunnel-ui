@@ -51,6 +51,13 @@ selfupdate_run() {
     else
         log_ok "Updated: $current -> $latest"
     fi
+
+    # New code is not new behaviour on its own. A driver's config file is written
+    # when a tunnel is created or edited and never again, so a changed default sits
+    # in the updated scripts while every existing tunnel keeps the file it was born
+    # with. That is how the smux window fix in 3.9.5 reached no tunnel at all.
+    log_info "Rewriting tunnel configs so the updated defaults take effect…"
+    tunnel_regen_all
     # The node agent is long-running: without a restart it keeps executing the
     # code that was on disk when it started. install.sh try-restarts it; say so,
     # since that is the whole point of updating a node.

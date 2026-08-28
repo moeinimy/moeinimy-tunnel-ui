@@ -174,15 +174,7 @@ tunnel_edit() {
             esac
             TUN[$key]="$newval"
             # Regenerate the protocol's config file if it keeps one out-of-band.
-            case "${TUN[PROTOCOL]}" in
-                paqet) paqet_generate_config ;;
-                backhaul) backhaul_generate_config ;;
-                backpack) backpack_generate_config ;;
-                hysteria) hysteria_generate_config ;;
-                rathole) rathole_generate_config ;;
-                gost) gost_generate_config ;;
-                frp) frp_generate_config ;;
-            esac ;;
+            tunnel_generate_config ;;
     esac
     save_tunnel
     svc_install "$name"
@@ -195,6 +187,51 @@ tunnel_edit() {
 # ---------------------------------------------------------------------------
 # Lifecycle
 # ---------------------------------------------------------------------------
+# tunnel_generate_config — write the loaded tunnel's protocol config, for the
+# drivers that keep one out of band. One copy, because the two call sites that
+# used to inline this list had already drifted apart in the order they wrote it,
+# and a driver missing from one of them is a tunnel that silently keeps stale
+# settings forever.
+tunnel_generate_config() {
+    case "${TUN[PROTOCOL]}" in
+        paqet)    paqet_generate_config ;;
+        backhaul) backhaul_generate_config ;;
+        backpack) backpack_generate_config ;;
+        hysteria) hysteria_generate_config ;;
+        rathole)  rathole_generate_config ;;
+        gost)     gost_generate_config ;;
+        frp)      frp_generate_config ;;
+    esac
+}
+
+# tunnel_regen_all — rewrite every tunnel's protocol config from the CURRENT
+# driver defaults, restarting the ones that were running.
+#
+# Without this an update is only half applied. `tunnelctl update` refreshes the
+# scripts, but a driver's config is written when a tunnel is created or edited and
+# never again — so a changed default sits in the new code while every existing
+# tunnel keeps running on the file written months ago. That is exactly how the
+# smux window fix shipped in 3.9.5 reached no tunnel at all: the ceiling it was
+# meant to lower was still 2 MiB on every box that "updated".
+#
+# Only tunnels that were active are restarted, so a deliberately stopped one stays
+# stopped.
+tunnel_regen_all() {
+    local n active=0 total=0
+    while read -r n; do
+        [[ -n "$n" ]] || continue
+        load_tunnel "$n" 2>/dev/null || continue
+        total=$((total + 1))
+        tunnel_generate_config || { log_warn "could not rewrite config for '$n'"; continue; }
+        if systemctl is-active --quiet "${TM_UNIT_PREFIX}${n}" 2>/dev/null; then
+            active=$((active + 1))
+            tunnel_restart "$n" >/dev/null 2>&1 || log_warn "could not restart '$n'"
+        fi
+    done < <(list_tunnels)
+    [[ "$total" -gt 0 ]] && log_ok "Rewrote $total tunnel config(s) from current defaults; restarted $active."
+    return 0
+}
+
 # tunnel_set NAME KEY VALUE — non-interactive field edit (scriptable + remote-
 # controllable via the peer agent / Telegram bot). Mirrors the interactive Edit:
 # updates one field, regenerates the protocol config, and restarts to apply.
@@ -211,15 +248,7 @@ tunnel_set() {
         log_error "Unknown field '$key' for ${TUN[PROTOCOL]} tunnel '$name'."; return 1
     fi
     TUN[$key]="$value"
-    case "${TUN[PROTOCOL]}" in
-        paqet)    paqet_generate_config ;;
-        backhaul) backhaul_generate_config ;;
-        backpack) backpack_generate_config ;;
-        rathole)  rathole_generate_config ;;
-        gost)     gost_generate_config ;;
-        frp)      frp_generate_config ;;
-        hysteria) hysteria_generate_config ;;
-    esac
+    tunnel_generate_config
     save_tunnel
     svc_install "$name"
     agent_firewall ensure 2>/dev/null || true

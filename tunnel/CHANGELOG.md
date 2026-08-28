@@ -5,6 +5,31 @@ All notable changes to this project are documented here. The format is based on
 [Semantic Versioning](https://semver.org/).
 
 
+## [3.9.6] - 2026-08-28
+
+### Fixed
+- **An update changed the code and none of the tunnels.** A driver's config file
+  is written when a tunnel is created or edited, and never again. `tunnelctl
+  update` refreshes the scripts, so a changed default lands in the new code while
+  every existing tunnel keeps running on the file it was born with.
+
+  This is how the smux window fix in 3.9.5 reached no tunnel at all. Measured on a
+  live server afterwards: the kernel ceiling had correctly dropped to 4 MiB and
+  `rb` capped there on every socket, control-channel closures were down to zero in
+  24 hours — and `rcv_rtt` was still 300-2400 ms against an 80 ms `minrtt`,
+  because the queue had simply moved into a userspace smux window that was still
+  2 MiB, exactly as it had been before the release that lowered it.
+
+  `update` now rewrites every tunnel's config from the current defaults and
+  restarts the ones that were running; a stopped tunnel stays stopped. Also
+  available on its own as `tunnelctl regen`.
+
+- **The two places that regenerate a config had already drifted.** Both inlined
+  the same protocol list and they no longer agreed on it. Folded into one
+  `tunnel_generate_config`, so a driver missing from one of them can no longer
+  mean a tunnel that silently keeps stale settings forever.
+
+
 ## [3.9.5] - 2026-08-26
 
 ### Fixed

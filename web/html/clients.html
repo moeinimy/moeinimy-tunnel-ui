@@ -301,17 +301,20 @@
                     </a-tooltip>
                   </template>
 
-                  <!-- Online now is a state; last seen is a fact with a date on it.
-                       Both are shown, because an offline tag on its own never
-                       distinguishes a customer who stopped last night from one who
-                       never connected at all — here the first carries a date and the
-                       second does not, and the column sorts on the number either way. -->
+                  <!-- The column reads as a state at a glance — connected now, or not —
+                       and gives up the date only when asked for it. Putting the date in
+                       the cell made the column as wide as a timestamp and buried the one
+                       thing an operator scans a customer list for.
+                       Click rather than hover: this list gets read on a phone, where
+                       there is no hover and a hover-only tooltip is simply missing. -->
                   <template slot="lastOnline" slot-scope="text, row">
-                    <a-tag v-if="row.online" color="green">{{ i18n "online" }}</a-tag>
-                    <span v-else-if="row.lastOnline" style="white-space: nowrap;">
-                      [[ formatLastOnline(row.lastOnline) ]]
-                    </span>
-                    <a-tag v-else>{{ i18n "offline" }}</a-tag>
+                    <a-popover trigger="click" :overlay-class-name="themeSwitcher.currentTheme">
+                      <template slot="content">
+                        {{ i18n "lastOnline" }}: [[ formatLastOnline(row.lastOnline) ]]
+                      </template>
+                      <a-tag v-if="row.online" color="green" style="cursor: pointer;">{{ i18n "online" }}</a-tag>
+                      <a-tag v-else style="cursor: pointer;">{{ i18n "offline" }}</a-tag>
+                    </a-popover>
                   </template>
 
                   <template slot="enable" slot-scope="text, row">

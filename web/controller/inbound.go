@@ -2252,9 +2252,20 @@ func (a *InboundController) renewClientGroup(c *gin.Context) {
 	// expiry; enforceGroups rewrites the entitlement on its next tick but never the
 	// counters, so a renewal that left them would restore the allowance and cut the
 	// customer off again the moment it was compared to what they had already used.
+	// Reported, not logged. A renewal whose members were not refreshed has sold the
+	// customer nothing: the group row says renewed while every account it covers still
+	// carries the spent quota and the past date. Answering "updated" to that is how a
+	// failed renewal reaches the customer as a working one — the operator has no reason
+	// to look again, and the only trace is a warning in a log nobody reads.
 	if err := a.clientGroupService.RenewMembers(id); err != nil {
 		logger.Warning("renewed group ", id, " but could not refresh its members: ", err)
+		jsonMsg(c, I18nWeb(c, "pages.inbounds.toasts.update"), err)
+		return
 	}
+
+	// The members' entitlement lives in their inbounds' settings, which Xray's config is
+	// built from, so the new terms only reach the running core on a rebuild.
+	a.xrayService.SetToNeedRestart()
 
 	jsonMsg(c, I18nWeb(c, "pages.inbounds.toasts.update"), nil)
 }

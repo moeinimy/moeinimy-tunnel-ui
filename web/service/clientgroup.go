@@ -256,6 +256,16 @@ func (s *ClientGroupService) mirrorToMembers(id int, resetUsage bool) error {
 			Updates(updates).Error; err != nil {
 			return err
 		}
+		// And the source those rows are derived from, in the same transaction, so the
+		// two can never disagree about what the customer bought.
+		var members []string
+		if err := tx.Model(xray.ClientTraffic{}).Where("group_id = ?", id).
+			Pluck("email", &members).Error; err != nil {
+			return err
+		}
+		if err := applyTermsToSettings(tx, members, g.Total, g.ExpiryTime); err != nil {
+			return err
+		}
 		if !g.Enable {
 			return nil
 		}
@@ -411,6 +421,81 @@ func restoreOwnEntitlement(tx *gorm.DB, emails []string) error {
 				}).Error; err != nil {
 				return err
 			}
+		}
+	}
+	return nil
+}
+
+// applyTermsToSettings writes a group's quota and expiry into each member's entry in
+// its inbound's settings JSON.
+//
+// Without this a renewal is invisible. The traffic rows are DERIVED from the settings
+// JSON — restoreOwnEntitlement copies one into the other, and says so: the settings are
+// the only place an account's own figures survive. Renewing wrote the new terms to the
+// derived rows and left the source alone, so the panel went on rendering the expired
+// date and spent quota it reads from the JSON, the generated config went on carrying
+// them, and the customer stayed cut off while the button reported success.
+//
+// enable is deliberately NOT touched. The settings JSON is where the operator's own
+// on/off decision lives, and mirrorToMembers already revives exactly those members that
+// enforcement — rather than the operator — switched off. Writing enable here would
+// resurrect an account somebody had deliberately turned off.
+//
+// Walked in Go, one inbound at a time, for the reason restoreOwnEntitlement documents:
+// an inbound whose settings carry no clients array must be skipped, not allowed to fail
+// the statement for every other account in the transaction.
+func applyTermsToSettings(tx *gorm.DB, emails []string, total, expiryTime int64) error {
+	if len(emails) == 0 {
+		return nil
+	}
+	wanted := make(map[string]bool, len(emails))
+	for _, e := range emails {
+		wanted[e] = true
+	}
+
+	var inbounds []*model.Inbound
+	if err := tx.Model(model.Inbound{}).Find(&inbounds).Error; err != nil {
+		return err
+	}
+
+	for _, inbound := range inbounds {
+		// Decoded generically so every other field of every other client survives the
+		// round trip untouched: a narrow struct here would silently drop whatever it
+		// did not know about, which on this fork is most of what an account carries.
+		var settings map[string]any
+		if err := json.Unmarshal([]byte(inbound.Settings), &settings); err != nil {
+			continue
+		}
+		clients, ok := settings["clients"].([]any)
+		if !ok {
+			continue
+		}
+		changed := false
+		for _, raw := range clients {
+			c, ok := raw.(map[string]any)
+			if !ok {
+				continue
+			}
+			email, _ := c["email"].(string)
+			if email == "" || !wanted[email] {
+				continue
+			}
+			c["totalGB"] = total
+			c["expiryTime"] = expiryTime
+			// A member never carries the renewal period; the group renews itself.
+			c["reset"] = 0
+			changed = true
+		}
+		if !changed {
+			continue
+		}
+		out, merr := json.MarshalIndent(settings, "", "  ")
+		if merr != nil {
+			continue
+		}
+		if err := tx.Model(model.Inbound{}).Where("id = ?", inbound.Id).
+			Update("settings", string(out)).Error; err != nil {
+			return err
 		}
 	}
 	return nil

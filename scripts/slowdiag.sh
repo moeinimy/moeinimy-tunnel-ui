@@ -85,7 +85,38 @@ s "9. FIREWALL SIZE — rules are walked per packet"
 printf 'filter/nat rule counts:\n'
 for t in filter nat mangle; do printf '%-8s %s\n' "$t" "$(iptables -t $t -S 2>/dev/null | wc -l)"; done
 
-s "10. KERNEL COMPLAINTS"
+s "10. IS THE BUFFER CEILING ACTUALLY APPLIED"
+# The fix is only real if the kernel holds it. It has been written correctly and
+# then lost at boot twice, to file ordering, so this reads the live value rather
+# than any file. Third field should be 4194304.
+printf 'tcp_rmem: %s
+' "$(sysctl -n net.ipv4.tcp_rmem 2>/dev/null | tr '	' ' ')"
+printf 'tcp_wmem: %s
+' "$(sysctl -n net.ipv4.tcp_wmem 2>/dev/null | tr '	' ' ')"
+printf 'tunnel version: %s
+' "$(cat /opt/tunnel-manager/VERSION 2>/dev/null || echo '?')"
+printf '
+Who else sets these:
+'
+grep -rn 'tcp_rmem\|tcp_wmem' /etc/sysctl.conf /etc/sysctl.d/ 2>/dev/null
+
+s "11. TUNNEL DROPS — every one of these is a visible outage"
+# A closed control channel tears down the whole connection pool at once, so each
+# line here is every user through the tunnel being disconnected together. This is
+# what "momentary drops" looks like from the relay's side.
+for u in $(systemctl list-units --plain --no-legend 'tm-tunnel-*' 2>/dev/null | awk '{print $1}'); do
+  printf -- '--- %s ---
+' "$u"
+  printf 'control-channel closures, last 24h: %s
+'     "$(journalctl -u "$u" --since '24 hours ago' --no-pager 2>/dev/null | grep -ci 'control channel has been closed')"
+  printf 'client restarts, last 24h:          %s
+'     "$(journalctl -u "$u" --since '24 hours ago' --no-pager 2>/dev/null | grep -ci 'restarting client')"
+  printf 'most recent:
+'
+  journalctl -u "$u" --since '24 hours ago' --no-pager 2>/dev/null     | grep -iE 'control channel has been closed|restarting client' | tail -8
+done
+
+s "12. KERNEL COMPLAINTS"
 dmesg -T 2>/dev/null | tail -25
 } 2>&1 | tee "$OUT"
 

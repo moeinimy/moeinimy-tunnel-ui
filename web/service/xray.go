@@ -541,6 +541,52 @@ func (s *XrayService) GetXrayTraffic() ([]*xray.Traffic, []*xray.ClientTraffic, 
 }
 
 // RestartXray restarts the Xray process, optionally forcing a restart even if config unchanged.
+// xrayStopGrace is how long a SIGTERMed core is given to go away on its own before
+// the reap escalates. Xray closes its listeners promptly; this is generous so a busy
+// box under load is not cut short, and it is only ever waited out in full when the
+// core is genuinely stuck, which is exactly when killing it is right.
+const xrayStopGrace = 5 * time.Second
+
+// waitXrayStopped blocks until our own core is really gone, or the grace expires.
+// Returns whether it went.
+func waitXrayStopped(limit time.Duration) bool {
+	deadline := time.Now().Add(limit)
+	for {
+		if p == nil || !p.IsRunning() {
+			return true
+		}
+		if time.Now().After(deadline) {
+			logger.Warning("Xray did not exit within ", limit, " of SIGTERM; reaping it so the new core can bind its ports")
+			return false
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+}
+
+// waitPidsGone blocks until none of these pids exist any more, or the limit expires.
+// A killed process releases its listening sockets when the kernel tears it down, not
+// when the signal is delivered, so without this the reap is as asynchronous as the
+// Stop it was meant to make safe.
+func waitPidsGone(pids []int, limit time.Duration) {
+	if len(pids) == 0 {
+		return
+	}
+	deadline := time.Now().Add(limit)
+	for {
+		alive := false
+		for _, pid := range pids {
+			if _, err := os.Stat("/proc/" + strconv.Itoa(pid)); err == nil {
+				alive = true
+				break
+			}
+		}
+		if !alive || time.Now().After(deadline) {
+			return
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+}
+
 func (s *XrayService) RestartXray(isForce bool) error {
 	lock.Lock()
 	defer lock.Unlock()
@@ -558,6 +604,18 @@ func (s *XrayService) RestartXray(isForce bool) error {
 			return nil
 		}
 		p.Stop()
+		// Stop() only ASKS: it sends SIGTERM and returns, and IsRunning stays true
+		// until the waiting goroutine reaps the process. Everything below assumed the
+		// core was already gone, and neither step survived that being false — the reap
+		// returns immediately while a process of ours is still up, and Start() then
+		// binds ports the dying one still holds. That is the daily
+		//
+		//	Failed to start: listen tcp 127.0.0.1:21111: bind: address already in use
+		//
+		// on the API port, after which the core stays down until somebody restarts the
+		// panel: restarting the PANEL works only because it comes up with p == nil, so
+		// the reap below is allowed to run for once.
+		waitXrayStopped(xrayStopGrace)
 	}
 
 	// Anything of ours still holding a port, now that our own process is stopped.
@@ -606,9 +664,15 @@ func (s *XrayService) StopXray() error {
 // MUST be called at startup BEFORE the first RestartXray, while p is still nil, so it
 // can only ever match an orphan — never the Xray we manage.
 func (s *XrayService) ReapOrphanXray() {
+	// Guarded on OUR process still being up, not on the port being busy: everything
+	// from this directory is a leftover once ours is down. RestartXray waits for that
+	// to become true before calling here — it used to call straight after Stop(), when
+	// this was still true, so the reap quietly did nothing at the one moment it was
+	// needed.
 	if s.IsXrayRunning() {
 		return
 	}
+	var killed []int
 	// Our working directory. Xray inherits the panel's cwd, so we match orphaned xray
 	// processes by cwd == ours: a coexisting upstream x-ui's xray runs from a different
 	// dir and is never touched. We deliberately do NOT match /proc/<pid>/exe — the core
@@ -644,8 +708,12 @@ func (s *XrayService) ReapOrphanXray() {
 		logger.Warning("reaping orphaned Xray holding its ports before start (e.g. from a self-update re-exec): pid", pid)
 		if proc, err := os.FindProcess(pid); err == nil {
 			_ = proc.Kill()
+			killed = append(killed, pid)
 		}
 	}
+	// The ports are released when the kernel tears the process down, not when SIGKILL
+	// is delivered. Returning before that hands the caller a port it cannot bind.
+	waitPidsGone(killed, xrayStopGrace)
 }
 
 // SetToNeedRestart marks that Xray needs to be restarted.

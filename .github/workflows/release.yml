@@ -38,13 +38,13 @@ jobs:
       # The static VPN daemon bundle (libreswan/strongswan/accel-ppp/ocserv, built
       # in Docker) is slow but deterministic — cache it so iteration builds skip it.
       - name: Cache daemon bundle
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: backend/bin
           key: daemon-bundle-${{ hashFiles('build/backend/**') }}
 
       - name: Cache Xray core + geo
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: corebundle/core
           key: xray-core-${{ hashFiles('build/core/**') }}

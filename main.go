@@ -291,7 +291,7 @@ func runWebServer() {
 
 	sigCh := make(chan os.Signal, 1)
 	// Trap shutdown signals
-	signal.Notify(sigCh, syscall.SIGHUP, syscall.SIGTERM, sys.SIGUSR1)
+	signal.Notify(sigCh, syscall.SIGHUP, syscall.SIGTERM, sys.SIGUSR1, sys.SIGUSR2)
 	for {
 		sig := <-sigCh
 
@@ -335,6 +335,23 @@ func runWebServer() {
 			if err != nil {
 				logger.Error("Failed to restart xray-core:", err)
 			}
+
+		case sys.SIGUSR2:
+			// Every goroutine's stack, into the log, while the panel is still wedged.
+			//
+			// This is the reading that a restart destroys. A panel that has stopped
+			// doing its work looks identical from outside to one that is fine — same
+			// process, same web UI answering — and restarting it is both the fix and
+			// the end of any chance of finding out why. So: ask it what it is doing
+			// FIRST, then restart.
+			//
+			// Sized to fit the whole dump rather than a truncated one, since a stack
+			// cut off at the interesting frame is worth nothing.
+			buf := make([]byte, 4<<20)
+			n := runtime.Stack(buf, true)
+			logger.Warning("Received USR2 signal — dumping ", runtime.NumGoroutine(),
+				" goroutine stacks below. Anything blocked in a Lock, a DB call or an"+
+					" HTTP round trip is what has stopped this panel working:\n"+string(buf[:n]))
 
 		default:
 			// --- FIX FOR TELEGRAM BOT CONFLICT (409) on full shutdown ---

@@ -16,6 +16,13 @@ import (
 
 var SIGUSR1 = syscall.SIGUSR1
 
+// SIGUSR2 asks a RUNNING panel to dump every goroutine stack to its log.
+// USR1 is already restart-xray, and the question this answers is a different
+// one: not "please act" but "what are you stuck on". It exists because a wedged
+// panel is indistinguishable from a healthy one from the outside — the web UI
+// still answers, the process is still up, and only the work stops.
+var SIGUSR2 = syscall.SIGUSR2
+
 func getLinesNum(filename string) (int, error) {
 	file, err := os.Open(filename)
 	if err != nil {

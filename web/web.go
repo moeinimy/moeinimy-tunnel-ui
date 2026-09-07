@@ -371,6 +371,16 @@ func (s *Server) startTask() {
 	// edits is still one restart.
 	s.cron.AddFunc("@every 1s", func() {
 		if s.xrayService.IsRestartDueAndSetFalse() {
+			// Said out loud, at a level that is actually on in production. An Xray
+			// restart drops every live connection on the box, so this line is the
+			// start of an outage for every customer — and until now the only trace of
+			// it was a Debug line nobody sees, which is why an operator watching
+			// connections die hourly had nothing to correlate them against.
+			//
+			// RestartXray still returns early when the generated config is unchanged,
+			// so this only prints when something really is about to be applied.
+			logger.Warning("applying a pending Xray restart — every live connection will drop; " +
+				"the enforcement counts logged just before this say what asked for it")
 			err := s.xrayService.RestartXray(false)
 			if err != nil {
 				logger.Error("restart xray failed:", err)

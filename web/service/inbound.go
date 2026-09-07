@@ -2543,21 +2543,21 @@ func (s *InboundService) AddTraffic(inboundTraffics []*xray.Traffic, clientTraff
 	if err != nil {
 		logger.Warning("Error in renew clients:", err)
 	} else if count > 0 {
-		logger.Debugf("%v clients renewed", count)
+		logger.Infof("%v client(s) renewed by their reset period — Xray restarts to apply this", count)
 	}
 
 	needRestart1, count, l2tpDisabledEmails, pptpDisabledEmails, ovpnDisabledEmails, err := s.disableInvalidClients(tx)
 	if err != nil {
 		logger.Warning("Error in disabling invalid clients:", err)
 	} else if count > 0 {
-		logger.Debugf("%v clients disabled", count)
+		logger.Infof("%v client(s) disabled on quota or expiry — Xray restarts to apply this, dropping every live connection", count)
 	}
 
 	needRestart2, count, err := s.disableInvalidInbounds(tx)
 	if err != nil {
 		logger.Warning("Error in disabling invalid inbounds:", err)
 	} else if count > 0 {
-		logger.Debugf("%v inbounds disabled", count)
+		logger.Infof("%v inbound(s) disabled on quota or expiry — Xray restarts to apply this", count)
 	}
 	return nil, (needRestartGroups || needRestart0 || needRestart1 || needRestart2), l2tpDisabledEmails, pptpDisabledEmails, ovpnDisabledEmails
 }

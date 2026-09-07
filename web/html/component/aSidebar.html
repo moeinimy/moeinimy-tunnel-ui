@@ -24,6 +24,16 @@
         </div>
 
         <div class="bo-rail-foot">
+            {{ if .perms.superAdmin }}
+            <!-- Here rather than only in Settings, where it already lived, because the
+                 moment it is wanted is an outage: the panel is misbehaving, and the
+                 alternative was an SSH session and the CLI menu. A control for that
+                 has to be on every page, not two clicks into a form. -->
+            <button type="button" class="bo-rail-collapse" @click="restartPanel"
+                :aria-label="restartLabel" :title="restartLabel">
+                <a-icon type="reload"></a-icon>
+            </button>
+            {{ end }}
             <a-theme-switch></a-theme-switch>
             <button type="button" class="bo-rail-collapse" @click="toggleCollapse"
                 :aria-expanded="!collapsed" :aria-label="collapsed ? expandLabel : collapseLabel"
@@ -124,6 +134,7 @@
                 collapsed: JSON.parse(localStorage.getItem(SIDEBAR_COLLAPSED_KEY)) === true,
                 collapseLabel: '{{ i18n "menu.collapse"}}',
                 expandLabel: '{{ i18n "menu.expand"}}',
+                restartLabel: '{{ i18n "pages.settings.restartPanel"}}',
             }
         },
         methods: {
@@ -139,6 +150,27 @@
                 return key.startsWith('http') ?
                     window.open(key) :
                     location.href = key
+            },
+            // Deliberately does NOT wait for the panel to come back or redirect
+            // anywhere. Settings does that because it may have just changed the port
+            // or the base path and has to follow the panel to its new address; from
+            // here nothing has changed, and a redirect race would only replace a
+            // working page with a broken one while the service is still down.
+            async restartPanel() {
+                await new Promise(resolve => {
+                    this.$confirm({
+                        title: '{{ i18n "pages.settings.restartPanel" }}',
+                        content: '{{ i18n "pages.settings.restartPanelDesc" }}',
+                        class: themeSwitcher.currentTheme,
+                        okText: '{{ i18n "sure" }}',
+                        cancelText: '{{ i18n "cancel" }}',
+                        onOk: () => resolve(),
+                    });
+                });
+                const msg = await HttpUtil.post("/panel/setting/restartPanel");
+                if (msg && msg.success) {
+                    this.$message.success('{{ i18n "pages.settings.restartPanelSuccess" }}');
+                }
             },
             toggleCollapse() {
                 this.collapsed = !this.collapsed;

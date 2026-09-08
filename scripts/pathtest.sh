@@ -64,16 +64,11 @@ case "$MODE" in
     PORT="${2:-5201}"
     echo "link the NIC claims:"; link_speed
     echo
-    # python3 rather than nc. The netcat that ships on these distros comes in
-    # flavours that disagree about whether "-l -p PORT" is even legal, and picking
-    # the wrong one leaves a listener that accepts and sends nothing — which is
-    # indistinguishable from a dead link at the far end, and cost two rounds here.
-    # python3 is on both boxes and behaves the same on both.
-    if have python3; then
-        echo "serving on $PORT (python3). Leave this running."
-        python3 - "$PORT" "$MB" <<'PYEOF'
+    have python3 || { echo "python3 not found — install python3"; exit 1; }
+    echo "serving on $PORT. Leave this running."
+    python3 - "$PORT" <<'PYEOF'
 import socket, sys
-port, mb = int(sys.argv[1]), int(sys.argv[2])
+port = int(sys.argv[1])
 srv = socket.socket(); srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
 srv.bind(("0.0.0.0", port)); srv.listen(8)
 print("  listening on %d — waiting for the other box" % port, flush=True)
@@ -81,66 +76,68 @@ chunk = b"x" * (1 << 20)
 while True:
     conn, addr = srv.accept()
     print("  client connected: %s" % (addr,), flush=True)
+    sent = 0
     try:
-        for _ in range(mb):
-            conn.sendall(chunk)
-        print("  sent %d MB" % mb, flush=True)
-    except Exception as e:
-        print("  client went away: %s" % e, flush=True)
+        # Send until the client has had enough and closes. The client decides when
+        # to stop, because it is the one timing the measurement — a fixed byte count
+        # here cannot finish at all on a link slow enough to be worth measuring.
+        while True:
+            conn.sendall(chunk); sent += len(chunk)
+    except Exception:
+        pass
     finally:
         conn.close()
+        print("  client done after %d MB — re-listening" % (sent >> 20), flush=True)
 PYEOF
-    else
-        echo "python3 not found; falling back to nc"
-        have nc || { echo "no python3 and no nc — install one"; exit 1; }
-        while :; do dd if=/dev/zero bs=1M count="$MB" 2>/dev/null | nc -l "$PORT" >/dev/null 2>&1; echo "  … served one run"; done
-    fi
     ;;
 
   test)
-    HOST="${2:-}"; PORT="${3:-5201}"
+    HOST="${2:-}"; PORT="${3:-5201}"; SECS="${SECS:-15}"
     [[ -n "$HOST" ]] || { echo "usage: $0 test <foreign-ip> [port]"; exit 1; }
+    have python3 || { echo "python3 not found — install python3"; exit 1; }
     echo "link the NIC claims:"; link_speed
     echo
-    echo "pulling up to ${MB} MB from ${HOST}:${PORT}, no tunnel in the path…"
-    if have python3; then
-        python3 - "$HOST" "$PORT" <<'PYEOF'
+    echo "measuring for ${SECS}s against ${HOST}:${PORT}, no tunnel in the path…"
+    python3 - "$HOST" "$PORT" "$SECS" <<'PYEOF'
 import socket, sys, time
-host, port = sys.argv[1], int(sys.argv[2])
+host, port, secs = sys.argv[1], int(sys.argv[2]), float(sys.argv[3])
+# Timed, not sized. The previous version pulled a fixed 300 MB, which on a link
+# slow enough to be the thing under investigation simply never finished and
+# reported nothing at all — measuring by volume when volume-per-second is the
+# unknown. A fixed window always produces an answer, however slow the link.
 try:
     s = socket.create_connection((host, port), timeout=20)
 except Exception as e:
     print("\n  FAILED to connect: %s" % e)
-    print("  Is 'pathtest.sh serve' running on that box, and the port open to this one?")
+    print("  Is 'pathtest.sh serve' running there, and the port open to this box?")
     sys.exit(1)
-s.settimeout(30)
-t0 = time.time(); n = 0
+s.settimeout(5)
+t0 = time.time(); n = 0; last = t0; lastn = 0
 try:
-    while True:
+    while time.time() - t0 < secs:
         b = s.recv(1 << 20)
         if not b:
             break
         n += len(b)
+        now = time.time()
+        if now - last >= 1.0:
+            d = now - last
+            print("    %5.1fs  %8.2f MB/s   %7.1f Mbit/s" %
+                  (now - t0, (n - lastn) / 1048576 / d, (n - lastn) * 8 / d / 1e6), flush=True)
+            last = now; lastn = n
 except socket.timeout:
-    print("  (stalled — reporting what arrived)")
-except Exception:
-    pass
+    print("    (no data for 5s — stalled)")
+except Exception as e:
+    print("    (stopped: %s)" % e)
+s.close()
 d = time.time() - t0
-if n < (1 << 20) or d <= 0:
-    print("\n  FAILED — only %d bytes arrived." % n)
-    print("  Start 'pathtest.sh serve' on the other box and run this again.")
+if n == 0:
+    print("\n  FAILED — connected but received nothing.")
     sys.exit(1)
-print("\n  RAW LINK: %.2f MB/s  =  %.1f Mbit/s   (%.0f MB in %.1fs)"
-      % (n/1048576/d, n*8/d/1e6, n/1048576, d))
+print("\n  RAW LINK over %.1fs: %.2f MB/s = %.1f Mbit/s   (%.1f MB total)"
+      % (d, n/1048576/d, n*8/d/1e6, n/1048576))
 PYEOF
-    else
-        have nc || { echo "no python3 and no nc — install one"; exit 1; }
-        t0=$(date +%s.%N); bytes="$(timeout 180 nc "$HOST" "$PORT" 2>/dev/null | wc -c)"; t1=$(date +%s.%N)
-        [[ "${bytes:-0}" -lt 1048576 ]] && { echo "  FAILED — only ${bytes:-0} bytes arrived."; exit 1; }
-        report "$bytes" "$(awk -v a="$t0" -v b="$t1" 'BEGIN{printf "%.3f", b-a}')"
-    fi
     ;;
-
   *)
     echo "usage:"
     echo "  on the IRAN box (easiest, no setup):  $0 ssh root@<foreign-ip>"

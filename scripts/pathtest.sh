@@ -73,7 +73,7 @@ case "$MODE" in
         else
             dd if=/dev/zero bs=1M count="$MB" 2>/dev/null | nc -l "$PORT" >/dev/null 2>&1
         fi
-        echo "  … served one run"
+        echo "  … served one run at $(date +%H:%M:%S) — re-listening"
     done
     ;;
 
@@ -83,25 +83,28 @@ case "$MODE" in
     have nc || { echo "nc not installed — apt-get install -y netcat-openbsd, or use: $0 ssh root@$HOST"; exit 1; }
     echo "link the NIC claims:"; link_speed
     echo
-    # Reach the port BEFORE transferring. The previous version simply hung here with
-    # no output, which is indistinguishable from a dead link and is the same fault as
-    # every other tool in this investigation: silence that gets read as a result.
-    printf 'can this box open %s:%s ? ' "$HOST" "$PORT"
-    if ! timeout 10 bash -c "cat < /dev/null > /dev/tcp/$HOST/$PORT" 2>/dev/null; then
-        echo "NO"
-        echo
-        echo "  Nothing is accepting on $HOST:$PORT. Either 'pathtest.sh serve' is not"
-        echo "  running there, or a firewall drops it. On the foreign box:"
-        echo "      ufw allow from \$(curl -s ifconfig.me) to any port $PORT proto tcp"
-        echo "  Or skip all of this and use:  $0 ssh root@$HOST"
-        exit 1
-    fi
-    echo "yes"
+    # No separate reachability probe. The previous version opened a connection just
+    # to check the port, and the server answers ONE connection per run — so the probe
+    # ate the transfer and the real attempt landed in the gap before the next listen.
+    # It reported "yes" and then zero bytes, which is a tool inventing its own
+    # failure. The transfer proves reachability by arriving; that is the whole test.
     echo "pulling ${MB} MB with no tunnel in the path…"
     t0=$(date +%s.%N)
     bytes="$(timeout 180 nc "$HOST" "$PORT" 2>/dev/null | wc -c)"
     t1=$(date +%s.%N)
-    [[ "${bytes:-0}" -lt 1048576 ]] && { echo "  FAILED — only ${bytes:-0} bytes arrived."; exit 1; }
+    if [[ "${bytes:-0}" -lt 1048576 ]]; then
+        echo
+        echo "  FAILED — only ${bytes:-0} bytes arrived."
+        echo
+        echo "  Check, in this order:"
+        echo "    1. 'pathtest.sh serve' is running on $HOST RIGHT NOW. It serves one"
+        echo "       connection per run, so start it fresh and run this immediately."
+        echo "    2. The port is open to this box:"
+        echo "         ufw allow from $(ip route get 1.1.1.1 2>/dev/null | grep -oE 'src [0-9.]+' | awk '{print $2}') to any port $PORT proto tcp"
+        echo "    3. netcat is the same flavour on both ends; if serve logs errors,"
+        echo "       install netcat-openbsd on both."
+        exit 1
+    fi
     report "$bytes" "$(awk -v a="$t0" -v b="$t1" 'BEGIN{printf "%.3f", b-a}')"
     ;;
 

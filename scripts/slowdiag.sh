@@ -158,6 +158,45 @@ for f in /etc/tunnel-manager/backhaul/*.toml /etc/tunnel-manager/backpack/*.toml
   grep -E 'mux|transport|connection_pool|channel_size|heartbeat|keepalive' "$f" 2>/dev/null
 done
 
+s "10c. WHAT OUR OWN SETTINGS CEILING US AT, AT THIS PATH'S RTT"
+# Every window is a rate limit: bytes in flight = rate x RTT, so ceiling = window/RTT.
+# A setting chosen on a bad night becomes a cap on a good one, and nothing in this
+# report used to say so — a 256 KiB window silently held this link to 17.5 Mbit/s
+# for a day while loss, MSS and transport were blamed in turn. Never again silently.
+RTT_MS="$(ss -tin state established "( sport = :$TUNPORT or dport = :$TUNPORT )" 2>/dev/null           | grep -oE 'minrtt:[0-9.]+' | cut -d: -f2 | sort -n | head -1)"
+[[ -z "$RTT_MS" ]] && RTT_MS=120 && echo "  (no live tunnel socket; assuming 120 ms)"
+echo "  path RTT used: ${RTT_MS} ms"
+echo
+
+ceil() { awk -v b="$1" -v r="$RTT_MS" 'BEGIN{ if(b+0>0 && r+0>0) printf "%.0f Mbit/s", b*8/(r/1000)/1e6; else print "n/a" }'; }
+
+KRMEM="$(sysctl -n net.ipv4.tcp_rmem 2>/dev/null | awk '{print $3}')"
+printf '  %-42s %-12s -> %s per connection
+' "kernel tcp_rmem max" "$KRMEM" "$(ceil "$KRMEM")"
+
+for f in /etc/tunnel-manager/*/*.toml; do
+    [[ -f "$f" ]] || continue
+    nm="$(basename "$f" .toml)"
+    sb="$(grep -oE 'mux_streambuffer[[:space:]]*=[[:space:]]*[0-9]+' "$f" 2>/dev/null | grep -oE '[0-9]+$')"
+    rb="$(grep -oE 'mux_recievebuffer[[:space:]]*=[[:space:]]*[0-9]+' "$f" 2>/dev/null | grep -oE '[0-9]+$')"
+    cp="$(grep -oE 'connection_pool[[:space:]]*=[[:space:]]*[0-9]+' "$f" 2>/dev/null | grep -oE '[0-9]+$')"
+    [[ -n "$sb" ]] && printf '  %-42s %-12s -> %s per stream
+'     "$nm mux_streambuffer"  "$sb" "$(ceil "$sb")"
+    [[ -n "$rb" ]] && printf '  %-42s %-12s -> %s per connection
+' "$nm mux_recievebuffer" "$rb" "$(ceil "$rb")"
+    if [[ -n "$cp" ]]; then
+        # The pool multiplies: aggregate is per-connection ceiling x pool size, and on
+        # a lossy path the per-connection figure is set by loss, not by these windows.
+        printf '  %-42s %-12s -> multiplies the per-connection figure above
+' "$nm connection_pool" "$cp"
+    fi
+done
+echo
+echo "  Read these as: the LOWEST number here is your ceiling for that shape of traffic."
+echo "  One user's single download is capped by the per-stream line; the tunnel as a"
+echo "  whole by per-connection x pool. If a measured rate sits on one of these, the"
+echo "  setting is the limit — not the link, and not the path."
+
 s "11. TUNNEL DROPS — every one of these is a visible outage"
 # A closed control channel tears down the whole connection pool at once, so each
 # line here is every user through the tunnel being disconnected together. This is

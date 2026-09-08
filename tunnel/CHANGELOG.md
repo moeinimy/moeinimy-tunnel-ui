@@ -5,6 +5,36 @@ All notable changes to this project are documented here. The format is based on
 [Semantic Versioning](https://semver.org/).
 
 
+## [3.9.11] - 2026-09-08
+
+### Fixed
+- **The smux windows were a rate ceiling, and they were set below the link.**
+  3.9.5 cut `mux_streambuffer` to 256 KiB and `mux_recievebuffer` to 2 MiB to stop
+  a window becoming a queue. The principle was right; the arithmetic was never
+  done. Bytes in flight = rate x RTT, so a window IS a maximum rate, and at the
+  120 ms measured on this path 256 KiB cannot exceed 17.5 Mbit/s however much
+  bandwidth exists.
+
+  The tunnel was then measured carrying 20 Mbit/s across 365 connections. It was
+  sitting on this ceiling. Every other explanation pursued that day — packet loss,
+  head-of-line blocking, transport choice, connection pool size — was reasoning
+  about a link that had been capped here the whole time, by a change made to fix
+  something else.
+
+      window / RTT = ceiling     256 KiB / 0.120 s ->  17.5 Mbit/s   (was)
+                                   1 MiB / 0.120 s ->  69.9 Mbit/s   (now)
+
+  Sized from the bandwidth-delay product of the path this tool exists to cross:
+  1 MiB per stream, 4 MiB per connection, matching the kernel ceiling. Both stay
+  far below the multi-megabyte windows that caused the original bufferbloat, and
+  both are overridable in settings.conf for a path with a very different RTT.
+
+  These values reach the config only on a `*mux` transport. A tunnel switched to
+  plain `tcp` writes no window settings at all — and gives every user connection
+  its own slow start across the same 120 ms — so a tunnel moved off multiplexing
+  to work around this ceiling should be moved back.
+
+
 ## [3.9.10] - 2026-09-08
 
 ### Fixed

@@ -52,8 +52,27 @@ bh_pool() {
 # more than one user connection ever asks for, and four times the ~5.8 Mbit the
 # upstream 64 KiB default was raised to fix. Raise them for a path that genuinely
 # needs it, but size from the BDP of ONE stream, not from the link.
-: "${TM_BH_STREAM_BUF:=262144}"        # 256 KiB per-stream window
-: "${TM_BH_RECV_BUF:=2097152}"         # 2 MiB per-connection window
+# Sized from the BANDWIDTH-DELAY PRODUCT of the path this tool exists to cross,
+# which is the step the previous values skipped.
+#
+# A window is a queue, so an oversized one buries latency under a backlog — that
+# part was right, and it is why these are not simply set huge. What was wrong was
+# picking the number without reference to the RTT. Bytes in flight = rate x RTT, so
+# a window IS a rate ceiling: at the 120 ms measured on this Iran path, a 256 KiB
+# stream window cannot exceed 17.5 Mbit/s no matter how much bandwidth exists.
+#
+# The tunnel was measured moving 20 Mbit/s. It was sitting on this ceiling, and
+# every other explanation chased that day — loss, head-of-line blocking, transport
+# choice — was looking at a link that had been capped here all along.
+#
+#   window / RTT = ceiling      262144 B / 0.120 s -> 17.5 Mbit/s   (was)
+#                              1048576 B / 0.120 s -> 69.9 Mbit/s   (now)
+#
+# 1 MiB leaves headroom over anything this link carries while staying far below
+# the multi-megabyte windows that caused the bufferbloat this was cut to fix.
+# Override both in settings.conf for a path with a very different RTT.
+: "${TM_BH_STREAM_BUF:=1048576}"       # 1 MiB per-stream window -> ~70 Mbit/s at 120 ms
+: "${TM_BH_RECV_BUF:=4194304}"         # 4 MiB per-connection window, matching the kernel ceiling
 
 : "${BACKHAUL_REPO:=Musixal/Backhaul}"
 : "${BACKHAUL_DEFAULT_VERSION:=v0.7.2}"

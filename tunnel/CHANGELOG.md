@@ -5,6 +5,26 @@ All notable changes to this project are documented here. The format is based on
 [Semantic Versioning](https://semver.org/).
 
 
+## [3.9.10] - 2026-09-08
+
+### Fixed
+- **The connection pool ignored the transport it was pooling for.** It was fixed
+  at 16 regardless. On a `*mux` transport those 16 connections carry
+  `16 x mux_con` streams, so 16 is ample; on plain `tcp` every user connection
+  needs one of its own, and anything the pool cannot cover pays a full handshake.
+
+  Measured on a live relay after switching a lossy tunnel to plain `tcp`: 1588
+  concurrent connections against a pool of 16, so 1% could be served warm. The
+  path loses 10% at 120 ms, and either the SYN or the SYN-ACK going missing costs
+  an initial RTO of a full second — 19% of cold connections stalling a second or
+  more before a byte moves. That is why dropping multiplexing removed head-of-line
+  blocking and the link still did not feel faster: the stall moved from mid-stream
+  to connection setup, where it is more visible, not less.
+
+  The default is now 128 for non-multiplexed transports and stays 16 for `*mux`.
+  `TM_BH_POOL` in settings.conf still overrides both.
+
+
 ## [3.9.9] - 2026-09-08
 
 ### Fixed

@@ -17,7 +17,30 @@
 # Same per-stream sizing as the BackPack driver: smux caps a stream at
 # window/RTT, and the upstream 64 KiB default means ~5.8 Mbit per stream on a
 # 90 ms path no matter how much bandwidth exists. Override in settings.conf.
-: "${TM_BH_POOL:=16}"
+# Left EMPTY so the default can depend on the transport, which it must: the pool is
+# a warm reserve of established connections, and what 16 of them buys depends
+# entirely on whether streams are multiplexed onto them.
+#
+# On a *mux transport 16 connections carry 16 x mux_con streams, so 16 is ample. On
+# plain tcp each user connection needs one of its own, and anything the pool cannot
+# cover pays a full handshake — across a path that, measured here, loses 10% at
+# 120 ms. Either the SYN or the SYN-ACK going missing costs an initial RTO of a
+# full second, so 19% of cold connections stall for a second or more before a byte
+# moves. Against 1588 concurrent connections a pool of 16 covered 1% of them, which
+# is why switching off multiplexing removed head-of-line blocking without the link
+# feeling any faster: the stall moved from mid-stream to connection setup.
+#
+# Set TM_BH_POOL in settings.conf to override either default.
+: "${TM_BH_POOL:=}"
+
+# bh_pool — pool size to write, given the transport actually in play.
+bh_pool() {
+    [[ -n "${TM_BH_POOL:-}" ]] && { printf '%s' "$TM_BH_POOL"; return; }
+    case "${TUN[BH_TRANSPORT]:-}" in
+        *mux) printf '16'  ;;
+        *)    printf '128' ;;
+    esac
+}
 # Sized DOWN from 2 MiB / 8 MiB after the same buffer fault the kernel ceilings
 # had (see modules/optimize.sh): a window is a queue, and a per-stream window is a
 # queue multiplied by however many streams are live. The original figures came
@@ -174,7 +197,7 @@ backhaul_generate_config() {
             printf 'remote_addr = "%s:%s"\n' "${TUN[REMOTE_IP]}" "${TUN[BH_PORT]}"
             printf 'transport = "%s"\n' "${TUN[BH_TRANSPORT]}"
             printf 'token = "%s"\n' "${TUN[BH_TOKEN]}"
-            printf 'connection_pool = %s\n' "$TM_BH_POOL"
+            printf 'connection_pool = %s\n' "$(bh_pool)"
             printf 'aggressive_pool = false\n'
             printf 'keepalive_period = 75\n'
             printf 'nodelay = true\n'

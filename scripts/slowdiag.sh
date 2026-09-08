@@ -100,6 +100,18 @@ Who else sets these:
 '
 grep -rn 'tcp_rmem\|tcp_wmem' /etc/sysctl.conf /etc/sysctl.d/ 2>/dev/null
 
+s "10b. THE TUNNEL'S OWN BUFFERS — the layer the kernel ceiling does not cover"
+# A driver default only reaches a tunnel when its config is REGENERATED. Updating
+# the scripts does not do that, which is how the 3.9.5 smux fix reached no tunnel
+# at all and the queue simply moved from the kernel into userspace. So read the
+# files the daemons are actually running, not the defaults in the code.
+# Want: mux_streambuffer 262144, mux_recievebuffer 2097152 (tunnel >= 3.9.6).
+for f in /etc/tunnel-manager/backhaul/*.toml /etc/tunnel-manager/backpack/*.toml; do
+  [ -f "$f" ] || continue
+  printf -- '--- %s ---\n' "$f"
+  grep -E 'mux|transport|connection_pool|channel_size|heartbeat|keepalive' "$f" 2>/dev/null
+done
+
 s "11. TUNNEL DROPS — every one of these is a visible outage"
 # A closed control channel tears down the whole connection pool at once, so each
 # line here is every user through the tunnel being disconnected together. This is

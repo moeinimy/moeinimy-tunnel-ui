@@ -192,7 +192,31 @@ tunnel_edit() {
 # used to inline this list had already drifted apart in the order they wrote it,
 # and a driver missing from one of them is a tunnel that silently keeps stale
 # settings forever.
+# tunnel_normalize — re-derive fields that DEPEND on another field's value.
+#
+# The interactive add flow derives these as it asks, so they were only ever right
+# on a freshly-created tunnel. A later `set` assigns the one key it was given and
+# regenerates, which left a config claiming settings the transport no longer uses:
+# switching backhaul off a *mux transport kept mux_con = 8 in the file. Harmless
+# to the daemon, which ignores it, but a config that misreports what is in effect
+# is how an operator — or a diagnosis — ends up reasoning about the wrong system.
+#
+# Called from every path that changes a field, so the derivation lives in one
+# place rather than only inside the flow that happened to ask the questions.
+tunnel_normalize() {
+    case "${TUN[PROTOCOL]}" in
+        backhaul)
+            # Multiplexing settings mean nothing outside the *mux transports.
+            case "${TUN[BH_TRANSPORT]:-}" in
+                *mux) [[ -n "${TUN[BH_MUX]:-}" ]] || TUN[BH_MUX]=8 ;;
+                *)    TUN[BH_MUX]="" ;;
+            esac
+            ;;
+    esac
+}
+
 tunnel_generate_config() {
+    tunnel_normalize
     case "${TUN[PROTOCOL]}" in
         paqet)    paqet_generate_config ;;
         backhaul) backhaul_generate_config ;;

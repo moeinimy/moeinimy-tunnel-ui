@@ -5,6 +5,20 @@ All notable changes to this project are documented here. The format is based on
 [Semantic Versioning](https://semver.org/).
 
 
+## [3.9.9] - 2026-09-08
+
+### Fixed
+- **A changed field left the config claiming settings that no longer applied.**
+  The interactive add flow derives dependent fields as it asks, so they were only
+  ever correct on a freshly-created tunnel. `tunnel set` assigns the one key it is
+  given and regenerates, so switching backhaul off a `*mux` transport kept
+  `mux_con = 8` in the written file. The daemon ignores it, but a config that
+  misreports what is in effect is how an operator — or a diagnosis — ends up
+  reasoning about the wrong system, which has cost this project several rounds
+  already. Derivation now runs on every config write, from one place, rather than
+  only inside the flow that happened to ask the questions.
+
+
 ## [3.9.8] - 2026-09-08
 
 ### Fixed

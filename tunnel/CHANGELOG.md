@@ -5,6 +5,27 @@ All notable changes to this project are documented here. The format is based on
 [Semantic Versioning](https://semver.org/).
 
 
+## [3.9.12] - 2026-09-09
+
+### Fixed
+- **The connection pool is the throughput knob on a lossy path, and it was sized
+  as if it were a warm reserve.** Measured Iran to foreign, with no tunnel in the
+  path: one TCP connection carried 4.6 Mbit/s, and eight in parallel carried
+  37.0 — linear, 8.0x. A single stream's rate is bounded by window/RTT and by loss
+  collapsing that window, so the way past it is more connections, not a bigger
+  anything. Every knob turned before this was trying to make one stream faster on a
+  path that will not allow it.
+
+  The tunnel was carrying 20 Mbit/s, roughly four connections' worth, against a
+  pool of 16 whose ceiling was ~74 Mbit/s. The default is now 64 for `*mux`
+  transports — a ~294 Mbit/s ceiling — so the real link is the limit rather than
+  this number. It costs 64 idle sockets per side, and `TM_BH_POOL` still overrides.
+
+  This is also the correction to a day of reasoning: loss, MSS, window sizes and
+  transport choice were all investigated as reasons one stream was slow, when the
+  path had been saying all along that one stream is simply not how you use it.
+
+
 ## [3.9.11] - 2026-09-08
 
 ### Fixed

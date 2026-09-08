@@ -37,7 +37,22 @@
 bh_pool() {
     [[ -n "${TM_BH_POOL:-}" ]] && { printf '%s' "$TM_BH_POOL"; return; }
     case "${TUN[BH_TRANSPORT]:-}" in
-        *mux) printf '16'  ;;
+        # 16 was chosen when the pool looked like a warm reserve — somewhere to take a
+        # ready connection from so a new stream skips the handshake. On a long lossy
+        # path it is not that. It is the throughput knob, and the only one.
+        #
+        # Measured Iran->foreign: ONE tcp connection carried 4.6 Mbit/s, and eight in
+        # parallel carried 37.0 — dead linear, 8.0x. A single stream's rate is capped
+        # by window/RTT and by loss collapsing that window, so the way past it is more
+        # connections, not bigger anything. The tunnel was moving 20 Mbit/s, which is
+        # about four connections' worth: the pool of 16 was never the binding limit,
+        # but it is what caps the ceiling once the tunnel does use them.
+        #
+        #   pool 16 -> ~74 Mbit/s ceiling      pool 64 -> ~294 Mbit/s
+        #
+        # 64 leaves the real link as the limit rather than this number, which is where
+        # the limit belongs. It costs 64 idle sockets on each side.
+        *mux) printf '64'  ;;
         *)    printf '128' ;;
     esac
 }

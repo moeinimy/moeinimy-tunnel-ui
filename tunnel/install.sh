@@ -22,9 +22,23 @@ if [[ ! -f "$SRC_DIR/tunnelctl" ]]; then
     : "${TM_BRANCH:=main}"
     echo "Fetching Tunnel Manager source from $TM_REPO ($TM_BRANCH)…"
     _tmp="$(mktemp -d)"
-    if ! curl -fsSL --max-time 120 -o "$_tmp/src.tar.gz" \
-        "https://github.com/${TM_REPO}/archive/refs/heads/${TM_BRANCH}.tar.gz"; then
-        echo "ERROR: could not download source. Set TM_REPO to your repository." >&2
+    # Same reasoning as tm_fetch in lib/common.sh, inline because the bootstrap is
+    # what fetches that library. No flat deadline: give up on a transfer that has
+    # STALLED, not on one that is merely slow. A throttled link measured at 23 KB/s
+    # needs about four minutes for this archive, so the old 120s cap meant such a
+    # node could never install or update at all — it failed at the same 2.7 MB every
+    # time, however often it was retried.
+    _url="https://github.com/${TM_REPO}/archive/refs/heads/${TM_BRANCH}.tar.gz"
+    _ok=0
+    for _pfx in "" ${TM_DOWNLOAD_MIRRORS:-}; do
+        if curl -fL --connect-timeout 15 --speed-limit 2048 --speed-time 60 \
+            --retry 3 --retry-delay 5 -o "$_tmp/src.tar.gz" "${_pfx}${_url}"; then
+            _ok=1; break
+        fi
+        [[ -n "$_pfx" ]] && echo "mirror failed: ${_pfx}${_url}" >&2
+    done
+    if [[ "$_ok" -ne 1 ]]; then
+        echo "ERROR: could not download source. On a throttled link set TM_DOWNLOAD_MIRRORS in /etc/tunnel-manager/settings.conf to a reachable URL prefix, or check TM_REPO." >&2
         exit 1
     fi
     tar -xzf "$_tmp/src.tar.gz" -C "$_tmp"

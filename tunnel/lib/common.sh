@@ -267,3 +267,40 @@ tun_mss_revert() {
     done
     return 0
 }
+
+# ---------------------------------------------------------------------------
+# Fetching source over a throttled link
+# ---------------------------------------------------------------------------
+# tm_fetch URL DEST — download, tolerating a link that is slow but alive.
+#
+# The old call was `curl --max-time 120`, a flat deadline on the whole transfer.
+# From Iran GitHub is throttled rather than blocked: measured at ~23 KB/s, which
+# puts the 5.3 MB source archive at about four minutes — so the deadline fired at
+# 2.7 MB every single time and the node could never update, no matter how many
+# times it was retried.
+#
+# So: no flat deadline. Abort on a transfer that has genuinely STALLED (under
+# 2 KB/s for a minute) and let a slow one run, resuming where the last attempt
+# stopped when the server allows it. A link that is merely slow now finishes.
+#
+# TM_DOWNLOAD_MIRRORS in settings.conf is a space-separated list of URL prefixes
+# tried in order after the direct URL, e.g.
+#     TM_DOWNLOAD_MIRRORS="https://your-foreign-host/gh/"
+# Empty by default: this reaches for no third party on its own, since whatever is
+# put here sees every request, and that is the operator's decision to make.
+tm_fetch() {
+    local url="$1" dest="$2" candidate prefix rc
+    for prefix in "" ${TM_DOWNLOAD_MIRRORS:-}; do
+        candidate="${prefix}${url}"
+        [[ -n "$prefix" ]] && log_info "Retrying via mirror: $candidate"
+        # -C - resumes a partial file. GitHub's generated archives do not always
+        # honour Range, so a resume that is refused falls through to a clean
+        # attempt rather than being treated as a failed download.
+        curl -fL --connect-timeout 15 --speed-limit 2048 --speed-time 60              --retry 3 --retry-delay 5 -C - -o "$dest" "$candidate" && return 0
+        rc=$?
+        [[ -s "$dest" ]] && { : >"$dest"; }
+        curl -fL --connect-timeout 15 --speed-limit 2048 --speed-time 60              --retry 3 --retry-delay 5 -o "$dest" "$candidate" && return 0
+        log_warn "download failed (curl $rc): $candidate"
+    done
+    return 1
+}

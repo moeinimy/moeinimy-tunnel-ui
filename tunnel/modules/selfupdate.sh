@@ -58,6 +58,20 @@ selfupdate_run() {
     # with. That is how the smux window fix in 3.9.5 reached no tunnel at all.
     log_info "Rewriting tunnel configs so the updated defaults take effect…"
     tunnel_regen_all
+
+    # And the kernel side, for exactly the same reason. 3.9.6 taught this about the
+    # drivers' config files; the sysctl file is the other half and was missed. An
+    # update that changed tcp_mtu_probing would have shipped the new value into
+    # optimize.sh and left every box running the old one until somebody happened to
+    # run `optimize apply` by hand — which is indistinguishable from the fix not
+    # working, and is how a correctly diagnosed fault survives its own correction.
+    #
+    # Only when optimization was already applied here: this re-applies a decision the
+    # operator made, it does not make it for them.
+    if [[ -f "$TM_OPT_MARKER" ]]; then
+        log_info "Re-applying network optimization so updated kernel settings take effect…"
+        optimize_apply
+    fi
     # The node agent is long-running: without a restart it keeps executing the
     # code that was on disk when it started. install.sh try-restarts it; say so,
     # since that is the whole point of updating a node.
@@ -72,8 +86,9 @@ selfupdate_tarball() {
     tmp="$(mktemp -d)"
     url="https://github.com/${TM_REPO}/archive/refs/heads/${TM_BRANCH}.tar.gz"
     log_info "Downloading $url"
-    if ! curl -fsSL --max-time 120 -o "$tmp/src.tar.gz" "$url"; then
-        rm -rf "$tmp"; die "Download failed. Check TM_REPO in $TM_SETTINGS_FILE."
+    if ! tm_fetch "$url" "$tmp/src.tar.gz"; then
+        rm -rf "$tmp"
+        die "Download failed. If this node is on a throttled link, set a mirror prefix as TM_DOWNLOAD_MIRRORS in $TM_SETTINGS_FILE; otherwise check TM_REPO there."
     fi
     tar -xzf "$tmp/src.tar.gz" -C "$tmp" || { rm -rf "$tmp"; die "extract failed"; }
     dir="$(find "$tmp" -maxdepth 1 -type d -name '*-*' | head -1)"

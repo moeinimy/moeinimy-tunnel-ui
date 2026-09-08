@@ -5,6 +5,33 @@ All notable changes to this project are documented here. The format is based on
 [Semantic Versioning](https://semver.org/).
 
 
+## [3.9.8] - 2026-09-08
+
+### Fixed
+- **An Iran node could never update.** The download used `curl --max-time 120`, a
+  flat deadline on the whole transfer. GitHub is throttled rather than blocked
+  there: measured at ~23 KB/s, which puts the 5.3 MB source archive at about four
+  minutes, so the deadline fired at the same 2.7 MB every single attempt however
+  many times it was retried.
+
+  There is now no flat deadline. A transfer that has genuinely STALLED — under
+  2 KB/s for a minute — is abandoned, and one that is merely slow is allowed to
+  finish, resuming where the last attempt stopped when the server permits it.
+  `TM_DOWNLOAD_MIRRORS` in settings.conf takes a space-separated list of URL
+  prefixes tried after the direct address; it is empty by default, because
+  whatever is put there sees every request and that is the operator's call, not
+  this project's.
+
+- **`update` shipped new kernel settings that never took effect.** 3.9.6 fixed
+  this for the drivers' config files and missed the other half: the managed sysctl
+  file is written by `optimize apply`, so an update that changed a kernel setting
+  left every box running the old value until someone ran that by hand. Since that
+  is indistinguishable from the fix not working, a correctly diagnosed fault could
+  survive its own correction. `update` now re-applies optimization, but only where
+  it was already applied — it repeats the operator's decision rather than making
+  it for them.
+
+
 ## [3.9.7] - 2026-09-08
 
 ### Fixed

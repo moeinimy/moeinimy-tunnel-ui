@@ -36,6 +36,16 @@ sample() {
       END { printf "%d %d %d %d\n", s+0, r+0, g+0, n+0 }'
 }
 
+# A tunnel that is DOWN and a tunnel that is IDLE both report zero. Reading three
+# minutes of zeroes as "quiet" while the service was stopped is exactly the mistake
+# this investigation kept repeating: a measurement that cannot tell you it is
+# invalid is worse than no measurement, because it gets believed.
+for _svc in $(systemctl list-units --type=service --no-legend 'tm-tunnel-*' 2>/dev/null | awk '{print $1}'); do
+    _state="$(systemctl is-active "$_svc" 2>/dev/null)"
+    printf '%-34s %s\n' "$_svc" "$_state"
+    [[ "$_state" == active ]] || printf '  ^ NOT RUNNING — every zero below is this, not idleness\n'
+done
+
 printf 'tunwatch: %s, port %s, every %ss\n\n' "$SIDE" "$PORT" "$INT"
 printf '%-8s %10s %10s %9s %8s\n' "time" "sent" "recvd" "retrans" "socks"
 
@@ -44,6 +54,13 @@ i=0
 while :; do
     sleep "$INT"
     read -r cs cr cg cn <<<"$(sample)"
+    # Zero sockets is not a quiet link; on a tunnel it means there is no tunnel.
+    if (( cn == 0 )); then
+        printf '%-8s %10s %10s %9s %8d   <- no tunnel sockets at all\n' "$(date +%H:%M:%S)" "—" "—" "—" 0
+        ps=$cs; pr=$cr; pg=$cg; pn=$cn
+        i=$((i+1)); [[ "$MAX" -gt 0 && "$i" -ge "$MAX" ]] && break
+        continue
+    fi
     # Connections come and go, so a counter can go DOWN as sockets close and take
     # their totals with them. A negative delta is not a reading; say so instead of
     # printing a number that looks like one.

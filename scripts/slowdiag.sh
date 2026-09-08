@@ -17,6 +17,9 @@ set -uo pipefail
 
 LABEL="${1:-unlabelled}"
 PEER="${PEER:-212.74.39.212}"   # the second foreign node — a raw-internet reference
+# The tunnel's listening port. One variable because two places need it and a
+# hardcoded copy in each is a copy that drifts; override for a tunnel on another port.
+TUNPORT="${TUNPORT:-3080}"
 OUT="/root/slowdiag-${LABEL}-$(hostname -s)-$(date +%H%M).txt"
 
 s() { printf '\n===== %s =====\n' "$*"; }
@@ -61,7 +64,30 @@ done
 
 s "5. THE TUNNEL SOCKET — retransmits and window inside our own path"
 # retrans on the tunnel's own connections is the TCP-over-TCP story (suspect b).
-ss -tinm state established '( sport = :3080 or dport = :3080 )' 2>/dev/null | head -40
+ss -tinm state established "( sport = :$TUNPORT or dport = :$TUNPORT )" 2>/dev/null | head -40
+
+# One number for the whole tunnel, because nineteen socket dumps do not answer
+# "is it better than last time" and adding them up by hand gets it wrong: a socket
+# with no retransmissions omits bytes_retrans entirely, so any pairing of the two
+# fields across lines silently misaligns and can report more retransmitted than
+# sent. Both values are read from the SAME line, and a missing one counts as zero.
+echo
+ss -tin state established "( dport = :$TUNPORT or sport = :$TUNPORT )" 2>/dev/null | awk '
+  /bytes_sent:/ {
+    sv=0; rv=0
+    for (i=1;i<=NF;i++) {
+      if ($i ~ /^bytes_sent:/)    { split($i,a,":"); sv=a[2] }
+      if ($i ~ /^bytes_retrans:/) { split($i,a,":"); rv=a[2] }
+    }
+    s+=sv; r+=rv; n++; if (rv==0) clean++
+  }
+  END {
+    if (s>0)
+      printf "TUNNEL TOTAL: %d sockets, %d of them with zero loss — retransmit %.1f%% (%.1f MB of %.1f MB)\n",
+             n, clean, 100*r/s, r/1048576, s/1048576
+    else
+      print "TUNNEL TOTAL: no established tunnel sockets found"
+  }'
 
 s "6. NIC — drops the qdisc cannot fix"
 ip -s -br link show 2>/dev/null | head

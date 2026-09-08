@@ -62,50 +62,83 @@ case "$MODE" in
 
   serve)
     PORT="${2:-5201}"
-    have nc || { echo "nc not installed — apt-get install -y netcat-openbsd, or use: $0 ssh root@<ip>"; exit 1; }
     echo "link the NIC claims:"; link_speed
     echo
-    echo "serving on $PORT. Leave this running; start the client on the other box."
-    echo "If the client hangs, this port is blocked by a firewall between them."
-    while :; do
-        if nc -h 2>&1 | grep -q -- '-p port'; then
-            dd if=/dev/zero bs=1M count="$MB" 2>/dev/null | nc -l -p "$PORT" >/dev/null 2>&1
-        else
-            dd if=/dev/zero bs=1M count="$MB" 2>/dev/null | nc -l "$PORT" >/dev/null 2>&1
-        fi
-        echo "  … served one run at $(date +%H:%M:%S) — re-listening"
-    done
+    # python3 rather than nc. The netcat that ships on these distros comes in
+    # flavours that disagree about whether "-l -p PORT" is even legal, and picking
+    # the wrong one leaves a listener that accepts and sends nothing — which is
+    # indistinguishable from a dead link at the far end, and cost two rounds here.
+    # python3 is on both boxes and behaves the same on both.
+    if have python3; then
+        echo "serving on $PORT (python3). Leave this running."
+        python3 - "$PORT" "$MB" <<'PYEOF'
+import socket, sys
+port, mb = int(sys.argv[1]), int(sys.argv[2])
+srv = socket.socket(); srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+srv.bind(("0.0.0.0", port)); srv.listen(8)
+print("  listening on %d — waiting for the other box" % port, flush=True)
+chunk = b"x" * (1 << 20)
+while True:
+    conn, addr = srv.accept()
+    print("  client connected: %s" % (addr,), flush=True)
+    try:
+        for _ in range(mb):
+            conn.sendall(chunk)
+        print("  sent %d MB" % mb, flush=True)
+    except Exception as e:
+        print("  client went away: %s" % e, flush=True)
+    finally:
+        conn.close()
+PYEOF
+    else
+        echo "python3 not found; falling back to nc"
+        have nc || { echo "no python3 and no nc — install one"; exit 1; }
+        while :; do dd if=/dev/zero bs=1M count="$MB" 2>/dev/null | nc -l "$PORT" >/dev/null 2>&1; echo "  … served one run"; done
+    fi
     ;;
 
   test)
     HOST="${2:-}"; PORT="${3:-5201}"
     [[ -n "$HOST" ]] || { echo "usage: $0 test <foreign-ip> [port]"; exit 1; }
-    have nc || { echo "nc not installed — apt-get install -y netcat-openbsd, or use: $0 ssh root@$HOST"; exit 1; }
     echo "link the NIC claims:"; link_speed
     echo
-    # No separate reachability probe. The previous version opened a connection just
-    # to check the port, and the server answers ONE connection per run — so the probe
-    # ate the transfer and the real attempt landed in the gap before the next listen.
-    # It reported "yes" and then zero bytes, which is a tool inventing its own
-    # failure. The transfer proves reachability by arriving; that is the whole test.
-    echo "pulling ${MB} MB with no tunnel in the path…"
-    t0=$(date +%s.%N)
-    bytes="$(timeout 180 nc "$HOST" "$PORT" 2>/dev/null | wc -c)"
-    t1=$(date +%s.%N)
-    if [[ "${bytes:-0}" -lt 1048576 ]]; then
-        echo
-        echo "  FAILED — only ${bytes:-0} bytes arrived."
-        echo
-        echo "  Check, in this order:"
-        echo "    1. 'pathtest.sh serve' is running on $HOST RIGHT NOW. It serves one"
-        echo "       connection per run, so start it fresh and run this immediately."
-        echo "    2. The port is open to this box:"
-        echo "         ufw allow from $(ip route get 1.1.1.1 2>/dev/null | grep -oE 'src [0-9.]+' | awk '{print $2}') to any port $PORT proto tcp"
-        echo "    3. netcat is the same flavour on both ends; if serve logs errors,"
-        echo "       install netcat-openbsd on both."
-        exit 1
+    echo "pulling up to ${MB} MB from ${HOST}:${PORT}, no tunnel in the path…"
+    if have python3; then
+        python3 - "$HOST" "$PORT" <<'PYEOF'
+import socket, sys, time
+host, port = sys.argv[1], int(sys.argv[2])
+try:
+    s = socket.create_connection((host, port), timeout=20)
+except Exception as e:
+    print("\n  FAILED to connect: %s" % e)
+    print("  Is 'pathtest.sh serve' running on that box, and the port open to this one?")
+    sys.exit(1)
+s.settimeout(30)
+t0 = time.time(); n = 0
+try:
+    while True:
+        b = s.recv(1 << 20)
+        if not b:
+            break
+        n += len(b)
+except socket.timeout:
+    print("  (stalled — reporting what arrived)")
+except Exception:
+    pass
+d = time.time() - t0
+if n < (1 << 20) or d <= 0:
+    print("\n  FAILED — only %d bytes arrived." % n)
+    print("  Start 'pathtest.sh serve' on the other box and run this again.")
+    sys.exit(1)
+print("\n  RAW LINK: %.2f MB/s  =  %.1f Mbit/s   (%.0f MB in %.1fs)"
+      % (n/1048576/d, n*8/d/1e6, n/1048576, d))
+PYEOF
+    else
+        have nc || { echo "no python3 and no nc — install one"; exit 1; }
+        t0=$(date +%s.%N); bytes="$(timeout 180 nc "$HOST" "$PORT" 2>/dev/null | wc -c)"; t1=$(date +%s.%N)
+        [[ "${bytes:-0}" -lt 1048576 ]] && { echo "  FAILED — only ${bytes:-0} bytes arrived."; exit 1; }
+        report "$bytes" "$(awk -v a="$t0" -v b="$t1" 'BEGIN{printf "%.3f", b-a}')"
     fi
-    report "$bytes" "$(awk -v a="$t0" -v b="$t1" 'BEGIN{printf "%.3f", b-a}')"
     ;;
 
   *)

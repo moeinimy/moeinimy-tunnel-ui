@@ -72,8 +72,28 @@ printf '\nrps per queue:\n'
 for f in /sys/class/net/*/queues/rx-*/rps_cpus; do [ -e "$f" ] && printf '%s = %s\n' "$f" "$(cat "$f")"; done
 
 s "7. RAW INTERNET PATH — excludes everything of ours"
-# If loss shows up HERE, no amount of panel or tunnel tuning is the answer.
-command -v mtr >/dev/null && mtr -rwzbc 30 "$PEER" 2>&1 | tail -25 || echo "mtr not installed: apt-get install -y mtr-tiny"
+# Measured against the TUNNEL PEER first, because that is the path the traffic
+# actually takes. This defaulted to a fixed reference box for a long time, which
+# meant a report could show a clean path while the link that carries every packet
+# was losing a fifth of them — 21% retransmitted in one direction, unexplained
+# across three rounds of diagnosis, because nothing here was looking at it.
+#
+# Discovered from the running tunnel rather than assumed: the client config names
+# the server it dials, and failing that the busiest established peer is it.
+tunnel_peer() {
+    grep -hoE '(remote_addr|server_addr|edge_ip)[[:space:]]*=[[:space:]]*"[^"]+"'         /etc/tunnel-manager/*/*.toml 2>/dev/null         | grep -oE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' | sort -u | head -2
+    ss -tn state established 2>/dev/null | awk 'NR>1{print $NF}'         | grep -oE '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+'         | sort | uniq -c | sort -rn | head -1 | awk '{print $2}'
+}
+if command -v mtr >/dev/null; then
+    for tgt in $(tunnel_peer | sort -u); do
+        echo "--- tunnel peer: $tgt (the path that carries the traffic) ---"
+        mtr -rwzbc 30 "$tgt" 2>&1 | tail -22
+    done
+    echo "--- reference: $PEER (a path of ours that is NOT the tunnel) ---"
+    mtr -rwzbc 30 "$PEER" 2>&1 | tail -22
+else
+    echo "mtr not installed: apt-get install -y mtr-tiny"
+fi
 
 s "8. SOCKET AND CONNTRACK TOTALS"
 ss -s 2>/dev/null

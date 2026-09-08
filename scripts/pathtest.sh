@@ -2,63 +2,114 @@
 # pathtest — how fast is the raw link between these two boxes, with nothing of
 # ours in the way.
 #
-# This is the number every other measurement has been implicitly compared against,
-# and it was never taken. A tunnel carrying 20 Mbit/s is a broken tunnel if the
-# link does 200, and a perfect one if the link does 20 — the same reading, opposite
-# conclusions, and a day was spent tuning without knowing which. No tunnel, no
-# panel, no Xray: one TCP stream, straight down the wire.
+# A tunnel carrying 20 Mbit/s is broken if the link does 200 and perfect if the
+# link does 20: same reading, opposite conclusions. Everything else was tuned
+# without this number.
 #
+# Preferred, needs no second service and no firewall change:
+#   on the IRAN box:   pathtest.sh ssh root@<foreign-ip>
+#
+# Or a plain socket, if ssh between them is not set up:
 #   on the FOREIGN box:  pathtest.sh serve [port]
 #   on the IRAN box:     pathtest.sh test <foreign-ip> [port]
-#
-# Open the port on the foreign firewall for the Iran IP first, or the test will
-# simply hang looking like a dead link.
 set -uo pipefail
 MODE="${1:-}"
-PORT="${3:-${2:-5201}}"
-[[ "$MODE" == test ]] && PORT="${3:-5201}"
+MB="${MB:-300}"
 
 link_speed() {
     for i in /sys/class/net/*/speed; do
         d="$(basename "$(dirname "$i")")"
-        [[ "$d" == lo || "$d" == docker* || "$d" == veth* || "$d" == tun* || "$d" == wg* ]] && continue
+        case "$d" in lo|docker*|veth*|tun*|wg*|gre*|erspan*) continue ;; esac
         s="$(cat "$i" 2>/dev/null)"
         [[ -n "$s" && "$s" != "-1" ]] && printf '  %-8s reports %s Mbit/s\n' "$d" "$s"
     done
-    # A virtual NIC often reports a nominal 1000/10000 that its plan does not honour,
-    # so this is a hint about the card, never a measurement of what you actually get.
-    echo "  (a NIC's own number is the card, not the plan — the transfer below is the truth)"
+    echo "  (that is the card, not the plan behind it — the transfer below is the truth)"
 }
 
-nc_listen() { # portable across the nc variants that ship on these distros
-    if nc -h 2>&1 | grep -q '\-p port'; then nc -l -p "$PORT"; else nc -l "$PORT"; fi
+report() { # report BYTES SECONDS
+    awk -v b="$1" -v t="$2" 'BEGIN{
+        if (t <= 0) { print "  no time elapsed — nothing transferred"; exit }
+        printf "\n  RAW LINK: %.2f MB/s  =  %.1f Mbit/s   (%d MB in %.1fs)\n", b/1048576/t, b*8/t/1e6, b/1048576, t
+    }'
 }
+
+have() { command -v "$1" >/dev/null 2>&1; }
 
 case "$MODE" in
-  serve)
+  ssh)
+    HOST="${2:-}"
+    [[ -n "$HOST" ]] || { echo "usage: $0 ssh root@<foreign-ip>"; exit 1; }
+    have ssh || { echo "ssh not installed here"; exit 1; }
     echo "link the NIC claims:"; link_speed
     echo
-    echo "listening on $PORT — run the client on the other box now (Ctrl-C when done)"
+    echo "pulling ${MB} MB from $HOST over ssh, no tunnel in the path…"
+    echo "(ssh encrypts, so this reads slightly LOW — a floor for the link, never a ceiling)"
+    t0=$(date +%s.%N)
+    bytes="$(ssh -o BatchMode=yes -o ConnectTimeout=15 -o StrictHostKeyChecking=accept-new \
+        "$HOST" "dd if=/dev/zero bs=1M count=$MB 2>/dev/null" 2>/dev/null | wc -c)"
+    rc=$?
+    t1=$(date +%s.%N)
+    if [[ "${bytes:-0}" -lt 1048576 ]]; then
+        echo
+        echo "  FAILED — only ${bytes:-0} bytes arrived (ssh exit $rc)."
+        echo "  Most likely: no key-based login to $HOST from here. Test it with:"
+        echo "      ssh -o BatchMode=yes $HOST true"
+        echo "  If that prompts for a password, set up a key or use the serve/test mode instead."
+        exit 1
+    fi
+    report "$bytes" "$(awk -v a="$t0" -v b="$t1" 'BEGIN{printf "%.3f", b-a}')"
+    ;;
+
+  serve)
+    PORT="${2:-5201}"
+    have nc || { echo "nc not installed — apt-get install -y netcat-openbsd, or use: $0 ssh root@<ip>"; exit 1; }
+    echo "link the NIC claims:"; link_speed
+    echo
+    echo "serving on $PORT. Leave this running; start the client on the other box."
+    echo "If the client hangs, this port is blocked by a firewall between them."
     while :; do
-        dd if=/dev/zero bs=1M count=400 2>/dev/null | nc_listen >/dev/null 2>&1
-        echo "  … one run served"
+        if nc -h 2>&1 | grep -q -- '-p port'; then
+            dd if=/dev/zero bs=1M count="$MB" 2>/dev/null | nc -l -p "$PORT" >/dev/null 2>&1
+        else
+            dd if=/dev/zero bs=1M count="$MB" 2>/dev/null | nc -l "$PORT" >/dev/null 2>&1
+        fi
+        echo "  … served one run"
     done
     ;;
+
   test)
-    HOST="${2:-}"
-    [[ -n "$HOST" ]] || { echo "usage: pathtest.sh test <foreign-ip> [port]"; exit 1; }
+    HOST="${2:-}"; PORT="${3:-5201}"
+    [[ -n "$HOST" ]] || { echo "usage: $0 test <foreign-ip> [port]"; exit 1; }
+    have nc || { echo "nc not installed — apt-get install -y netcat-openbsd, or use: $0 ssh root@$HOST"; exit 1; }
     echo "link the NIC claims:"; link_speed
     echo
-    echo "pulling 400 MB from $HOST:$PORT with no tunnel in the path…"
-    # dd prints the rate itself, measured over the whole transfer.
-    nc "$HOST" "$PORT" 2>/dev/null | dd of=/dev/null bs=1M 2>&1 | tail -1
-    echo
-    echo "compare that with what the tunnel carries (tunwatch --all). If they match,"
-    echo "the tunnel is already delivering the whole link and no setting will add more."
+    # Reach the port BEFORE transferring. The previous version simply hung here with
+    # no output, which is indistinguishable from a dead link and is the same fault as
+    # every other tool in this investigation: silence that gets read as a result.
+    printf 'can this box open %s:%s ? ' "$HOST" "$PORT"
+    if ! timeout 10 bash -c "cat < /dev/null > /dev/tcp/$HOST/$PORT" 2>/dev/null; then
+        echo "NO"
+        echo
+        echo "  Nothing is accepting on $HOST:$PORT. Either 'pathtest.sh serve' is not"
+        echo "  running there, or a firewall drops it. On the foreign box:"
+        echo "      ufw allow from \$(curl -s ifconfig.me) to any port $PORT proto tcp"
+        echo "  Or skip all of this and use:  $0 ssh root@$HOST"
+        exit 1
+    fi
+    echo "yes"
+    echo "pulling ${MB} MB with no tunnel in the path…"
+    t0=$(date +%s.%N)
+    bytes="$(timeout 180 nc "$HOST" "$PORT" 2>/dev/null | wc -c)"
+    t1=$(date +%s.%N)
+    [[ "${bytes:-0}" -lt 1048576 ]] && { echo "  FAILED — only ${bytes:-0} bytes arrived."; exit 1; }
+    report "$bytes" "$(awk -v a="$t0" -v b="$t1" 'BEGIN{printf "%.3f", b-a}')"
     ;;
+
   *)
     echo "usage:"
-    echo "  on the FOREIGN box:  $0 serve [port]"
-    echo "  on the IRAN box:     $0 test <foreign-ip> [port]"
+    echo "  on the IRAN box (easiest, no setup):  $0 ssh root@<foreign-ip>"
+    echo "  or, plain socket:"
+    echo "    on the FOREIGN box:  $0 serve [port]"
+    echo "    on the IRAN box:     $0 test <foreign-ip> [port]"
     exit 1 ;;
 esac

@@ -128,6 +128,32 @@ for u in $(systemctl list-units --plain --no-legend 'tm-tunnel-*' 2>/dev/null | 
   journalctl -u "$u" --since '24 hours ago' --no-pager 2>/dev/null     | grep -iE 'control channel has been closed|restarting client' | tail -8
 done
 
+s "13. LOG FLOOD — CPU spent writing about work instead of doing it"
+# Measured on a 2-core relay while slow: systemd-journal 43.8% and rsyslogd 18.8%,
+# with 11.8% of the box idle. That is well over half a core describing work, taken
+# from the two cores that have to forward the traffic. It is invisible in every
+# network reading, because nothing about it is a network problem.
+n=$(journalctl --since "60 seconds ago" --no-pager -q 2>/dev/null | wc -l)
+echo "journal lines in the last 60s: $n  (~$((n/60))/s)"
+echo
+echo "What is repeating (5 min, numbers and hex folded so variants group):"
+journalctl --since "5 min ago" --no-pager -q 2>/dev/null   | sed -E 's/^[A-Za-z]{3} [0-9 ]{2} [0-9:]{8} [^ ]+ //; s/[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+/IP/g; s/[0-9a-f:]{6,}:[0-9a-f:]+/IP6/g; s/[0-9]{2,}/N/g; s/[0-9a-f]{8,}/HEX/g'   | sort | uniq -c | sort -rn | head -12
+echo
+# ForwardToSyslog is what makes rsyslogd process a second copy of everything the
+# journal already stored — two daemons, one stream, double the CPU.
+echo "journald/rsyslog config:"
+grep -hE '^[^#]*(Storage|RateLimit|ForwardToSyslog|MaxLevel|SystemMaxUse)'   /etc/systemd/journald.conf /etc/systemd/journald.conf.d/*.conf 2>/dev/null | sed 's/^/  /'
+echo "  journal on disk: $(journalctl --disk-usage 2>/dev/null | sed 's/^.*take up //')"
+echo
+# A verbose Xray logs a line per connection. With thousands of connections that is
+# the flood, and it is set in the panel's generated config rather than anywhere here.
+echo "Xray log level, per panel:"
+for c in /opt/vpn-ui/bin/config.json /usr/local/x-ui/bin/config.json; do
+  [ -f "$c" ] || continue
+  printf '  %s: ' "$c"
+  grep -o '"loglevel"[[:space:]]*:[[:space:]]*"[a-z]*"' "$c" | head -1 || echo "(none found)"
+done
+
 s "12. KERNEL COMPLAINTS"
 dmesg -T 2>/dev/null | tail -25
 } 2>&1 | tee "$OUT"

@@ -394,7 +394,11 @@ optimize_apply() {
     qdisc="$(_opt_best_qdisc)"
     if _opt_bbr_available; then
         cc="bbr"
-        printf 'tcp_bbr\n' >"$TM_MODULES_FILE"
+        # nf_conntrack alongside bbr: at BOOT systemd-sysctl runs before the module
+        # is loaded, so net.netfilter.nf_conntrack_max below is dropped and the table
+        # silently falls back to the 65536 default — measured at 12383 in use on a box
+        # that had been told 1048576. Loading it early is what makes that line stick.
+        printf 'tcp_bbr\nnf_conntrack\n' >"$TM_MODULES_FILE"
         log_info "BBR available — enabling bbr + ${qdisc}."
     else
         log_warn "BBR not available on this kernel — keeping current congestion control."
@@ -455,7 +459,26 @@ net.core.somaxconn = 65535
 net.ipv4.tcp_max_syn_backlog = 8192
 
 # --- TCP behaviour tuned for latency + throughput ---
-net.ipv4.tcp_mtu_probing = 1
+# --- Path MTU discovery ---
+# OFF, and this is a correction rather than a default.
+#
+# With probing on, TCP treats repeated timeouts as evidence of an MTU black hole
+# and searches DOWNWARD for a segment size that gets through. On a path that is
+# merely lossy — which is every tunnel this manager exists for — the loss is not
+# an MTU problem, but it looks identical from inside TCP, so the search runs
+# anyway and the connection settles on a tiny segment. Measured on a live relay:
+# 8 of 19 tunnel connections had collapsed to mss 292-1094 against an advertised
+# 1448, one carrying 22% of a normal packet's payload and needing 4.6x the packets
+# for the same bytes. BBR's estimate on those had fallen to 55-200 kbit.
+#
+# Nothing recovers it. MSS is only ever revised downward within a connection, and
+# a tunnel's connections live for days — so the box gets slower the longer it runs
+# and a reboot "fixes" it, which is exactly how this was reported.
+#
+# Probing bought nothing here in the first place: the tunnel drivers already clamp
+# MSS on their own SYNs (TCPMSS --set-mss), and the path is ordinary 1500-byte
+# internet at both ends.
+net.ipv4.tcp_mtu_probing = 0
 net.ipv4.tcp_fastopen = 3
 net.ipv4.tcp_slow_start_after_idle = 0
 net.ipv4.tcp_tw_reuse = 1

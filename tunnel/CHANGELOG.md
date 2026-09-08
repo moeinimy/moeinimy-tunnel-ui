@@ -5,6 +5,36 @@ All notable changes to this project are documented here. The format is based on
 [Semantic Versioning](https://semver.org/).
 
 
+## [3.9.7] - 2026-09-08
+
+### Fixed
+- **TCP was shrinking its own segments until the box crawled.** `tcp_mtu_probing`
+  was set to 1. With probing on, repeated timeouts are read as an MTU black hole
+  and TCP searches DOWNWARD for a segment size that gets through. On a path that
+  is merely lossy — which is every path this manager tunnels over — the loss is
+  not an MTU problem, but from inside TCP it looks identical, so the search runs
+  anyway and the connection settles on a tiny segment.
+
+  Measured on a live relay while slow: 8 of 19 tunnel connections had collapsed to
+  `mss` 292-1094 against an advertised 1448. The worst carried 22% of a normal
+  packet's payload and needed 4.6x the packets for the same bytes, and BBR's
+  bandwidth estimate on those connections had fallen to 55-200 kbit.
+
+  Nothing recovers it: MSS is only ever revised downward within a connection, and
+  a tunnel's connections live for days. So the box got slower the longer it ran
+  and a reboot appeared to fix it — the reported symptom exactly, and the reason
+  three earlier buffer fixes each landed correctly and changed nothing.
+
+  Probing bought nothing here to begin with: the drivers already clamp MSS on
+  their own SYNs, and both ends are ordinary 1500-byte internet.
+
+- **conntrack_max reverted to 65536 at every boot.** The managed file asks for
+  1048576, but `systemd-sysctl` runs before `nf_conntrack` is loaded, so the key
+  does not exist yet and the line is dropped; the table then sits at the kernel
+  default. Measured at 12383 in use against that 65536. `nf_conntrack` now loads
+  early alongside `tcp_bbr`, which is what makes the setting stick.
+
+
 ## [3.9.6] - 2026-08-28
 
 ### Fixed
